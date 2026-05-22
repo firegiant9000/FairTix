@@ -5,7 +5,7 @@
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>4.0.5</version>
+    <version>4.0.6</version>
     <relativePath/> <!-- lookup parent from repository -->
   </parent>
   <groupId>com.fairtix</groupId>
@@ -28,9 +28,14 @@
   </scm>
   <properties>
     <java.version>21</java.version>
-    <!-- Override vulnerable transitive dependency versions (Trivy CVE fixes) -->
-    <tomcat.version>11.0.21</tomcat.version>
-    <spring-security.version>7.0.4</spring-security.version>
+    <!-- Override vulnerable transitive dependency versions (Trivy CVE fixes).
+         Pinned ahead of the Spring Boot BOM defaults where new CVEs landed
+         between BOM releases. Drop these overrides once the Boot parent
+         catches up. -->
+    <tomcat.version>11.0.22</tomcat.version>
+    <spring-security.version>7.0.5</spring-security.version>
+    <netty.version>4.2.13.Final</netty.version>
+    <postgresql.version>42.7.11</postgresql.version>
     <!--
       JaCoCo coverage floor. Provisional. A clean local run on 2026-05-21 measured
       0.17 line coverage but most integration tests errored on context load because
