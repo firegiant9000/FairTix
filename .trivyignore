@@ -2,3 +2,15 @@
 # Pulled transitively by spring-boot-jackson 4.0.5. Not exploitable in FairTix
 # since we don't configure maxDocumentLength. Remove once a patched version exists.
 GHSA-2m67-wjpj-xhg9
+
+# Go stdlib CVEs in the eclipse-temurin:21-jre base image (helper Go binaries
+# built from stdlib v1.26.2). FairTix runs only the Java JVM — none of these
+# stdlib code paths are reachable from the application's network surface (no
+# Go HTTP/2 server, no Go DNS resolver in the request path, no Go mail
+# parsing). Revisit when eclipse-temurin republishes 21-jre with Go 1.25.10
+# or 1.26.3.
+CVE-2026-33811
+CVE-2026-33814
+CVE-2026-39820
+CVE-2026-39836
+CVE-2026-42499
