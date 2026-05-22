@@ -2,6 +2,7 @@ package com.fairtix.health.api;
 
 import com.stripe.Stripe;
 import com.stripe.model.Balance;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.http.ResponseEntity;
@@ -26,17 +27,17 @@ public class DeepHealthController {
 
   private final JdbcTemplate jdbc;
   private final RedisConnectionFactory redis;
-  private final JavaMailSender mailSender;
+  private final ObjectProvider<JavaMailSender> mailSenderProvider;
   private final boolean stripeEnabled;
 
   public DeepHealthController(
       JdbcTemplate jdbc,
       RedisConnectionFactory redis,
-      JavaMailSender mailSender,
+      ObjectProvider<JavaMailSender> mailSenderProvider,
       @Value("${stripe.enabled:false}") boolean stripeEnabled) {
     this.jdbc = jdbc;
     this.redis = redis;
-    this.mailSender = mailSender;
+    this.mailSenderProvider = mailSenderProvider;
     this.stripeEnabled = stripeEnabled;
   }
 
@@ -94,7 +95,9 @@ public class DeepHealthController {
   }
 
   private String checkMail() throws Exception {
-    if (mailSender instanceof JavaMailSenderImpl impl) {
+    JavaMailSender sender = mailSenderProvider.getIfAvailable();
+    if (sender == null) return "not configured";
+    if (sender instanceof JavaMailSenderImpl impl) {
       impl.testConnection();
       return impl.getHost() + ":" + impl.getPort();
     }

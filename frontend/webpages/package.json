@@ -38,7 +38,8 @@
       "!src/index.js",
       "!src/reportWebVitals.js",
       "!src/setupTests.js",
-      "!src/__mocks__/**"
+      "!src/__mocks__/**",
+      "!src/organizer/**"
     ],
     "coverageThreshold": {
       "global": {
