@@ -64,6 +64,11 @@ class AnalyticsControllerTest {
       jdbcTemplate.execute("DELETE FROM seats");
       jdbcTemplate.execute("DELETE FROM event_performers");
       jdbcTemplate.execute("DELETE FROM events");
+      // Auth tests commit users non-transactionally; analytics asserts user
+      // counts so we wipe them too. Dependents (audit_log, notification_prefs,
+      // organization_members, etc.) keep orphan user_id refs — those columns
+      // don't affect analytics totals and the FK check is back on after this.
+      jdbcTemplate.execute("DELETE FROM users");
     } finally {
       jdbcTemplate.execute("SET REFERENTIAL_INTEGRITY TRUE");
     }
