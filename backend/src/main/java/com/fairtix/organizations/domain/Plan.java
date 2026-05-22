@@ -24,4 +24,13 @@ public enum Plan {
   public Integer getMonthlyTicketCap() { return monthlyTicketCap; }
   public BigDecimal getPerTicketFee() { return perTicketFee; }
   public boolean isUnlimited() { return monthlyTicketCap == null; }
+
+  /**
+   * Platform fee in basis points (1 bp = 0.01%). Free→250, Pro→150, Scale→100,
+   * Enterprise→0 (negotiated separately). Derived from {@link #perTicketFee}.
+   */
+  public int getPlatformFeeBps() {
+    if (perTicketFee == null) return 0;
+    return perTicketFee.movePointRight(4).intValueExact();
+  }
 }

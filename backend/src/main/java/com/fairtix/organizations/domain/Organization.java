@@ -55,6 +55,33 @@ public class Organization {
   @Column(name = "stripe_subscription_id", length = 64)
   private String stripeSubscriptionId;
 
+  @Column(name = "stripe_connect_account_id", length = 64)
+  private String stripeConnectAccountId;
+
+  @Column(name = "stripe_connect_country", length = 2)
+  private String stripeConnectCountry;
+
+  @Column(name = "stripe_charges_enabled", nullable = false)
+  private boolean stripeChargesEnabled = false;
+
+  @Column(name = "stripe_payouts_enabled", nullable = false)
+  private boolean stripePayoutsEnabled = false;
+
+  @Column(name = "stripe_details_submitted", nullable = false)
+  private boolean stripeDetailsSubmitted = false;
+
+  @Column(name = "stripe_disabled_reason", length = 255)
+  private String stripeDisabledReason;
+
+  @Column(name = "stripe_requirements_json", columnDefinition = "TEXT")
+  private String stripeRequirementsJson;
+
+  @Column(name = "stripe_payouts_frozen", nullable = false)
+  private boolean stripePayoutsFrozen = false;
+
+  @Column(name = "stripe_connected_at")
+  private Instant stripeConnectedAt;
+
   protected Organization() {}
 
   public Organization(String name, String slug, String contactEmail) {
@@ -111,4 +138,37 @@ public class Organization {
   public Instant getTicketCreditsResetAt() { return ticketCreditsResetAt; }
   public String getStripeCustomerId() { return stripeCustomerId; }
   public String getStripeSubscriptionId() { return stripeSubscriptionId; }
+
+  public String getStripeConnectAccountId() { return stripeConnectAccountId; }
+  public void setStripeConnectAccountId(String id) {
+    this.stripeConnectAccountId = id;
+    this.updatedAt = Instant.now();
+  }
+
+  public String getStripeConnectCountry() { return stripeConnectCountry; }
+  public void setStripeConnectCountry(String country) { this.stripeConnectCountry = country; }
+
+  public boolean isStripeChargesEnabled() { return stripeChargesEnabled; }
+  public void setStripeChargesEnabled(boolean v) { this.stripeChargesEnabled = v; }
+
+  public boolean isStripePayoutsEnabled() { return stripePayoutsEnabled; }
+  public void setStripePayoutsEnabled(boolean v) { this.stripePayoutsEnabled = v; }
+
+  public boolean isStripeDetailsSubmitted() { return stripeDetailsSubmitted; }
+  public void setStripeDetailsSubmitted(boolean v) { this.stripeDetailsSubmitted = v; }
+
+  public String getStripeDisabledReason() { return stripeDisabledReason; }
+  public void setStripeDisabledReason(String reason) { this.stripeDisabledReason = reason; }
+
+  public String getStripeRequirementsJson() { return stripeRequirementsJson; }
+  public void setStripeRequirementsJson(String json) { this.stripeRequirementsJson = json; }
+
+  public boolean isStripePayoutsFrozen() { return stripePayoutsFrozen; }
+  public void setStripePayoutsFrozen(boolean v) {
+    this.stripePayoutsFrozen = v;
+    this.updatedAt = Instant.now();
+  }
+
+  public Instant getStripeConnectedAt() { return stripeConnectedAt; }
+  public void setStripeConnectedAt(Instant t) { this.stripeConnectedAt = t; }
 }
