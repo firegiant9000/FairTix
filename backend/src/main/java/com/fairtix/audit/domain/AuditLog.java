@@ -29,6 +29,9 @@ public class AuditLog {
   @Column(nullable = false, updatable = false)
   private Instant createdAt = Instant.now();
 
+  @Column(length = 80)
+  private String requestId;
+
   protected AuditLog() {
   }
 
@@ -40,6 +43,11 @@ public class AuditLog {
     this.details = details;
   }
 
+  public AuditLog(UUID userId, String action, String resourceType, UUID resourceId, String details, String requestId) {
+    this(userId, action, resourceType, resourceId, details);
+    this.requestId = requestId;
+  }
+
   public UUID getId() { return id; }
   public UUID getUserId() { return userId; }
   public String getAction() { return action; }
@@ -47,4 +55,6 @@ public class AuditLog {
   public UUID getResourceId() { return resourceId; }
   public String getDetails() { return details; }
   public Instant getCreatedAt() { return createdAt; }
+  public String getRequestId() { return requestId; }
+  public void setRequestId(String requestId) { this.requestId = requestId; }
 }

@@ -6,11 +6,13 @@ import com.fairtix.fraud.domain.RiskTier;
 import com.fairtix.inventory.domain.Seat;
 import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatRepository;
-import com.fairtix.notifications.application.EmailService;
 import com.fairtix.notifications.application.EmailTemplateService;
+import com.fairtix.notifications.application.NotificationGate;
+import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.orders.domain.Order;
 import com.fairtix.orders.domain.OrderStatus;
 import com.fairtix.orders.infrastructure.OrderRepository;
+import com.fairtix.payments.application.StripePaymentService;
 import com.fairtix.payments.domain.PaymentRecord;
 import com.fairtix.payments.domain.PaymentStatus;
 import com.fairtix.payments.infrastructure.PaymentRecordRepository;
@@ -48,9 +50,12 @@ public class RefundService {
   private final PaymentRecordRepository paymentRecordRepository;
   private final UserRepository userRepository;
   private final AuditService auditService;
-  private final EmailService emailService;
+  private final NotificationGate notificationGate;
   private final EmailTemplateService emailTemplateService;
   private final RiskScoringService riskScoringService;
+  private final StripePaymentService stripePaymentService;
+
+  private static final long STRIPE_REFUND_WINDOW_DAYS = 180L;
 
   @Value("${fairtix.refund.enabled:true}")
   private boolean refundEnabled;
@@ -68,9 +73,10 @@ public class RefundService {
       PaymentRecordRepository paymentRecordRepository,
       UserRepository userRepository,
       AuditService auditService,
-      EmailService emailService,
+      NotificationGate notificationGate,
       EmailTemplateService emailTemplateService,
-      RiskScoringService riskScoringService) {
+      RiskScoringService riskScoringService,
+      StripePaymentService stripePaymentService) {
     this.refundRepository = refundRepository;
     this.orderRepository = orderRepository;
     this.ticketRepository = ticketRepository;
@@ -78,9 +84,10 @@ public class RefundService {
     this.paymentRecordRepository = paymentRecordRepository;
     this.userRepository = userRepository;
     this.auditService = auditService;
-    this.emailService = emailService;
+    this.notificationGate = notificationGate;
     this.emailTemplateService = emailTemplateService;
     this.riskScoringService = riskScoringService;
+    this.stripePaymentService = stripePaymentService;
   }
 
   @Transactional
@@ -181,22 +188,67 @@ public class RefundService {
 
   @Transactional
   public void processRefund(RefundRequest refund, UUID actorId) {
+    // Idempotency: if Stripe refund already initiated, do nothing.
+    if (refund.getStripeRefundId() != null && !refund.getStripeRefundId().isBlank()) {
+      log.info("processRefund: refund {} already has stripeRefundId={}, skipping",
+          refund.getId(), refund.getStripeRefundId());
+      return;
+    }
+
     Order order = orderRepository.findById(refund.getOrderId())
         .orElseThrow(() -> new IllegalStateException("Order not found during refund processing"));
+
+    // Stripe 180-day refund window guard.
+    if (order.getCreatedAt() != null
+        && order.getCreatedAt().isBefore(Instant.now().minus(STRIPE_REFUND_WINDOW_DAYS, ChronoUnit.DAYS))) {
+      throw new RefundNotEligibleException(
+          "Original payment is older than " + STRIPE_REFUND_WINDOW_DAYS
+              + " days and cannot be refunded through Stripe.");
+    }
+
+    // Look up original Stripe PaymentIntent before mutating any state.
+    PaymentRecord originalPayment = paymentRecordRepository.findByOrderId(refund.getOrderId()).orElse(null);
+    String stripeRefundId = null;
+    boolean stripeRefundInitiated = false;
+
+    if (stripePaymentService.isStripeEnabled()
+        && originalPayment != null
+        && originalPayment.getTransactionId() != null
+        && originalPayment.getTransactionId().startsWith("pi_")) {
+      try {
+        long amountCents = refund.getAmount()
+            .multiply(BigDecimal.valueOf(100))
+            .setScale(0, java.math.RoundingMode.HALF_UP)
+            .longValueExact();
+        com.stripe.model.Refund stripeRefund = stripePaymentService.createRefund(
+            originalPayment.getTransactionId(), amountCents, refund.getReason());
+        stripeRefundId = stripeRefund.getId();
+        stripeRefundInitiated = true;
+      } catch (RuntimeException ex) {
+        log.error("Stripe refund failed for refund {} (order {}): {}",
+            refund.getId(), refund.getOrderId(), ex.getMessage());
+        auditService.log(actorId, "REFUND_STRIPE_FAILED", "REFUND", refund.getId(),
+            "Stripe refund call failed: " + ex.getMessage());
+        // Leave refund in APPROVED; do NOT mark order REFUNDED.
+        throw ex;
+      }
+    }
 
     order.setStatus(OrderStatus.REFUNDED);
     orderRepository.save(order);
 
     // Create a negative-amount PaymentRecord for audit trail
-    paymentRecordRepository.findByOrderId(refund.getOrderId()).ifPresent(original -> {
+    if (originalPayment != null) {
       PaymentRecord refundRecord = new PaymentRecord(
           refund.getOrderId(), refund.getUserId(),
           refund.getAmount().negate(), order.getCurrency(),
           PaymentStatus.REFUNDED,
-          "REFUND-" + refund.getId().toString().substring(0, 8).toUpperCase(),
+          stripeRefundId != null
+              ? stripeRefundId
+              : "REFUND-" + refund.getId().toString().substring(0, 8).toUpperCase(),
           null);
       paymentRecordRepository.save(refundRecord);
-    });
+    }
 
     // Mark tickets as REFUNDED and release seats
     List<Ticket> tickets = ticketRepository.findAllByOrder_Id(refund.getOrderId());
@@ -208,13 +260,27 @@ public class RefundService {
       seatRepository.save(seat);
     }
 
-    refund.complete();
-    refundRepository.save(refund);
+    if (stripeRefundId != null) {
+      refund.setStripeRefundId(stripeRefundId);
+    }
 
-    auditService.log(actorId, "REFUND_COMPLETED", "REFUND", refund.getId(),
-        "Refund completed for order " + refund.getOrderId() + ", amount=" + refund.getAmount());
-
-    sendRefundCompletedEmail(refund);
+    if (stripeRefundInitiated) {
+      // Stripe is processing; the charge.refunded webhook will flip to COMPLETED
+      // and send the "refund complete" email. Email user that the refund was initiated.
+      refundRepository.save(refund);
+      auditService.log(actorId, "REFUND_INITIATED", "REFUND", refund.getId(),
+          "Stripe refund initiated for order " + refund.getOrderId()
+              + ", amount=" + refund.getAmount() + ", stripeRefundId=" + stripeRefundId);
+      sendRefundInitiatedEmail(refund);
+    } else {
+      // Stripe disabled or no Stripe PaymentIntent (e.g. cash/manual order):
+      // complete the refund inline to preserve existing behavior.
+      refund.complete();
+      refundRepository.save(refund);
+      auditService.log(actorId, "REFUND_COMPLETED", "REFUND", refund.getId(),
+          "Refund completed for order " + refund.getOrderId() + ", amount=" + refund.getAmount());
+      sendRefundCompletedEmail(refund);
+    }
   }
 
   /**
@@ -277,9 +343,23 @@ public class RefundService {
       if (user == null) return;
       String body = emailTemplateService.buildRefundRequestedEmail(
           user.getEmail(), refund.getOrderId().toString(), refund.getAmount().toPlainString(), refund.getReason());
-      emailService.sendEmail(user.getEmail(), "Your FairTix refund request was received", body);
+      notificationGate.sendEmail(user.getId(), NotificationCategory.REFUND,
+          user.getEmail(), "Your FairTix refund request was received", body);
     } catch (Exception ex) {
       log.warn("Failed to send refund-requested email for refund {}: {}", refund.getId(), ex.getMessage());
+    }
+  }
+
+  private void sendRefundInitiatedEmail(RefundRequest refund) {
+    try {
+      User user = userRepository.findById(refund.getUserId()).orElse(null);
+      if (user == null) return;
+      String body = emailTemplateService.buildRefundInitiatedEmail(
+          user.getEmail(), refund.getOrderId().toString(), refund.getAmount().toPlainString());
+      notificationGate.sendEmail(user.getId(), NotificationCategory.REFUND,
+          user.getEmail(), "Your FairTix refund has been initiated", body);
+    } catch (Exception ex) {
+      log.warn("Failed to send refund-initiated email for refund {}: {}", refund.getId(), ex.getMessage());
     }
   }
 
@@ -289,7 +369,8 @@ public class RefundService {
       if (user == null) return;
       String body = emailTemplateService.buildRefundCompletedEmail(
           user.getEmail(), refund.getOrderId().toString(), refund.getAmount().toPlainString());
-      emailService.sendEmail(user.getEmail(), "Your FairTix refund has been processed", body);
+      notificationGate.sendEmail(user.getId(), NotificationCategory.REFUND,
+          user.getEmail(), "Your FairTix refund has been processed", body);
     } catch (Exception ex) {
       log.warn("Failed to send refund-completed email for refund {}: {}", refund.getId(), ex.getMessage());
     }
@@ -301,7 +382,8 @@ public class RefundService {
       if (user == null) return;
       String body = emailTemplateService.buildRefundRejectedEmail(
           user.getEmail(), refund.getOrderId().toString(), refund.getReason(), adminNotes);
-      emailService.sendEmail(user.getEmail(), "Update on your FairTix refund request", body);
+      notificationGate.sendEmail(user.getId(), NotificationCategory.REFUND,
+          user.getEmail(), "Update on your FairTix refund request", body);
     } catch (Exception ex) {
       log.warn("Failed to send refund-rejected email for refund {}: {}", refund.getId(), ex.getMessage());
     }

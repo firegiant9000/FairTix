@@ -21,6 +21,12 @@ import VerifyEmail from './pages/VerifyEmail';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import AdminLayout from './admin/AdminLayout';
+import OrganizerRoute from './organizer/OrganizerRoute';
+import OrganizerLayout from './organizer/OrganizerLayout';
+import OrganizerDashboard from './organizer/pages/OrganizerDashboard';
+import OrganizerTeam from './organizer/pages/OrganizerTeam';
+import OrganizerOnboarding from './organizer/pages/OrganizerOnboarding';
+import OrganizerPlaceholder from './organizer/pages/OrganizerPlaceholder';
 import AdminDashboard from './admin/pages/AdminDashboard';
 import AdminEventsPage from './admin/pages/AdminEventsPage';
 import AdminSeatsPage from './admin/pages/AdminSeatsPage';
@@ -96,6 +102,25 @@ function App() {
                 <Route path="support" element={<AdminSupportPage />} />
                 <Route path="fraud" element={<AdminFraudPage />} />
                 <Route path="performers" element={<AdminPerformersPage />} />
+              </Route>
+            </Route>
+
+            {/* Organizer routes — own layout, requires org membership.
+                Onboarding lives inside the same OrganizationProvider so the
+                useOrganization() hook resolves; OrganizerRoute itself routes
+                users with zero orgs to /organizer/onboarding. */}
+            <Route element={<OrganizerRoute />}>
+              <Route path="/organizer/onboarding" element={<OrganizerOnboarding />} />
+              <Route path="/organizer" element={<OrganizerLayout />}>
+                <Route index element={<OrganizerDashboard />} />
+                <Route path="events" element={<OrganizerPlaceholder title="Events" description="Cross-event list and create-event wizard land in M2." />} />
+                <Route path="events/new" element={<OrganizerPlaceholder title="Create event" description="Create-event wizard lands in M2." />} />
+                <Route path="events/:eventId" element={<OrganizerPlaceholder title="Event detail" description="Sales, attendees, holds, comps, scan progress — all wired in M2." />} />
+                <Route path="sales" element={<OrganizerPlaceholder title="Sales" description="Cross-event sales reporting lands in M2." />} />
+                <Route path="payouts" element={<OrganizerPlaceholder title="Payouts" description="Stripe Connect status and payout history land with M2 #170." />} />
+                <Route path="settings" element={<OrganizerPlaceholder title="Settings" description="Organization details and branding controls land in M2." />} />
+                <Route path="team" element={<OrganizerTeam />} />
+                <Route path="integrations" element={<OrganizerPlaceholder title="Integrations" description="API keys and webhooks are scheduled for M6." />} />
               </Route>
             </Route>
 

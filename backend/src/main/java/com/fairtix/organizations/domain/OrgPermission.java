@@ -1,0 +1,20 @@
+package com.fairtix.organizations.domain;
+
+public enum OrgPermission {
+  ALL,
+  EVENTS_READ,
+  EVENTS_WRITE,
+  SALES_READ,
+  REFUNDS_READ,
+  REFUNDS_WRITE,
+  COMPS_WRITE,
+  TEAM_READ,
+  TEAM_WRITE,
+  BOX_OFFICE_SELL,
+  SCANNER_USE,
+  ATTENDEES_READ,
+  EMAIL_SEND,
+  PAYOUTS_READ,
+  REPORTS_READ,
+  SETTINGS_WRITE
+}

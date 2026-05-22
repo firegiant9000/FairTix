@@ -1,10 +1,9 @@
 package com.fairtix.support.application;
 
 import com.fairtix.audit.application.AuditService;
-import com.fairtix.notifications.application.EmailService;
 import com.fairtix.notifications.application.EmailTemplateService;
-import com.fairtix.notifications.application.NotificationPreferenceService;
-import com.fairtix.notifications.domain.NotificationPreference;
+import com.fairtix.notifications.application.NotificationGate;
+import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.support.domain.SupportTicket;
 import com.fairtix.support.domain.TicketCategory;
 import com.fairtix.support.domain.TicketMessage;
@@ -38,24 +37,21 @@ public class SupportTicketService {
     private final TicketMessageRepository messageRepository;
     private final UserRepository userRepository;
     private final AuditService auditService;
-    private final EmailService emailService;
+    private final NotificationGate notificationGate;
     private final EmailTemplateService emailTemplateService;
-    private final NotificationPreferenceService notificationPreferenceService;
 
     public SupportTicketService(SupportTicketRepository ticketRepository,
                                 TicketMessageRepository messageRepository,
                                 UserRepository userRepository,
                                 AuditService auditService,
-                                EmailService emailService,
-                                EmailTemplateService emailTemplateService,
-                                NotificationPreferenceService notificationPreferenceService) {
+                                NotificationGate notificationGate,
+                                EmailTemplateService emailTemplateService) {
         this.ticketRepository = ticketRepository;
         this.messageRepository = messageRepository;
         this.userRepository = userRepository;
         this.auditService = auditService;
-        this.emailService = emailService;
+        this.notificationGate = notificationGate;
         this.emailTemplateService = emailTemplateService;
-        this.notificationPreferenceService = notificationPreferenceService;
     }
 
     @Transactional
@@ -73,12 +69,10 @@ public class SupportTicketService {
         auditService.log(userId, "CREATE", "SUPPORT_TICKET", ticket.getId(), "subject=" + subject);
 
         try {
-            NotificationPreference prefs = notificationPreferenceService.getPreferences(userId);
-            if (prefs.isEmailSupport()) {
-                String html = emailTemplateService.buildTicketCreatedEmail(
-                        user.getEmail(), ticket.getId().toString(), subject);
-                emailService.sendEmail(user.getEmail(), "Support Ticket Received: " + subject, html);
-            }
+            String html = emailTemplateService.buildTicketCreatedEmail(
+                    user.getEmail(), ticket.getId().toString(), subject);
+            notificationGate.sendEmail(userId, NotificationCategory.SUPPORT,
+                    user.getEmail(), "Support Ticket Received: " + subject, html);
         } catch (Exception e) {
             log.warn("Failed to send ticket creation email for ticket {}: {}", ticket.getId(), e.getMessage());
         }
@@ -123,12 +117,10 @@ public class SupportTicketService {
             if (isAdmin) {
                 // Staff replied — notify the ticket owner
                 User owner = ticket.getUser();
-                NotificationPreference prefs = notificationPreferenceService.getPreferences(owner.getId());
-                if (prefs.isEmailSupport()) {
-                    String html = emailTemplateService.buildTicketReplyEmail(
-                            owner.getEmail(), ticketId.toString(), ticket.getSubject(), message);
-                    emailService.sendEmail(owner.getEmail(), "New Reply on Your Support Ticket", html);
-                }
+                String html = emailTemplateService.buildTicketReplyEmail(
+                        owner.getEmail(), ticketId.toString(), ticket.getSubject(), message);
+                notificationGate.sendEmail(owner.getId(), NotificationCategory.SUPPORT,
+                        owner.getEmail(), "New Reply on Your Support Ticket", html);
             }
             // User replied — admin notification is handled via queue/dashboard; skip email to avoid spam
         } catch (Exception e) {
@@ -181,12 +173,10 @@ public class SupportTicketService {
 
         try {
             User owner = ticket.getUser();
-            NotificationPreference prefs = notificationPreferenceService.getPreferences(owner.getId());
-            if (prefs.isEmailSupport()) {
-                String html = emailTemplateService.buildTicketClosedEmail(
-                        owner.getEmail(), ticketId.toString(), ticket.getSubject());
-                emailService.sendEmail(owner.getEmail(), "Support Ticket Closed", html);
-            }
+            String html = emailTemplateService.buildTicketClosedEmail(
+                    owner.getEmail(), ticketId.toString(), ticket.getSubject());
+            notificationGate.sendEmail(owner.getId(), NotificationCategory.SUPPORT,
+                    owner.getEmail(), "Support Ticket Closed", html);
         } catch (Exception e) {
             log.warn("Failed to send close notification for ticket {}: {}", ticketId, e.getMessage());
         }

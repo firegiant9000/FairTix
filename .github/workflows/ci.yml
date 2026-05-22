@@ -2,7 +2,9 @@ name: CI Pipeline
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, develop]
+  push:
+    branches: [develop]
 
 jobs:
 
@@ -33,6 +35,47 @@ jobs:
       - name: Run tests
         run: mvn clean verify
 
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jacoco-coverage
+          path: backend/target/site/jacoco/
+          if-no-files-found: warn
+
+  cookie-auth-guard:
+    name: Cookie-auth regression guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject sessionStorage and Authorization Bearer in frontend src
+        run: |
+          set -euo pipefail
+          matches=$(grep -RInE "sessionStorage|Authorization[^\n]*Bearer\s" frontend/webpages/src || true)
+          if [ -n "$matches" ]; then
+            echo "::error::Banned auth pattern reintroduced. See docs/adr/0001-cookie-auth.md"
+            echo "$matches"
+            exit 1
+          fi
+
+  notification-gate-guard:
+    name: Notification gate regression guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject EmailService injection outside notifications package
+        run: |
+          set -euo pipefail
+          matches=$(grep -RIln "EmailService" backend/src/main/java \
+            | grep -v "/notifications/" || true)
+          if [ -n "$matches" ]; then
+            echo "::error::EmailService referenced outside com.fairtix.notifications. Inject NotificationGate instead."
+            echo "$matches"
+            exit 1
+          fi
+
   frontend-test:
     name: Frontend Tests
     runs-on: ubuntu-latest
@@ -56,6 +99,14 @@ jobs:
 
       - name: Run tests with coverage
         run: npm test -- --coverage --watchAll=false
+
+      - name: Upload frontend coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/webpages/coverage/
+          if-no-files-found: warn
 
   dependency-scan:
     name: Dependency Vulnerability Scan

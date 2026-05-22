@@ -34,8 +34,14 @@ import static org.mockito.Mockito.verifyNoInteractions;
  *
  * Not @Transactional so the scheduler's transaction commits before email assertions run.
  * Each test uses a UUID-based email to avoid unique-constraint conflicts.
+ *
+ * Spring's auto-task-scheduler is disabled here because the test invokes
+ * {@code queueAdmissionScheduler.admitWaitingUsers()} explicitly. Without this
+ * override, Spring Boot 4.0.6's @Scheduled initial-delay defaults can fire the
+ * background tick during the test window, producing a duplicate admission email
+ * that fails the {@code verify(...).sendEmail(...)} expectation.
  */
-@SpringBootTest
+@SpringBootTest(properties = "spring.task.scheduling.enabled=false")
 class QueueAdmissionEmailIntegrationTest {
 
     @Autowired private QueueAdmissionScheduler queueAdmissionScheduler;

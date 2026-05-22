@@ -4,6 +4,7 @@ import com.fairtix.audit.infrastructure.AuditLogRepository;
 import com.fairtix.fraud.application.BehaviorAnalysisService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -32,24 +33,29 @@ public class BehaviorAnalysisSweepScheduler {
 
     @Scheduled(fixedDelayString = "${fraud.analysis.interval-ms:300000}")
     public void sweep() {
-        // Analyze users active in the last two sweep intervals to catch recent patterns
-        Instant since = Instant.now().minus(intervalMs * 2, ChronoUnit.MILLIS);
-        List<UUID> activeUserIds = auditLogRepository.findDistinctUserIdsByCreatedAtAfter(since);
+        MDC.put("requestId", "sched-sweep-" + UUID.randomUUID());
+        try {
+            // Analyze users active in the last two sweep intervals to catch recent patterns
+            Instant since = Instant.now().minus(intervalMs * 2, ChronoUnit.MILLIS);
+            List<UUID> activeUserIds = auditLogRepository.findDistinctUserIdsByCreatedAtAfter(since);
 
-        if (activeUserIds.isEmpty()) {
-            return;
-        }
-
-        log.debug("Fraud sweep: analyzing {} active users", activeUserIds.size());
-        int processed = 0;
-        for (UUID userId : activeUserIds) {
-            try {
-                behaviorAnalysisService.analyzeUser(userId);
-                processed++;
-            } catch (Exception ex) {
-                log.warn("Fraud sweep error for user {}: {}", userId, ex.getMessage());
+            if (activeUserIds.isEmpty()) {
+                return;
             }
+
+            log.debug("Fraud sweep: analyzing {} active users", activeUserIds.size());
+            int processed = 0;
+            for (UUID userId : activeUserIds) {
+                try {
+                    behaviorAnalysisService.analyzeUser(userId);
+                    processed++;
+                } catch (Exception ex) {
+                    log.warn("Fraud sweep error for user {}: {}", userId, ex.getMessage());
+                }
+            }
+            log.debug("Fraud sweep complete: processed {} users", processed);
+        } finally {
+            MDC.remove("requestId");
         }
-        log.debug("Fraud sweep complete: processed {} users", processed);
     }
 }

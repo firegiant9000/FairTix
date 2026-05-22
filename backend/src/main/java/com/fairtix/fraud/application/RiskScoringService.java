@@ -10,6 +10,7 @@ import com.fairtix.payments.domain.PaymentStatus;
 import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -117,7 +118,12 @@ public class RiskScoringService {
     @Scheduled(cron = "${fraud.score.decay-cron:0 0 2 * * *}")
     @Transactional
     public void runDecaySweep() {
-        riskScoreRepository.findAll().forEach(rs -> recalculate(rs.getUserId()));
+        MDC.put("requestId", "sched-runDecaySweep-" + UUID.randomUUID());
+        try {
+            riskScoreRepository.findAll().forEach(rs -> recalculate(rs.getUserId()));
+        } finally {
+            MDC.remove("requestId");
+        }
     }
 
     private int pointsForFlag(SuspiciousFlag flag) {

@@ -9,10 +9,9 @@ import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
-import com.fairtix.notifications.application.EmailService;
 import com.fairtix.notifications.application.EmailTemplateService;
-import com.fairtix.notifications.application.NotificationPreferenceService;
-import com.fairtix.notifications.domain.NotificationPreference;
+import com.fairtix.notifications.application.NotificationGate;
+import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.orders.domain.Order;
 import com.fairtix.orders.domain.OrderStatus;
 import com.fairtix.orders.infrastructure.OrderRepository;
@@ -60,9 +59,8 @@ public class OrderService {
   private final StripePaymentService stripePaymentService;
   private final QueueService queueService;
   private final AuditService auditService;
-  private final EmailService emailService;
+  private final NotificationGate notificationGate;
   private final EmailTemplateService emailTemplateService;
-  private final NotificationPreferenceService notificationPreferenceService;
 
   public OrderService(OrderRepository orderRepository,
       SeatHoldRepository seatHoldRepository,
@@ -74,9 +72,8 @@ public class OrderService {
       StripePaymentService stripePaymentService,
       QueueService queueService,
       AuditService auditService,
-      EmailService emailService,
-      EmailTemplateService emailTemplateService,
-      NotificationPreferenceService notificationPreferenceService) {
+      NotificationGate notificationGate,
+      EmailTemplateService emailTemplateService) {
     this.orderRepository = orderRepository;
     this.seatHoldRepository = seatHoldRepository;
     this.seatRepository = seatRepository;
@@ -87,9 +84,8 @@ public class OrderService {
     this.stripePaymentService = stripePaymentService;
     this.queueService = queueService;
     this.auditService = auditService;
-    this.emailService = emailService;
+    this.notificationGate = notificationGate;
     this.emailTemplateService = emailTemplateService;
-    this.notificationPreferenceService = notificationPreferenceService;
   }
 
   /**
@@ -274,11 +270,9 @@ public class OrderService {
    */
   private void sendOrderConfirmationEmail(User user, Order order, List<SeatHold> holds) {
     try {
-      NotificationPreference prefs = notificationPreferenceService.getPreferences(user.getId());
-      if (!prefs.isEmailOrder()) return;
-
       // Capture all data needed for the email now (entities may be detached after commit)
       Event event = holds.get(0).getSeat().getEvent();
+      UUID userId = user.getId();
       String toEmail = user.getEmail();
       String orderId = order.getId().toString();
       String eventTitle = event.getTitle();
@@ -300,7 +294,8 @@ public class OrderService {
           try {
             String body = emailTemplateService.buildOrderConfirmationEmail(
                 toEmail, orderId, eventTitle, venueName, eventDate, seatLines, total);
-            emailService.sendEmail(toEmail, "Your FairTix order is confirmed!", body);
+            notificationGate.sendEmail(userId, NotificationCategory.ORDER,
+                toEmail, "Your FairTix order is confirmed!", body);
           } catch (Exception ex) {
             log.warn("Failed to send order confirmation email for order {}: {}", orderId, ex.getMessage());
           }
