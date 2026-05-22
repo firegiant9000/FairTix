@@ -1,0 +1,29 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - us-west1-docker.pkg.dev/$PROJECT_ID/fairtix/backend:$COMMIT_SHA
+      - -t
+      - us-west1-docker.pkg.dev/$PROJECT_ID/fairtix/backend:latest
+      - ./backend
+
+  - name: gcr.io/cloud-builders/docker
+    args: [push, --all-tags, us-west1-docker.pkg.dev/$PROJECT_ID/fairtix/backend]
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - fairtix-backend
+      - --image=us-west1-docker.pkg.dev/$PROJECT_ID/fairtix/backend:$COMMIT_SHA
+      - --region=us-west1
+      - --platform=managed
+
+images:
+  - us-west1-docker.pkg.dev/$PROJECT_ID/fairtix/backend:$COMMIT_SHA
+  - us-west1-docker.pkg.dev/$PROJECT_ID/fairtix/backend:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
