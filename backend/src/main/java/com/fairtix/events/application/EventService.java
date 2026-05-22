@@ -9,7 +9,12 @@ import com.fairtix.inventory.domain.HoldStatus;
 import com.fairtix.notifications.application.EmailTemplateService;
 import com.fairtix.notifications.application.NotificationGate;
 import com.fairtix.notifications.domain.NotificationCategory;
+import com.fairtix.organizations.domain.OrgPermission;
+import com.fairtix.organizations.domain.OrganizationMember;
+import com.fairtix.organizations.infrastructure.OrganizationMemberRepository;
 import com.fairtix.refunds.application.RefundService;
+import com.fairtix.users.domain.Role;
+import com.fairtix.users.infrastructure.UserRepository;
 import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
@@ -54,13 +59,17 @@ public class EventService {
   private final RefundService refundService;
   private final EmailTemplateService emailTemplateService;
   private final NotificationGate notificationGate;
+  private final OrganizationMemberRepository organizationMemberRepository;
+  private final UserRepository userRepository;
 
   public EventService(EventRepository repository, VenueRepository venueRepository,
       PerformerRepository performerRepository,
       SeatHoldRepository seatHoldRepository, TicketRepository ticketRepository,
       RefundService refundService,
       EmailTemplateService emailTemplateService,
-      NotificationGate notificationGate) {
+      NotificationGate notificationGate,
+      OrganizationMemberRepository organizationMemberRepository,
+      UserRepository userRepository) {
     this.repository = repository;
     this.venueRepository = venueRepository;
     this.performerRepository = performerRepository;
@@ -69,6 +78,8 @@ public class EventService {
     this.refundService = refundService;
     this.emailTemplateService = emailTemplateService;
     this.notificationGate = notificationGate;
+    this.organizationMemberRepository = organizationMemberRepository;
+    this.userRepository = userRepository;
   }
 
   public Event createEvent(String title, Instant startTime, UUID venueId, UUID organizerId,
@@ -260,7 +271,57 @@ public class EventService {
     return repository.findAll(spec, pageable);
   }
 
+  /**
+   * Checks that {@code callerId} may write to {@code event}. Resolution order:
+   * <ol>
+   *   <li>Platform admin always wins.</li>
+   *   <li>If the event is bound to an organization, the caller must be a member
+   *       whose role carries {@link OrgPermission#EVENTS_WRITE}.</li>
+   *   <li>Legacy fallback: if the event has no organization yet (an orphan from
+   *       before V33 ran, or one created via the legacy API), the caller must
+   *       match the original {@code organizer_id} the way the pre-org model worked.</li>
+   * </ol>
+   * Anything else throws {@link org.springframework.security.access.AccessDeniedException}.
+   */
+  /**
+   * Checks that {@code callerId} may write to {@code event}. Resolution order:
+   * <ol>
+   *   <li>Platform admin always wins (looked up by user id, not by Spring Security
+   *       context, so the check works inside transactional service calls).</li>
+   *   <li>If the event is bound to an organization, the caller must be a member
+   *       whose role carries {@link OrgPermission#EVENTS_WRITE}.</li>
+   *   <li>Legacy fallback: if the event has no organization yet (orphan from
+   *       before V33 ran, or one created via the legacy API), match the original
+   *       {@code organizer_id} the way the pre-org model worked. {@code null}
+   *       organizerId + {@code null} callerId is allowed to preserve the pre-M1
+   *       service-layer behaviour exercised by older tests.</li>
+   * </ol>
+   */
   private void verifyOwnership(Event event, UUID callerId) {
+    if (callerId != null && userRepository.findById(callerId)
+        .map(u -> u.getRole() == Role.ADMIN)
+        .orElse(false)) {
+      return;
+    }
+
+    UUID orgId = event.getOrganizationId();
+    if (orgId != null) {
+      if (callerId == null) {
+        throw new org.springframework.security.access.AccessDeniedException(
+            "Authentication required to modify this event");
+      }
+      OrganizationMember member = organizationMemberRepository
+          .findByOrganizationIdAndUserId(orgId, callerId)
+          .orElseThrow(() -> new org.springframework.security.access.AccessDeniedException(
+              "You are not a member of this event's organization"));
+      if (!member.getRole().has(OrgPermission.EVENTS_WRITE)) {
+        throw new org.springframework.security.access.AccessDeniedException(
+            "Your role (" + member.getRole() + ") does not allow modifying events");
+      }
+      return;
+    }
+
+    // Orphan event. Fall back to the pre-org owner check.
     if (event.getOrganizerId() != null && !event.getOrganizerId().equals(callerId)) {
       throw new org.springframework.security.access.AccessDeniedException(
           "You do not own this event");
