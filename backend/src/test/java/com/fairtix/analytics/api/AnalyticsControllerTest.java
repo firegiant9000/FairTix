@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +36,9 @@ class AnalyticsControllerTest {
   @Autowired
   private SeatService seatService;
 
+  @Autowired
+  private JdbcTemplate jdbcTemplate;
+
   private MockMvc mockMvc;
 
   @BeforeEach
@@ -42,6 +46,27 @@ class AnalyticsControllerTest {
     mockMvc = MockMvcBuilders.webAppContextSetup(context)
         .apply(springSecurity())
         .build();
+
+    // H2 is shared across test classes within a JVM. Some upstream integration
+    // suites (notably QueueAdmissionEmailIntegrationTest) are intentionally
+    // non-@Transactional so the scheduler's commit is visible, which means
+    // they leave committed events/seats/orders behind. Wipe the analytics
+    // surface deterministically before each assertion. REFERENTIAL_INTEGRITY
+    // FALSE bypasses the FK web (orders → events, tickets → seats, etc.)
+    // without forcing us to enumerate the exact deletion order.
+    jdbcTemplate.execute("SET REFERENTIAL_INTEGRITY FALSE");
+    try {
+      jdbcTemplate.execute("DELETE FROM seat_holds");
+      jdbcTemplate.execute("DELETE FROM tickets");
+      jdbcTemplate.execute("DELETE FROM order_holds");
+      jdbcTemplate.execute("DELETE FROM orders");
+      jdbcTemplate.execute("DELETE FROM queue_entries");
+      jdbcTemplate.execute("DELETE FROM seats");
+      jdbcTemplate.execute("DELETE FROM event_performers");
+      jdbcTemplate.execute("DELETE FROM events");
+    } finally {
+      jdbcTemplate.execute("SET REFERENTIAL_INTEGRITY TRUE");
+    }
   }
 
   @Test
