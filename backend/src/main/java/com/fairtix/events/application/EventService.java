@@ -10,8 +10,10 @@ import com.fairtix.notifications.application.EmailTemplateService;
 import com.fairtix.notifications.application.NotificationGate;
 import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.organizations.domain.OrgPermission;
+import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.domain.OrganizationMember;
 import com.fairtix.organizations.infrastructure.OrganizationMemberRepository;
+import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.refunds.application.RefundService;
 import com.fairtix.users.domain.Role;
 import com.fairtix.users.infrastructure.UserRepository;
@@ -60,6 +62,7 @@ public class EventService {
   private final EmailTemplateService emailTemplateService;
   private final NotificationGate notificationGate;
   private final OrganizationMemberRepository organizationMemberRepository;
+  private final OrganizationRepository organizationRepository;
   private final UserRepository userRepository;
 
   public EventService(EventRepository repository, VenueRepository venueRepository,
@@ -69,6 +72,7 @@ public class EventService {
       EmailTemplateService emailTemplateService,
       NotificationGate notificationGate,
       OrganizationMemberRepository organizationMemberRepository,
+      OrganizationRepository organizationRepository,
       UserRepository userRepository) {
     this.repository = repository;
     this.venueRepository = venueRepository;
@@ -79,6 +83,7 @@ public class EventService {
     this.emailTemplateService = emailTemplateService;
     this.notificationGate = notificationGate;
     this.organizationMemberRepository = organizationMemberRepository;
+    this.organizationRepository = organizationRepository;
     this.userRepository = userRepository;
   }
 
@@ -156,6 +161,18 @@ public class EventService {
     Event event = repository.findById(eventId)
         .orElseThrow(() -> new ResourceNotFoundException("Event not found: " + eventId));
     verifyOwnership(event, callerId);
+    // M2-07: organizers cannot publish until Stripe Connect KYC is complete.
+    // Legacy events with no organization_id (pre-M1 backfill edge case) skip
+    // the check rather than block; new events always carry an org.
+    UUID orgId = event.getOrganizationId();
+    if (orgId != null) {
+      Organization org = organizationRepository.findById(orgId).orElse(null);
+      if (org != null && org.getStripeConnectAccountId() != null && !org.isStripeChargesEnabled()) {
+        throw new IllegalStateException(
+            "Stripe Connect onboarding is incomplete for this organization. "
+                + "Finish your Stripe setup before publishing events.");
+      }
+    }
     event.publish();
     return event;
   }
