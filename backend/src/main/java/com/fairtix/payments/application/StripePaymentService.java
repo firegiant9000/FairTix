@@ -8,10 +8,13 @@ import com.stripe.Stripe;
 import com.stripe.exception.CardException;
 import com.stripe.exception.StripeException;
 import com.stripe.model.PaymentIntent;
+import com.stripe.model.Refund;
 import com.stripe.param.PaymentIntentCreateParams;
+import com.stripe.param.RefundCreateParams;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -48,11 +51,14 @@ public class StripePaymentService {
 
   public String createPaymentIntent(long amountCents, String currency) {
     try {
-      PaymentIntentCreateParams params = PaymentIntentCreateParams.builder()
+      PaymentIntentCreateParams.Builder builder = PaymentIntentCreateParams.builder()
           .setAmount(amountCents)
-          .setCurrency(currency)
-          .build();
-      PaymentIntent intent = PaymentIntent.create(params);
+          .setCurrency(currency);
+      String requestId = MDC.get("requestId");
+      if (requestId != null && !requestId.isBlank()) {
+        builder.putMetadata("requestId", requestId);
+      }
+      PaymentIntent intent = PaymentIntent.create(builder.build());
       return intent.getClientSecret();
     } catch (CardException e) {
       throw new PaymentDeclinedException(
@@ -73,6 +79,28 @@ public class StripePaymentService {
     } catch (StripeException e) {
       throw new RuntimeException("Failed to verify Stripe payment: " + e.getMessage(), e);
     }
+  }
+
+  public Refund createRefund(String paymentIntentId, long amountCents, String reason) {
+    try {
+      RefundCreateParams.Builder builder = RefundCreateParams.builder()
+          .setPaymentIntent(paymentIntentId)
+          .setAmount(amountCents);
+      if (reason != null && !reason.isBlank()) {
+        builder.putMetadata("reason", reason);
+      }
+      String requestId = MDC.get("requestId");
+      if (requestId != null && !requestId.isBlank()) {
+        builder.putMetadata("requestId", requestId);
+      }
+      return Refund.create(builder.build());
+    } catch (StripeException e) {
+      throw new RuntimeException("Failed to create Stripe refund: " + e.getMessage(), e);
+    }
+  }
+
+  public boolean isStripeEnabled() {
+    return stripeEnabled;
   }
 
   public PaymentRecord recordStripePayment(String paymentIntentId, UUID orderId, UUID userId,
