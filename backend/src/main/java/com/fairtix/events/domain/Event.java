@@ -75,6 +75,44 @@ public class Event {
   @Column(name = "cancellation_reason")
   private String cancellationReason;
 
+  @Column(name = "comp_limit")
+  private Integer compLimit;
+
+  // --- M2-20: per-event page customization ----------------------------------
+
+  @Column(length = 140)
+  private String slug;
+
+  @Column(name = "hero_image_url", length = 1024)
+  private String heroImageUrl;
+
+  @Column(name = "description_markdown", columnDefinition = "TEXT")
+  private String descriptionMarkdown;
+
+  @Column(name = "doors_open_time")
+  private Instant doorsOpenTime;
+
+  @Column(name = "set_times", columnDefinition = "TEXT")
+  private String setTimes;
+
+  @Column(name = "age_restriction", length = 16)
+  private String ageRestriction;
+
+  @Column(name = "accessibility_info", columnDefinition = "TEXT")
+  private String accessibilityInfo;
+
+  @Column(name = "accessibility_tags", columnDefinition = "TEXT")
+  private String accessibilityTags;
+
+  @Column(name = "parking_info", columnDefinition = "TEXT")
+  private String parkingInfo;
+
+  @Column(name = "transit_info", columnDefinition = "TEXT")
+  private String transitInfo;
+
+  @Column(name = "seo_description", length = 320)
+  private String seoDescription;
+
   @ManyToMany(fetch = FetchType.LAZY)
   @JoinTable(
       name = "event_performers",
@@ -229,4 +267,53 @@ public class Event {
   public List<Performer> getPerformers() {
     return performers;
   }
+
+  public Integer getCompLimit() {
+    return compLimit;
+  }
+
+  public void setCompLimit(Integer compLimit) {
+    this.compLimit = compLimit;
+  }
+
+  // --- M2-20 accessors ------------------------------------------------------
+
+  public String getSlug() { return slug; }
+  public void setSlug(String slug) { this.slug = slug; }
+
+  public String getHeroImageUrl() { return heroImageUrl; }
+  public void setHeroImageUrl(String heroImageUrl) { this.heroImageUrl = heroImageUrl; }
+
+  public String getDescriptionMarkdown() { return descriptionMarkdown; }
+  public void setDescriptionMarkdown(String descriptionMarkdown) {
+    this.descriptionMarkdown = descriptionMarkdown;
+  }
+
+  public Instant getDoorsOpenTime() { return doorsOpenTime; }
+  public void setDoorsOpenTime(Instant doorsOpenTime) { this.doorsOpenTime = doorsOpenTime; }
+
+  public String getSetTimes() { return setTimes; }
+  public void setSetTimes(String setTimes) { this.setTimes = setTimes; }
+
+  public String getAgeRestriction() { return ageRestriction; }
+  public void setAgeRestriction(String ageRestriction) { this.ageRestriction = ageRestriction; }
+
+  public String getAccessibilityInfo() { return accessibilityInfo; }
+  public void setAccessibilityInfo(String accessibilityInfo) {
+    this.accessibilityInfo = accessibilityInfo;
+  }
+
+  public String getAccessibilityTags() { return accessibilityTags; }
+  public void setAccessibilityTags(String accessibilityTags) {
+    this.accessibilityTags = accessibilityTags;
+  }
+
+  public String getParkingInfo() { return parkingInfo; }
+  public void setParkingInfo(String parkingInfo) { this.parkingInfo = parkingInfo; }
+
+  public String getTransitInfo() { return transitInfo; }
+  public void setTransitInfo(String transitInfo) { this.transitInfo = transitInfo; }
+
+  public String getSeoDescription() { return seoDescription; }
+  public void setSeoDescription(String seoDescription) { this.seoDescription = seoDescription; }
 }

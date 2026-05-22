@@ -172,6 +172,20 @@ public class EventService {
             "Stripe Connect onboarding is incomplete for this organization. "
                 + "Finish your Stripe setup before publishing events.");
       }
+      // Phase H: only ACTIVE orgs can publish. PENDING_REVIEW awaits admin sign-off.
+      // Pre-M2 orgs in PENDING are grandfathered as ACTIVE for back-compat.
+      if (org != null) {
+        var status = org.getStatus();
+        if (status == com.fairtix.organizations.domain.OrganizationStatus.PENDING_REVIEW) {
+          throw new IllegalStateException(
+              "Your organization is awaiting admin approval and cannot publish events yet.");
+        }
+        if (status == com.fairtix.organizations.domain.OrganizationStatus.REJECTED
+            || status == com.fairtix.organizations.domain.OrganizationStatus.SUSPENDED) {
+          throw new IllegalStateException(
+              "This organization is not active and cannot publish events.");
+        }
+      }
     }
     event.publish();
     return event;
