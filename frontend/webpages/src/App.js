@@ -105,9 +105,12 @@ function App() {
               </Route>
             </Route>
 
-            {/* Organizer routes — own layout, requires org membership */}
-            <Route path="/organizer/onboarding" element={<OrganizerOnboarding />} />
+            {/* Organizer routes — own layout, requires org membership.
+                Onboarding lives inside the same OrganizationProvider so the
+                useOrganization() hook resolves; OrganizerRoute itself routes
+                users with zero orgs to /organizer/onboarding. */}
             <Route element={<OrganizerRoute />}>
+              <Route path="/organizer/onboarding" element={<OrganizerOnboarding />} />
               <Route path="/organizer" element={<OrganizerLayout />}>
                 <Route index element={<OrganizerDashboard />} />
                 <Route path="events" element={<OrganizerPlaceholder title="Events" description="Cross-event list and create-event wizard land in M2." />} />

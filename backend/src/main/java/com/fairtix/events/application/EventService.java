@@ -84,14 +84,38 @@ public class EventService {
 
   public Event createEvent(String title, Instant startTime, UUID venueId, UUID organizerId,
       boolean queueRequired, Integer queueCapacity, Integer maxTicketsPerUser) {
+    return createEvent(title, startTime, venueId, organizerId,
+        resolveDefaultOrganizationId(organizerId),
+        queueRequired, queueCapacity, maxTicketsPerUser);
+  }
+
+  public Event createEvent(String title, Instant startTime, UUID venueId, UUID organizerId,
+      UUID organizationId,
+      boolean queueRequired, Integer queueCapacity, Integer maxTicketsPerUser) {
     Venue venue = venueId != null
         ? venueRepository.findById(venueId)
             .orElseThrow(() -> new ResourceNotFoundException("Venue not found: " + venueId))
         : null;
     Event event = new Event(title, venue, startTime, organizerId);
+    if (organizationId != null) {
+      event.setOrganizationId(organizationId);
+    }
     event.updateQueueSettings(queueRequired, queueCapacity);
     event.setMaxTicketsPerUser(maxTicketsPerUser);
     return repository.save(event);
+  }
+
+  /**
+   * Best-effort default: if the organizer is a member of exactly one organization,
+   * attach the event there so it isn't orphaned. Multi-org members must call the
+   * 5-arg overload with an explicit organization to avoid ambiguity. Returns null
+   * when no membership exists; the event becomes an orphan and verifyOwnership
+   * falls back to the legacy organizer_id check.
+   */
+  private UUID resolveDefaultOrganizationId(UUID organizerId) {
+    if (organizerId == null) return null;
+    var memberships = organizationMemberRepository.findAllByUserId(organizerId);
+    return memberships.size() == 1 ? memberships.get(0).getOrganizationId() : null;
   }
 
   public Event getEvent(UUID id) {
