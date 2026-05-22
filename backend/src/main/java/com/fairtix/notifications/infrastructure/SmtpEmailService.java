@@ -5,6 +5,7 @@ import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.mail.MailException;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
@@ -30,6 +31,10 @@ public class SmtpEmailService implements EmailService {
             helper.setTo(to);
             helper.setSubject(subject);
             helper.setText(htmlBody, true);
+            String requestId = MDC.get("requestId");
+            if (requestId != null && !requestId.isBlank()) {
+                message.setHeader("X-Request-Id", requestId);
+            }
             mailSender.send(message);
             log.info("Email sent to={} subject=\"{}\"", to, subject);
         } catch (MessagingException | MailException e) {
