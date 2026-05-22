@@ -618,6 +618,15 @@ deferred deliberately, blocked on a human decision, or not worth the M1 budget.
 Each carries an owner-action and a rough effort estimate so M2 picks them up
 without rediscovery.
 
+> **Explicit deferrals (logged 2026-05-21):** the staging infra deploy and the
+> Stripe refund integration test are **intentionally scheduled late**, not
+> forgotten. Staging only becomes valuable once at least one outside reviewer
+> needs to look at the work; until then the local docker-compose stack is
+> faster to iterate against. The Stripe integration test depends on a test
+> secret being added to GitHub Actions, which is a one-time operational step
+> that pairs cleanly with the staging Stripe webhook setup. Plan to land both
+> together in the first M2 sprint, not as part of the M1 PR train.
+
 ### Operational follow-ups (block staging cutover, not code)
 
 | Item | Owner action | Effort |
