@@ -33,7 +33,7 @@ If we ever relax `SameSite` (e.g. for a 3rd-party embed) we must re-enable CSRF 
 
 ## Cross-subdomain note
 
-Staging (#165) splits `staging.fairtix.io` (frontend) from `api.staging.fairtix.io` (backend). For cookies to flow across that boundary the `Domain` attribute must be set to `.fairtix.io` and `SameSite=None; Secure` must be used. Easier alternative: reverse-proxy `/api` from the frontend host so both share an origin and `SameSite=Strict` works unchanged. We have not committed to either path yet — decide as part of #165.
+Staging (#165) splits `staging.fairtix.io` (frontend) from `api.staging.fairtix.io` (backend). The two viable shapes — `.fairtix.io`-scoped cookies with `SameSite=None; Secure`, vs reverse-proxying `/api` through the frontend host so both share an origin — are resolved in [ADR 0002](0002-cross-subdomain-cookies.md). **The reverse-proxy path was chosen**, which preserves `SameSite=Strict` and keeps the cookie scoped to the SPA host.
 
 ## Enforcement
 

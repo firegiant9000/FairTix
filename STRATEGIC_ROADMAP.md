@@ -235,88 +235,75 @@ The rest of this document assumes **Path A**, with Path C deliverables baked in 
 - [ ] Replace the school-style README with a positioning README (one-liner, who it's for, how to run)
 - [ ] Write one paragraph in this file under "Customer hypothesis": who is the venue, what do they currently use, what do they pay, why would they switch
 
-### Phase 1 — Production-blocking fixes (Weeks 1–3)
+### Phase 1 — Production-blocking fixes (Weeks 1–3) ✅ code complete
 
-**Goal:** Stop shipping a product with known correctness bugs.
+_Audited 2026-05-22. M1 code work landed in `feat/m1-phase-1` (18 commits, issues #161–#169). Verified files exist: V30 (audit request_id), V31 (refund.stripe_refund_id), V32–V36 (org tables + backfill), `RequestLoggingFilter` (MDC), `RefundService` (Stripe `Refund.create`), `NotificationGate`, `jacoco` in `backend/pom.xml`, `docs/runbook-staging.md`._
 
-| Week | Work | Why |
+| Item | Status |
+|---|---|
+| ✅ Stripe refund execution (`RefundService` + `charge.refunded` webhook + `V31` stripe_refund_id) | done |
+| ✅ `NotificationGate` enforces `NotificationPreference` at every send site | done |
+| ✅ Correlation IDs via `RequestLoggingFilter` + MDC, propagated to audit + Stripe metadata | done |
+| ✅ Cookie-auth migration — sessionStorage / bearer paths removed from frontend | done |
+| ✅ JaCoCo + jest coverage gates wired in CI (`jacoco.line.minimum` in pom) | done |
+| ✅ Staging runbook authored (`docs/runbook-staging.md`) | done |
+
+**Remaining M1 gaps** (operational, not code — pair with first M2 staging sprint):
+
+1. **Push `feat/m1-phase-1` and open PRs.** CI has not yet exercised the new gates against real artifacts. Capture the real JaCoCo number and baseline `jacoco.line.minimum` to baseline-minus-1%. _~1h._
+2. **Deploy staging.** Railway + Neon + Upstash + Mailtrap + Stripe test webhook per the runbook; verify `/_health/deep`. _~4–6h._
+3. **Cookie-domain ADR.** Decide between `.fairtix.io` cookie scope (`SameSite=None; Secure`) vs reverse-proxying `/api` through Netlify; document in ADR 0001. _~1h._
+4. **Prod-restore migration test.** Run V32–V36 against an anonymized prod restore before merging to `main`; V36 fails loudly if any org lacks an OWNER. _~2h._
+5. **Stripe refund integration test in test mode.** Blocked on `STRIPE_TEST_SECRET_KEY` in GitHub Actions secrets; unit math is already locked. _~2h._
+6. **60-second smoke screencap** (signup → create org → order → refund) once staging is live. _~30m._
+7. **Frontend RTL tests for organizer routes** — defer until M2 wizard surface settles. _~3h._
+
+**Exit criteria** (unchanged): refund test in staging returns money; email opt-outs respected; CI fails on coverage regressions. Items 1–6 are the path to closing the criteria.
+
+### Phase 2 — Organizer self-service & box office (Weeks 4–8) ✅ code complete
+
+_Audited & remediated 2026-05-22 on branch `feat/m2-main`. **22 done / 3 partial / 0 blocker.** Backend full-suite: **439 / 439 pass.** Full per-issue status is in [`M2_IMPLEMENTATION_PLAN.md`](M2_IMPLEMENTATION_PLAN.md); summary below._
+
+| Section | Item | Status |
 |---|---|---|
-| 1 | Wire Stripe refund API call from `RefundService.approveRefund()` and Stripe webhook for `charge.refunded` | Currently approving a refund does not actually refund the customer. This is the #1 credibility bug. |
-| 1 | Enforce `NotificationPreference` in every email send site | Users can opt out but still receive mail today |
-| 2 | Add correlation IDs (request ID → audit log → email → Stripe metadata) via `MDC` and a `RequestIdFilter` | Required for any future support workflow |
-| 2 | Finish the cookie auth migration — remove remaining sessionStorage and bearer-token paths in the frontend | Half-state is a recurring bug source |
-| 3 | Stand up staging env on Railway, point a `staging.` subdomain at it, automate deploy on `develop` branch | All future work goes through staging first |
-| 3 | Add jest + JUnit coverage to the existing CI gate (fail PR if coverage drops) | Lock in current quality before adding features |
+| 2A Role/ACL | ✅ M2-01 6-role `OrgRole` + 19 `OrgPermission` keys + `OrgScopeInterceptor` | done |
+| 2A Role/ACL | ✅ M2-02 `@OrgScoped` lint covers all 17 M2 controllers (caught missing annotation) | done |
+| 2B Dashboard | ✅ M2-03 `/organizer` shell + sidebar + route guard | done |
+| 2B Dashboard | 🟡 M2-04 Widgets render; **gap:** 30s per-org cache + missing indexes (`tickets.user_id`, `tickets.event_id`, `orders.organization_id`, `seat_holds.user_id`) — perf, not correctness | partial |
+| 2B Dashboard | 🟡 M2-05 Per-event aggregation + `paid_tickets` view; **gap:** attendee CSV export + velocity chart UI | partial |
+| 2C Connect | ✅ M2-06 Standard onboarding, US-only gate, account fields persisted | done |
+| 2C Connect | 🟡 M2-07 Plan→bps (Free 250 / Pro 150 / Scale 100), `on_behalf_of`, refund passes `reverse_transfer`. **Gap:** partial-refund Stripe-test-mode integration test (needs `STRIPE_TEST_SECRET_KEY` in GHA) | partial |
+| 2C Connect | ✅ M2-08 Connect panel: account status + payouts list | done |
+| 2D Box office | ✅ M2-09 `BoxOfficeController` + tablet UI; uses `SeatHoldService` (does not bypass); V40 sessions/sales | done |
+| 2D Box office | 🟡 M2-10 Server-side Terminal flow complete (connection-token, CardPresent PaymentIntent). **Gap:** load Stripe Terminal JS SDK + reader pairing — blocked on WisePOS E hardware | partial |
+| 2D Box office | ✅ M2-11 End-of-night reconciliation: variance, sign-off audit, close flow | done |
+| 2E Comps/holds | ✅ M2-12 `TicketKind` enum + V41 check constraint + `CompService` + `paid_tickets` view | done |
+| 2E Comps/holds | ✅ M2-13 `EventHold` + `HoldReleaseScheduler` + bulk operations UI | done |
+| 2E Comps/holds | ✅ M2-14 Will-call `/will-call/print` with `sort` + `filter` params; browser print-to-PDF | done |
+| 2F Reports | ✅ M2-15 DOS report; `ReportRendererReconciliationTest` enforces CSV-vs-HTML parity to the penny (caught a real label drift) | done |
+| 2F Reports | ✅ M2-16 Settlement + signable export + exhaustive `switch` (build fails on new `SplitType` without handling) | done |
+| 2F Reports | ✅ M2-17 Payout report: `stripe_payouts` cache + webhook sync + 30-day view | done |
+| 2F Reports | ✅ M2-18 `TaxReportService.threshold/yearlyExport` + `TaxThresholdAlertScheduler` (daily 02:15 UTC, dedupes 80%/100% crossings) + `EinCipher` AES-256-GCM | done |
+| 2G Branding | ✅ M2-19 Org branding: logo, primary color, sender, reply-to, statement descriptor (22-char check), dark mode | done |
+| 2G Branding | ✅ M2-20 Event page customization + `MarkdownRenderer` (escape-then-whitelist) + 17-payload OWASP XSS regression suite | done |
+| 2G Branding | ✅ M2-21 SEO: JSON-LD `Event` + OG/Twitter card + sitemap + 301 redirects + robots.txt | done |
+| 2G Branding | ✅ M2-22 Custom domain CNAME via `JndiDnsTxtResolver` + uniqueness + daily health check (Caddy/TLS is infra) | done |
+| 2G Branding | ✅ M2-23 Embed widget `/embed.js` + iframe postMessage auto-resize + origin check | done |
+| 2H Onboarding | ✅ M2-24 4-step signup wizard + admin approval queue; new orgs land `PENDING` (bug fix) | done |
+| 2H Onboarding | ✅ M2-25 `OrgSalesCapService` tier progression ($1k → $10k → unlimited) + `org_sales_ledger` + `SalesCapExceededException` → 429 | done |
 
-**Exit criteria:** A refund test in staging actually returns money to the test card. Email opt-outs are respected. CI fails on coverage regressions.
+**Cross-cutting:** audit coverage ✅ (every mutation `REQUIRES_NEW`), correlation IDs ✅, migration discipline ✅ (V42 collision resolved → V42/V43/V44), `@OrgScoped` lint ✅ (17 controllers), JaCoCo gate ⏭ (rebaseline on first staging CI), frontend RTL 🟡, staging smoke ⏭.
 
-### Phase 2 — Organizer self-service & box office (Weeks 4–8)
+**M2 exit criteria** — DoD status:
 
-**Goal:** A venue can sign up, list an event, sell tickets at the door and online, settle the show, pay the artist, and never talk to you. This is the largest single piece of work in the plan and the part that genuinely differentiates you from Eventbrite. Budget conservatively — likely runs to 5 weeks.
+- [x] Sign up as organizer, complete Stripe Connect onboarding, create venue+event+seats, issue 3 comps, hold 5 seats, sell 10 tickets (cash + comp + card path)
+- [x] DOS report ties to the penny — enforced by automated CSV-vs-HTML reconciliation test
+- [ ] **Scan at the door** — placeholder; `qr_payload` is scannable-shaped, real endpoint is M3 / Phase 3
+- [ ] **Watch Stripe pay the organizer on test-mode schedule** — needs staging webhooks live
+- [ ] **Card path at box office** — server-side ready, frontend Terminal SDK awaits hardware (M2-10)
+- [ ] **Staging end-to-end 60s screencap** — owed once staging is up
 
-#### 2A. Role model & ACL
-
-- Add `ORGANIZER` role plus staff sub-roles: `OWNER`, `MANAGER`, `BOX_OFFICE`, `DOOR`, `MARKETING`, `ACCOUNTANT`. Each role maps to a permission set (events.write, sales.read, payouts.read, scanner.access, etc.).
-- New tables (Flyway): `organizations`, `organization_members` (userId, orgId, role), `organization_invites` (email, role, token, expiresAt).
-- ACL middleware: every existing controller method that takes an event/venue id must verify the requester belongs to that org. Add `@OrgScoped` annotation + interceptor pattern.
-- Refactor existing `organizer_id` on events to `organization_id` (organizations can have multiple users); keep a backfill migration that creates a 1-person org per existing organizer.
-
-#### 2B. Organizer dashboard
-
-- `/organizer` route tree: dashboard, events list, event detail, sales, attendees, holds, comps, payouts, settings, team, integrations.
-- Dashboard widgets: today's shows, week's revenue, refund queue depth, recently sold, top events by velocity, upcoming hold release reminders.
-- Per-event view: sold/held/available/comped breakdown, sales velocity chart, attendee list, scan progress (live during event), revenue + fees + payout estimate.
-
-#### 2C. Stripe Connect
-
-- Stripe Connect Standard accounts (organizer onboards via Stripe-hosted flow).
-- `application_fee_amount` on every PaymentIntent = platform fee per tier.
-- Webhook handlers: `account.updated`, `account.application.deauthorized`, `payout.paid`, `payout.failed`, `charge.dispute.created`.
-- Connect dashboard view inside organizer panel: account status, pending balance, next payout date, payout history.
-- Reverse fees on refund (Stripe handles automatically via `reverse_transfer: true`).
-
-#### 2D. Box office mode (in-person sales)
-
-This is what Eventbrite doesn't do well and is a strong wedge.
-
-- `/box-office` route, optimized for tablet (iPad/Surface) used at the venue door or ticket window.
-- Walk-up cash sales: pick event → pick seat or GA → "Cash" or "Card" → email/SMS receipt optional → ticket emitted.
-- Card sales via Stripe Terminal SDK (BBPOS WisePOS or Stripe-built reader). Requires Stripe Terminal location setup.
-- Comp tickets issued on-the-spot.
-- Will-call: search attendee by last name, mark "claimed," print or display QR.
-- End-of-night reconciliation: cash drawer total, card total, expected vs actual, manager sign-off.
-
-#### 2E. Comps, holds, will-call
-
-- `tickets.kind` enum: `PAID`, `COMP`, `HOLD_ARTIST`, `HOLD_PRESS`, `HOLD_HOUSE`. New Flyway migration.
-- Comp issuance UI: pick seats → reason → recipient name/email → optional comp limit per show.
-- Hold lists: artist holds (configurable per artist contract), press holds, house holds. Holds don't fire payment, don't appear in sales count, can be converted to comps or released back to inventory.
-- Will-call print queue: PDF generator (one ticket per page, QR + name + seat + event), batch print at door.
-
-#### 2F. Settlement & day-of-show reports
-
-Industry-standard reports artists and accountants expect.
-
-- **Day-of-show (DOS) report:** sold count by tier, comped count, held count, gross revenue, taxes collected, refunds, fees, net to venue.
-- **Settlement report:** ticket counts, gross revenue, less platform fee, less Stripe fee, less venue's promoter cut, less taxes, equals artist payout. Exportable PDF + CSV. Signable (e-signature stub for v1, DocuSign integration later).
-- **Payout report:** rolling 30-day view of Stripe payouts mapped to events.
-- **Tax helper:** 1099-K threshold tracking per organization, state sales tax breakdown per event (configurable rate per venue), end-of-year export.
-
-#### 2G. Custom branding & event pages
-
-- Per-org branding: logo, primary color, custom email sender, reply-to address.
-- Per-event page customization: hero image, description (rich text), performer bios (already have model), set times, doors-open time, age restriction (`21+`, `18+`, `All Ages`), accessibility info, parking info.
-- SEO: schema.org `Event` JSON-LD on each page, OG cards, semantic slug (`/e/blue-note/coltrane-tribute-2026-08-12`).
-- Custom domain support (CNAME to `yourvenue.fairtix.io` → eventually `tickets.yourvenue.com`). Cloudflare for Platforms or a simpler Caddy reverse-proxy works for v1.
-- Embed widget: `<script src="fairtix.io/embed.js" data-org="blue-note"></script>` renders upcoming events on the venue's own website.
-
-#### 2H. Onboarding & vetting
-
-- Signup → email verify → Stripe Connect onboarding → org details (name, address, EIN if collecting) → first event wizard with sensible defaults.
-- Admin sees an "Organizations" approval queue. Manual approval for the first ~50 customers to prevent fraud (someone signs up, sells fake tickets, vanishes with the money before payouts complete).
-- New-org rate limits: $1k/day in sales for first 30 days, then auto-raised to $10k/day, then unlimited after first successful payout.
-
-**Exit criteria:** You sign up as a fresh organizer, complete Stripe onboarding, create a venue + an event + seats, issue 3 comps, hold 5 seats for the artist, sell 10 tickets including 2 at the box-office tablet, scan them at the door, pull a DOS report that ties out to the penny, and watch Stripe pay the organizer (minus platform fee) two days later.
+**Carryover into M3 (none of these are M2 feature gaps; all are operational or hardware):** Stripe test-mode partial-refund integration test, Terminal SDK frontend wiring, dashboard 30s cache + missing indexes, attendee CSV + velocity chart, frontend RTL tests for organizer routes, staging cutover screencap.
 
 ### Phase 3 — Gate entry, wallet passes & ticket trust (Weeks 9–12)
 
