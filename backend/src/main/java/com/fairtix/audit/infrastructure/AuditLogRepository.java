@@ -19,6 +19,8 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, UUID> {
 
     long countByUserIdAndActionAndResourceTypeAndCreatedAtAfter(UUID userId, String action, String resourceType, Instant since);
 
+    long countByActionAndResourceIdAndCreatedAtAfter(String action, UUID resourceId, Instant since);
+
     @Query("SELECT DISTINCT a.userId FROM AuditLog a WHERE a.createdAt > :since")
     List<UUID> findDistinctUserIdsByCreatedAtAfter(@Param("since") Instant since);
 
