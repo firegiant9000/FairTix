@@ -55,7 +55,13 @@ public class OrganizationService {
   public Organization createOrganization(String name, String contactEmail, UUID ownerUserId) {
     String slug = generateUniqueSlug(name);
     Organization org = new Organization(name, slug, contactEmail);
-    org.setStatus(OrganizationStatus.ACTIVE);
+    // New orgs start PENDING: the M2 signup wizard transitions them through
+    // PENDING_REVIEW (when the OWNER submits) and ACTIVE (when an admin
+    // approves). Skipping straight to ACTIVE here would bypass the approval
+    // queue and the per-tier sales caps that depend on the post-approval
+    // counters. Existing pre-M2 orgs are unaffected — V32–V36 backfill
+    // already wrote their final statuses.
+    org.setStatus(OrganizationStatus.PENDING);
     organizations.save(org);
     members.save(new OrganizationMember(org.getId(), ownerUserId, OrgRole.OWNER));
     return org;
