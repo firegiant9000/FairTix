@@ -59,6 +59,23 @@ jobs:
             exit 1
           fi
 
+  notification-gate-guard:
+    name: Notification gate regression guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject EmailService injection outside notifications package
+        run: |
+          set -euo pipefail
+          matches=$(grep -RIln "EmailService" backend/src/main/java \
+            | grep -v "/notifications/" || true)
+          if [ -n "$matches" ]; then
+            echo "::error::EmailService referenced outside com.fairtix.notifications. Inject NotificationGate instead."
+            echo "$matches"
+            exit 1
+          fi
+
   frontend-test:
     name: Frontend Tests
     runs-on: ubuntu-latest
