@@ -93,7 +93,7 @@ public class DeepHealthController {
     return null;
   }
 
-  private String checkMail() {
+  private String checkMail() throws Exception {
     if (mailSender instanceof JavaMailSenderImpl impl) {
       impl.testConnection();
       return impl.getHost() + ":" + impl.getPort();
