@@ -53,7 +53,27 @@
     "extends": [
       "react-app",
       "react-app/jest"
-    ]
+    ],
+    "rules": {
+      "no-restricted-globals": [
+        "error",
+        {
+          "name": "sessionStorage",
+          "message": "Auth state lives in HttpOnly cookies. Hydrate via /auth/me; see src/api/client.js and docs/adr/0001-cookie-auth.md."
+        }
+      ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          "selector": "Literal[value=/Bearer\\s/i]",
+          "message": "Do not send Authorization: Bearer headers. Auth uses HttpOnly cookies via credentials: 'include'."
+        },
+        {
+          "selector": "TemplateElement[value.raw=/Bearer\\s/i]",
+          "message": "Do not send Authorization: Bearer headers. Auth uses HttpOnly cookies via credentials: 'include'."
+        }
+      ]
+    }
   },
   "browserslist": {
     "production": [
