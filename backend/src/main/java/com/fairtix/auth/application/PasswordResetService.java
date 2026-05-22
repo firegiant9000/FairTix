@@ -3,8 +3,9 @@ package com.fairtix.auth.application;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.auth.domain.PasswordResetToken;
 import com.fairtix.auth.infrastructure.PasswordResetTokenRepository;
-import com.fairtix.notifications.application.EmailService;
 import com.fairtix.notifications.application.EmailTemplateService;
+import com.fairtix.notifications.application.NotificationGate;
+import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import org.redisson.api.RAtomicLong;
@@ -42,7 +43,7 @@ public class PasswordResetService {
 
     private final PasswordResetTokenRepository tokenRepository;
     private final UserRepository userRepository;
-    private final EmailService emailService;
+    private final NotificationGate notificationGate;
     private final EmailTemplateService emailTemplateService;
     private final LoginAttemptService loginAttemptService;
     private final PasswordEncoder passwordEncoder;
@@ -53,7 +54,7 @@ public class PasswordResetService {
     public PasswordResetService(
             PasswordResetTokenRepository tokenRepository,
             UserRepository userRepository,
-            EmailService emailService,
+            NotificationGate notificationGate,
             EmailTemplateService emailTemplateService,
             LoginAttemptService loginAttemptService,
             PasswordEncoder passwordEncoder,
@@ -62,7 +63,7 @@ public class PasswordResetService {
             @Value("${app.base-url}") String baseUrl) {
         this.tokenRepository = tokenRepository;
         this.userRepository = userRepository;
-        this.emailService = emailService;
+        this.notificationGate = notificationGate;
         this.emailTemplateService = emailTemplateService;
         this.loginAttemptService = loginAttemptService;
         this.passwordEncoder = passwordEncoder;
@@ -100,7 +101,8 @@ public class PasswordResetService {
         String html = emailTemplateService.buildPasswordResetEmail(user.getEmail(), link);
 
         try {
-            emailService.sendEmail(user.getEmail(), "Reset your FairTix password", html);
+            notificationGate.sendEmail(user.getId(), NotificationCategory.PASSWORD_RESET,
+                    user.getEmail(), "Reset your FairTix password", html);
         } catch (Exception e) {
             log.error("Failed to send password reset email to={} error={}", user.getEmail(), e.getMessage());
             // Don't fail the request — token is saved, user can retry

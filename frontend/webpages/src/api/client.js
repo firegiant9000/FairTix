@@ -78,12 +78,18 @@ function buildError(response, message) {
   return error;
 }
 
+const withHeaders = (config) => (config && config.headers ? { headers: config.headers } : {});
+
 const api = {
-  get: (path) => apiRequest(path, { method: 'GET' }),
-  post: (path, body) => apiRequest(path, { method: 'POST', body: body instanceof FormData ? body : JSON.stringify(body) }),
-  put: (path, body) => apiRequest(path, { method: 'PUT', body: JSON.stringify(body) }),
-  patch: (path, body) => apiRequest(path, { method: 'PATCH', body: JSON.stringify(body) }),
-  delete: (path) => apiRequest(path, { method: 'DELETE' }),
+  get: (path, config) => apiRequest(path, { method: 'GET', ...withHeaders(config) }),
+  post: (path, body, config) => apiRequest(path, {
+    method: 'POST',
+    body: body == null ? undefined : (body instanceof FormData ? body : JSON.stringify(body)),
+    ...withHeaders(config),
+  }),
+  put: (path, body, config) => apiRequest(path, { method: 'PUT', body: JSON.stringify(body), ...withHeaders(config) }),
+  patch: (path, body, config) => apiRequest(path, { method: 'PATCH', body: JSON.stringify(body), ...withHeaders(config) }),
+  delete: (path, config) => apiRequest(path, { method: 'DELETE', ...withHeaders(config) }),
 };
 
 export default api;

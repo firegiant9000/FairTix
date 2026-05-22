@@ -67,10 +67,13 @@ public class SecurityConfig {
         .csrf(csrf -> csrf.disable())
         .authorizeHttpRequests(auth -> auth
             .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+            .requestMatchers("/_health/deep").hasRole("ADMIN")
             .requestMatchers("/auth/**").permitAll()
             .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
             .requestMatchers(HttpMethod.GET, "/api/events/**").permitAll()
             .requestMatchers(HttpMethod.GET, "/api/venues/**").permitAll()
+            .requestMatchers(HttpMethod.GET, "/api/public/**").permitAll()
+            .requestMatchers(HttpMethod.GET, "/sitemap.xml", "/robots.txt", "/embed.js").permitAll()
             .requestMatchers("/api/webhooks/**").permitAll()
             .requestMatchers("/api/admin/**").hasRole("ADMIN")
             .anyRequest().authenticated())

@@ -106,7 +106,9 @@ public class StripeWebhookController {
       if (piId == null) return;
       paymentRecordRepository.findByTransactionId(piId).ifPresent(record ->
           refundRepository.findAllByOrderId(record.getOrderId()).stream()
-              .filter(r -> r.getStatus() == RefundStatus.APPROVED)
+              .filter(r -> r.getStatus() == RefundStatus.APPROVED
+                  || r.getStatus() == RefundStatus.REQUESTED
+                  || r.getStatus() == RefundStatus.PENDING_MANUAL)
               .findFirst()
               .ifPresent(refundRequest -> {
                 refundRequest.complete();

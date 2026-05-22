@@ -5,8 +5,9 @@ import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.fraud.domain.RiskTier;
-import com.fairtix.notifications.application.EmailService;
 import com.fairtix.notifications.application.EmailTemplateService;
+import com.fairtix.notifications.application.NotificationGate;
+import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.tickets.domain.TicketStatus;
 import com.fairtix.tickets.domain.TicketTransferRequest;
 import com.fairtix.tickets.domain.TransferStatus;
@@ -17,6 +18,7 @@ import org.redisson.api.RScoredSortedSet;
 import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -39,7 +41,7 @@ public class TransferService {
     private final TicketTransferRequestRepository transferRepository;
     private final UserRepository userRepository;
     private final AuditService auditService;
-    private final EmailService emailService;
+    private final NotificationGate notificationGate;
     private final EmailTemplateService emailTemplateService;
     private final RedissonClient redissonClient;
     private final RiskScoringService riskScoringService;
@@ -54,7 +56,7 @@ public class TransferService {
                            TicketTransferRequestRepository transferRepository,
                            UserRepository userRepository,
                            AuditService auditService,
-                           EmailService emailService,
+                           NotificationGate notificationGate,
                            EmailTemplateService emailTemplateService,
                            RedissonClient redissonClient,
                            RiskScoringService riskScoringService) {
@@ -62,7 +64,7 @@ public class TransferService {
         this.transferRepository = transferRepository;
         this.userRepository = userRepository;
         this.auditService = auditService;
-        this.emailService = emailService;
+        this.notificationGate = notificationGate;
         this.emailTemplateService = emailTemplateService;
         this.redissonClient = redissonClient;
         this.riskScoringService = riskScoringService;
@@ -111,7 +113,9 @@ public class TransferService {
 
         String seatDesc = seatDesc(request);
         try {
-            emailService.sendEmail(
+            notificationGate.sendEmail(
+                    toUser.getId(),
+                    NotificationCategory.TICKET_TRANSFER,
                     toEmail,
                     "Ticket transfer request from FairTix",
                     emailTemplateService.buildTransferRequestEmail(
@@ -149,7 +153,9 @@ public class TransferService {
 
         String seatDesc = seatDesc(request);
         try {
-            emailService.sendEmail(
+            notificationGate.sendEmail(
+                    request.getFromUser().getId(),
+                    NotificationCategory.TICKET_TRANSFER,
                     request.getFromUser().getEmail(),
                     "Your ticket transfer was accepted",
                     emailTemplateService.buildTransferAcceptedEmail(
@@ -175,7 +181,9 @@ public class TransferService {
 
         String seatDesc = seatDesc(request);
         try {
-            emailService.sendEmail(
+            notificationGate.sendEmail(
+                    request.getFromUser().getId(),
+                    NotificationCategory.TICKET_TRANSFER,
                     request.getFromUser().getEmail(),
                     "Your ticket transfer was declined",
                     emailTemplateService.buildTransferRejectedEmail(
@@ -237,28 +245,35 @@ public class TransferService {
     @Scheduled(fixedDelay = 60_000)
     @Transactional
     public void expireStaleRequests() {
-        List<TicketTransferRequest> expired =
-                transferRepository.findByStatusAndExpiresAtBefore(TransferStatus.PENDING, Instant.now());
+        MDC.put("requestId", "sched-expireStaleRequests-" + UUID.randomUUID());
+        try {
+            List<TicketTransferRequest> expired =
+                    transferRepository.findByStatusAndExpiresAtBefore(TransferStatus.PENDING, Instant.now());
 
-        for (TicketTransferRequest request : expired) {
-            request.setStatus(TransferStatus.EXPIRED);
-            request.setResolvedAt(Instant.now());
-            transferRepository.save(request);
+            for (TicketTransferRequest request : expired) {
+                request.setStatus(TransferStatus.EXPIRED);
+                request.setResolvedAt(Instant.now());
+                transferRepository.save(request);
 
-            auditService.log(request.getFromUser().getId(), "TRANSFER_EXPIRED", "TICKET",
-                    request.getTicket().getId(), "to=" + request.getToUser().getEmail());
+                auditService.log(request.getFromUser().getId(), "TRANSFER_EXPIRED", "TICKET",
+                        request.getTicket().getId(), "to=" + request.getToUser().getEmail());
 
-            String seatDesc = seatDesc(request);
-            try {
-                emailService.sendEmail(
-                        request.getFromUser().getEmail(),
-                        "Your ticket transfer request expired",
-                        emailTemplateService.buildTransferExpiredEmail(
-                                request.getFromUser().getEmail(),
-                                request.getTicket().getEvent().getTitle(), seatDesc));
-            } catch (Exception e) {
-                log.warn("Failed to send transfer expired email to={}", request.getFromUser().getEmail(), e);
+                String seatDesc = seatDesc(request);
+                try {
+                    notificationGate.sendEmail(
+                            request.getFromUser().getId(),
+                            NotificationCategory.TICKET_TRANSFER,
+                            request.getFromUser().getEmail(),
+                            "Your ticket transfer request expired",
+                            emailTemplateService.buildTransferExpiredEmail(
+                                    request.getFromUser().getEmail(),
+                                    request.getTicket().getEvent().getTitle(), seatDesc));
+                } catch (Exception e) {
+                    log.warn("Failed to send transfer expired email to={}", request.getFromUser().getEmail(), e);
+                }
             }
+        } finally {
+            MDC.remove("requestId");
         }
     }
 

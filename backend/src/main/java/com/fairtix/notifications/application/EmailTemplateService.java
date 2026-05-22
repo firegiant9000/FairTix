@@ -176,6 +176,25 @@ public class EmailTemplateService {
                 + "</body></html>";
     }
 
+    public String buildRefundInitiatedEmail(String userName, String orderId, String amount) {
+        String safeName = htmlEscape(userName);
+        String safeOrderId = htmlEscape(orderId);
+        String safeAmount = htmlEscape(amount);
+        return "<html><body style=\"font-family:sans-serif;\">"
+                + "<h2>Your Refund Has Been Initiated</h2>"
+                + "<p>Hi " + safeName + ",</p>"
+                + "<p>Your refund for order <strong>" + safeOrderId + "</strong> has been approved and sent to our payment processor.</p>"
+                + "<table style=\"border-collapse:collapse;width:100%;max-width:500px;\">"
+                + "<tr><td style=\"padding:4px 8px;\"><strong>Order ID:</strong></td>"
+                + "<td style=\"padding:4px 8px;\">" + safeOrderId + "</td></tr>"
+                + "<tr><td style=\"padding:4px 8px;\"><strong>Refund Amount:</strong></td>"
+                + "<td style=\"padding:4px 8px;\"><strong>$" + safeAmount + "</strong></td></tr>"
+                + "</table>"
+                + "<p>Stripe is now processing the refund. You will receive a second email once the funds have been returned to your original payment method, typically within 5–10 business days.</p>"
+                + "<p><a href=\"/refunds\">View your refund requests</a></p>"
+                + "</body></html>";
+    }
+
     public String buildRefundCompletedEmail(String userName, String orderId, String amount) {
         String safeName = htmlEscape(userName);
         String safeOrderId = htmlEscape(orderId);

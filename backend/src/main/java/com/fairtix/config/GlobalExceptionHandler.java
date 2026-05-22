@@ -6,7 +6,10 @@ import com.fairtix.inventory.application.SeatHoldConflictException;
 import com.fairtix.inventory.application.SeatHoldNotFoundException;
 import com.fairtix.orders.application.OrderNotFoundException;
 import com.fairtix.orders.application.PurchaseCapExceededException;
+import com.fairtix.organizations.application.SalesCapExceededException;
 import com.fairtix.auth.application.AccountLockedException;
+import com.fairtix.boxoffice.application.BoxOfficeStateException;
+import com.fairtix.holds.application.CompLimitExceededException;
 import com.fairtix.auth.application.CaptchaRequiredException;
 import com.fairtix.auth.application.InvalidCaptchaException;
 import com.fairtix.auth.application.RecaptchaUnavailableException;
@@ -132,10 +135,37 @@ public class GlobalExceptionHandler {
     return error(HttpStatus.FORBIDDEN, "FORBIDDEN", "Access denied", req);
   }
 
+  @ExceptionHandler(CompLimitExceededException.class)
+  public ResponseEntity<Map<String, Object>> handleCompLimit(
+      CompLimitExceededException ex, HttpServletRequest req) {
+    return error(HttpStatus.CONFLICT, "COMP_LIMIT_EXCEEDED", ex.getMessage(), req);
+  }
+
+  @ExceptionHandler(BoxOfficeStateException.class)
+  public ResponseEntity<Map<String, Object>> handleBoxOfficeState(
+      BoxOfficeStateException ex, HttpServletRequest req) {
+    return error(HttpStatus.CONFLICT, "BOX_OFFICE_STATE", ex.getMessage(), req);
+  }
+
   @ExceptionHandler(PurchaseCapExceededException.class)
   public ResponseEntity<Map<String, Object>> handlePurchaseCap(
       PurchaseCapExceededException ex, HttpServletRequest req) {
     return error(HttpStatus.CONFLICT, "PURCHASE_CAP_EXCEEDED", ex.getMessage(), req);
+  }
+
+  @ExceptionHandler(SalesCapExceededException.class)
+  public ResponseEntity<Map<String, Object>> handleSalesCap(
+      SalesCapExceededException ex, HttpServletRequest req) {
+    Map<String, Object> body = Map.of(
+        "status", HttpStatus.TOO_MANY_REQUESTS.value(),
+        "code", "SALES_CAP_EXCEEDED",
+        "message", ex.getMessage(),
+        "capCents", ex.getCapCents(),
+        "usedCents", ex.getUsedCents(),
+        "requestedCents", ex.getRequestedCents(),
+        "path", req.getRequestURI(),
+        "timestamp", Instant.now().toString());
+    return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(body);
   }
 
   @ExceptionHandler(OrderNotFoundException.class)

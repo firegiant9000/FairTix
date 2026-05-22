@@ -5,7 +5,7 @@
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>4.0.5</version>
+    <version>4.0.6</version>
     <relativePath/> <!-- lookup parent from repository -->
   </parent>
   <groupId>com.fairtix</groupId>
@@ -28,9 +28,25 @@
   </scm>
   <properties>
     <java.version>21</java.version>
-    <!-- Override vulnerable transitive dependency versions (Trivy CVE fixes) -->
-    <tomcat.version>11.0.21</tomcat.version>
-    <spring-security.version>7.0.4</spring-security.version>
+    <!-- Override vulnerable transitive dependency versions (Trivy CVE fixes).
+         Pinned ahead of the Spring Boot BOM defaults where new CVEs landed
+         between BOM releases. Drop these overrides once the Boot parent
+         catches up. -->
+    <tomcat.version>11.0.22</tomcat.version>
+    <spring-security.version>7.0.5</spring-security.version>
+    <netty.version>4.2.13.Final</netty.version>
+    <postgresql.version>42.7.11</postgresql.version>
+    <!--
+      JaCoCo coverage floor. Provisional. A clean local run on 2026-05-21 measured
+      0.17 line coverage but most integration tests errored on context load because
+      Redis was not running outside docker compose. CI runs Redis as a service so
+      its measurement will be representative. TODO: after the first PR with this
+      pom lands and the CI JaCoCo report shows a real number, bump these to
+      baseline-minus-1%. Override per-build with -Djacoco.line.minimum=0.30.
+    -->
+    <jacoco.line.minimum>0.15</jacoco.line.minimum>
+    <jacoco.branch.minimum>0.05</jacoco.branch.minimum>
+    <jacoco.skip>false</jacoco.skip>
   </properties>
   <dependencies>
     <dependency>
@@ -208,6 +224,61 @@
             </exclude>
           </excludes>
         </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>0.8.12</version>
+        <configuration>
+          <skip>${jacoco.skip}</skip>
+          <excludes>
+            <exclude>**/dto/**</exclude>
+            <exclude>**/domain/**Generated*</exclude>
+            <exclude>**/FairtixApplication.class</exclude>
+            <exclude>**/config/OpenApiConfig.class</exclude>
+          </excludes>
+        </configuration>
+        <executions>
+          <execution>
+            <id>prepare-agent</id>
+            <goals>
+              <goal>prepare-agent</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>report</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>report</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>check</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>LINE</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>${jacoco.line.minimum}</minimum>
+                    </limit>
+                    <limit>
+                      <counter>BRANCH</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>${jacoco.branch.minimum}</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

@@ -17,6 +17,7 @@ import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import SupportAgentIcon from '@mui/icons-material/SupportAgent';
 import GppMaybeOutlinedIcon from '@mui/icons-material/GppMaybeOutlined';
 import MicNoneOutlinedIcon from '@mui/icons-material/MicNoneOutlined';
+import HowToRegIcon from '@mui/icons-material/HowToReg';
 
 const DRAWER_WIDTH = 240;
 
@@ -29,6 +30,7 @@ const navItems = [
   { label: 'Support', path: '/admin/support', icon: <SupportAgentIcon /> },
   { label: 'Fraud', path: '/admin/fraud', icon: <GppMaybeOutlinedIcon /> },
   { label: 'Performers', path: '/admin/performers', icon: <MicNoneOutlinedIcon /> },
+  { label: 'Org approvals', path: '/admin/org-approvals', icon: <HowToRegIcon /> },
 ];
 
 function AdminSidebar() {

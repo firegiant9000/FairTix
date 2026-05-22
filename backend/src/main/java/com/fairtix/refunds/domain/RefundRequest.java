@@ -52,6 +52,9 @@ public class RefundRequest {
   @Column(nullable = false, name = "updated_at")
   private Instant updatedAt;
 
+  @Column(name = "stripe_refund_id", unique = true)
+  private String stripeRefundId;
+
   public RefundRequest(UUID orderId, UUID userId, BigDecimal amount, String reason) {
     this.orderId = orderId;
     this.userId = userId;
@@ -77,6 +80,12 @@ public class RefundRequest {
   public Instant getCompletedAt() { return completedAt; }
   public Instant getCreatedAt() { return createdAt; }
   public Instant getUpdatedAt() { return updatedAt; }
+  public String getStripeRefundId() { return stripeRefundId; }
+
+  public void setStripeRefundId(String stripeRefundId) {
+    this.stripeRefundId = stripeRefundId;
+    this.updatedAt = Instant.now();
+  }
 
   public void approve(UUID adminId, String notes) {
     this.status = RefundStatus.APPROVED;

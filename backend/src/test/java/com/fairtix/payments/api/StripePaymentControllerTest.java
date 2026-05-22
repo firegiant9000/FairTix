@@ -10,6 +10,7 @@ import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.payments.application.StripePaymentService;
+import com.fairtix.payments.application.StripePaymentService.ConnectContext;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,6 +29,7 @@ import org.springframework.web.context.WebApplicationContext;
 import java.math.BigDecimal;
 import java.time.Instant;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
@@ -81,8 +83,15 @@ class StripePaymentControllerTest {
 
   @Test
   void createIntent_returnsClientSecret() throws Exception {
+    // The M2-07 Connect refactor added a third ConnectContext parameter on
+    // the PaymentIntent factory. PaymentController now calls the 3-arg
+    // overload directly with a (possibly null) ConnectContext, so the mock
+    // must cover that signature; the 2-arg overload still exists but is no
+    // longer on the controller's call path.
     doReturn("pi_test_secret_xyz").when(stripePaymentService)
-        .createPaymentIntent(anyLong(), anyString());
+        .createPaymentIntent(anyLong(), anyString(), any(ConnectContext.class));
+    doReturn("pi_test_secret_xyz").when(stripePaymentService)
+        .createPaymentIntent(anyLong(), anyString(), org.mockito.ArgumentMatchers.isNull());
 
     String body = """
         { "holdIds": ["%s"] }

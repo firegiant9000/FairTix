@@ -4,6 +4,7 @@ import com.fairtix.queue.application.QueueService;
 import com.fairtix.queue.application.QueueSseService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -25,14 +26,19 @@ public class QueueExpirationScheduler {
 
     @Scheduled(fixedDelayString = "${queue.expiration.interval-ms:30000}")
     public void expireAdmissions() {
-        List<UUID> eventIds = queueService.findEventIdsWithExpiredAdmissions();
-        for (UUID eventId : eventIds) {
-            try {
-                queueService.expireAdmissions(eventId);
-                queueSseService.broadcast(eventId);
-            } catch (Exception e) {
-                log.error("Failed to expire admissions for event {}: {}", eventId, e.getMessage());
+        MDC.put("requestId", "sched-expireAdmissions-" + UUID.randomUUID());
+        try {
+            List<UUID> eventIds = queueService.findEventIdsWithExpiredAdmissions();
+            for (UUID eventId : eventIds) {
+                try {
+                    queueService.expireAdmissions(eventId);
+                    queueSseService.broadcast(eventId);
+                } catch (Exception e) {
+                    log.error("Failed to expire admissions for event {}: {}", eventId, e.getMessage());
+                }
             }
+        } finally {
+            MDC.remove("requestId");
         }
     }
 }
