@@ -5,9 +5,13 @@ import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.orders.application.OrderService;
 import com.fairtix.orders.domain.Order;
 import com.fairtix.orders.domain.OrderStatus;
+import com.fairtix.organizations.domain.Organization;
+import com.fairtix.organizations.domain.Plan;
+import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.payments.application.PaymentFailedException;
 import com.fairtix.payments.application.PaymentSimulationService;
 import com.fairtix.payments.application.StripePaymentService;
+import com.fairtix.payments.application.StripePaymentService.ConnectContext;
 import com.fairtix.payments.dto.PaymentIntentRequest;
 import com.fairtix.payments.dto.PaymentIntentResponse;
 import com.fairtix.payments.dto.PaymentRequest;
@@ -30,6 +34,10 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
+import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Tag(name = "Payments", description = "Payment processing")
 @RestController
@@ -42,6 +50,7 @@ public class PaymentController {
   private final SeatHoldRepository seatHoldRepository;
   private final QueueService queueService;
   private final StripePaymentService stripePaymentService;
+  private final OrganizationRepository organizationRepository;
 
   @Autowired(required = false)
   private PaymentSimulationService paymentSimulationService;
@@ -57,13 +66,44 @@ public class PaymentController {
       UserRepository userRepository,
       SeatHoldRepository seatHoldRepository,
       QueueService queueService,
-      StripePaymentService stripePaymentService) {
+      StripePaymentService stripePaymentService,
+      OrganizationRepository organizationRepository) {
     this.orderService = orderService;
     this.paymentRecordRepository = paymentRecordRepository;
     this.userRepository = userRepository;
     this.seatHoldRepository = seatHoldRepository;
     this.queueService = queueService;
     this.stripePaymentService = stripePaymentService;
+    this.organizationRepository = organizationRepository;
+  }
+
+  /**
+   * Resolves the Stripe Connect context for a checkout.
+   * Returns null when the holds' event has no org, or the org has no
+   * connected account. Throws 400 if holds span multiple orgs.
+   */
+  private ConnectContext resolveConnectContext(java.util.List<UUID> holdIds, UUID userId, long amountCents) {
+    Set<UUID> orgIds = holdIds.stream()
+        .map(id -> seatHoldRepository.findByIdAndOwnerId(id, userId)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "Hold not found or not owned by current user: " + id)))
+        .map(h -> h.getSeat().getEvent().getOrganizationId())
+        .filter(Objects::nonNull)
+        .collect(Collectors.toSet());
+    if (orgIds.size() > 1) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+          "Cannot checkout holds from multiple organizations in one transaction");
+    }
+    if (orgIds.isEmpty()) return null;
+    Organization org = organizationRepository.findById(orgIds.iterator().next()).orElse(null);
+    if (org == null || org.getStripeConnectAccountId() == null) return null;
+    Plan plan = org.getPlan() == null ? Plan.FREE : org.getPlan();
+    long feeCents = (amountCents * plan.getPlatformFeeBps()) / 10_000L;
+    return new ConnectContext(
+        org.getId().toString(),
+        org.getStripeConnectAccountId(),
+        feeCents,
+        org.getName());
   }
 
   @Operation(summary = "Create Stripe PaymentIntent",
@@ -89,7 +129,9 @@ public class PaymentController {
         .reduce(BigDecimal.ZERO, BigDecimal::add);
 
     long amountCents = total.multiply(BigDecimal.valueOf(100)).longValue();
-    String clientSecret = stripePaymentService.createPaymentIntent(amountCents, "usd");
+    ConnectContext connect = resolveConnectContext(
+        request.holdIds(), principal.getUserId(), amountCents);
+    String clientSecret = stripePaymentService.createPaymentIntent(amountCents, "usd", connect);
     return new PaymentIntentResponse(clientSecret);
   }
 

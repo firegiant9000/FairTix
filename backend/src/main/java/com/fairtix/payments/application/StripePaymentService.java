@@ -50,10 +50,37 @@ public class StripePaymentService {
   }
 
   public String createPaymentIntent(long amountCents, String currency) {
+    return createPaymentIntent(amountCents, currency, null);
+  }
+
+  /**
+   * Connect-aware PaymentIntent.
+   *
+   * When {@code connect} is non-null, the intent is routed to the connected
+   * account via {@code on_behalf_of} + {@code transfer_data.destination}, and
+   * the platform takes {@code application_fee_amount} cents off the top.
+   * Statement descriptor suffix surfaces the org name on the customer's
+   * statement (FAIRTIX*ORGNAME).
+   */
+  public String createPaymentIntent(long amountCents, String currency, ConnectContext connect) {
     try {
       PaymentIntentCreateParams.Builder builder = PaymentIntentCreateParams.builder()
           .setAmount(amountCents)
           .setCurrency(currency);
+      if (connect != null && connect.connectedAccountId() != null) {
+        builder.setOnBehalfOf(connect.connectedAccountId())
+            .setTransferData(PaymentIntentCreateParams.TransferData.builder()
+                .setDestination(connect.connectedAccountId())
+                .build());
+        if (connect.applicationFeeAmountCents() > 0) {
+          builder.setApplicationFeeAmount(connect.applicationFeeAmountCents());
+        }
+        String suffix = sanitizeStatementDescriptor(connect.statementDescriptorSuffix());
+        if (suffix != null) {
+          builder.setStatementDescriptorSuffix(suffix);
+        }
+        builder.putMetadata("fairtix_org_id", connect.organizationId());
+      }
       String requestId = MDC.get("requestId");
       if (requestId != null && !requestId.isBlank()) {
         builder.putMetadata("requestId", requestId);
@@ -67,6 +94,21 @@ public class StripePaymentService {
       throw new RuntimeException("Failed to create Stripe payment intent: " + e.getMessage(), e);
     }
   }
+
+  // Stripe limits statement descriptor suffix to 22 chars; ASCII, no <>"'*\
+  static String sanitizeStatementDescriptor(String raw) {
+    if (raw == null) return null;
+    String cleaned = raw.replaceAll("[<>\"'*\\\\]", "").replaceAll("\\s+", " ").trim();
+    if (cleaned.isEmpty()) return null;
+    return cleaned.length() > 22 ? cleaned.substring(0, 22) : cleaned;
+  }
+
+  public record ConnectContext(
+      String organizationId,
+      String connectedAccountId,
+      long applicationFeeAmountCents,
+      String statementDescriptorSuffix
+  ) {}
 
   public boolean verifyPaymentSucceeded(String paymentIntentId, long expectedAmountCents) {
     try {
@@ -83,9 +125,24 @@ public class StripePaymentService {
 
   public Refund createRefund(String paymentIntentId, long amountCents, String reason) {
     try {
+      // If the original intent was routed via Connect (transfer_data.destination
+      // + application_fee_amount), reverse the transfer and pro-rata refund the
+      // application fee — otherwise the connected account is left short. Missing
+      // either flag is silently catastrophic for organizer settlements, so this
+      // branch is the single source of truth.
+      PaymentIntent original = PaymentIntent.retrieve(paymentIntentId);
+      boolean isConnectIntent = original.getTransferData() != null
+          && original.getTransferData().getDestination() != null;
+
       RefundCreateParams.Builder builder = RefundCreateParams.builder()
           .setPaymentIntent(paymentIntentId)
           .setAmount(amountCents);
+      if (isConnectIntent) {
+        builder.setReverseTransfer(true);
+        if (original.getApplicationFeeAmount() != null && original.getApplicationFeeAmount() > 0) {
+          builder.setRefundApplicationFee(true);
+        }
+      }
       if (reason != null && !reason.isBlank()) {
         builder.putMetadata("reason", reason);
       }
