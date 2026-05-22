@@ -5,6 +5,7 @@ import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.orders.application.OrderService;
 import com.fairtix.orders.domain.Order;
 import com.fairtix.orders.domain.OrderStatus;
+import com.fairtix.organizations.application.OrgSalesCapService;
 import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.domain.Plan;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
@@ -51,6 +52,7 @@ public class PaymentController {
   private final QueueService queueService;
   private final StripePaymentService stripePaymentService;
   private final OrganizationRepository organizationRepository;
+  private final OrgSalesCapService salesCapService;
 
   @Autowired(required = false)
   private PaymentSimulationService paymentSimulationService;
@@ -67,7 +69,8 @@ public class PaymentController {
       SeatHoldRepository seatHoldRepository,
       QueueService queueService,
       StripePaymentService stripePaymentService,
-      OrganizationRepository organizationRepository) {
+      OrganizationRepository organizationRepository,
+      OrgSalesCapService salesCapService) {
     this.orderService = orderService;
     this.paymentRecordRepository = paymentRecordRepository;
     this.userRepository = userRepository;
@@ -75,6 +78,7 @@ public class PaymentController {
     this.queueService = queueService;
     this.stripePaymentService = stripePaymentService;
     this.organizationRepository = organizationRepository;
+    this.salesCapService = salesCapService;
   }
 
   /**
@@ -131,6 +135,9 @@ public class PaymentController {
     long amountCents = total.multiply(BigDecimal.valueOf(100)).longValue();
     ConnectContext connect = resolveConnectContext(
         request.holdIds(), principal.getUserId(), amountCents);
+    if (connect != null) {
+      salesCapService.checkCanCharge(UUID.fromString(connect.organizationId()), amountCents);
+    }
     String clientSecret = stripePaymentService.createPaymentIntent(amountCents, "usd", connect);
     return new PaymentIntentResponse(clientSecret);
   }
@@ -186,6 +193,18 @@ public class PaymentController {
       Order order = orderService.createOrderWithStripePayment(
           principal.getUserId(), request.holdIds(), paymentIntentId);
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();
+      // Record against the rolling sales cap. The cap was pre-checked at intent
+      // creation, but recording happens here once the charge is verified so we
+      // don't credit usage to abandoned carts.
+      ConnectContext successContext = resolveConnectContext(
+          request.holdIds(), principal.getUserId(), expectedAmountCents);
+      if (successContext != null) {
+        salesCapService.recordSale(
+            UUID.fromString(successContext.organizationId()),
+            expectedAmountCents,
+            OrgSalesCapService.CHANNEL_ONLINE,
+            paymentIntentId);
+      }
       return PaymentResponse.from(record, order.getStatus());
     }
 

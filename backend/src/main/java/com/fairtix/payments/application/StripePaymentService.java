@@ -54,6 +54,76 @@ public class StripePaymentService {
   }
 
   /**
+   * Card-present PaymentIntent for Stripe Terminal (box-office).
+   *
+   * <p>Returns the full intent so the caller can hand both the id (to reference
+   * later on confirmation) and the client_secret (consumed by the Terminal
+   * reader through {@code collectPaymentMethod}/{@code processPayment}) to the
+   * frontend. Routed through Connect when {@code connect} is non-null so the
+   * organizer's connected account is charged and the platform fee is taken off
+   * the top — identical to the online path so settlement math is consistent.
+   */
+  public PaymentIntent createCardPresentPaymentIntent(long amountCents, String currency,
+      ConnectContext connect) {
+    try {
+      PaymentIntentCreateParams.Builder builder = PaymentIntentCreateParams.builder()
+          .setAmount(amountCents)
+          .setCurrency(currency)
+          .addPaymentMethodType("card_present")
+          .setCaptureMethod(PaymentIntentCreateParams.CaptureMethod.AUTOMATIC);
+      if (connect != null && connect.connectedAccountId() != null) {
+        builder.setOnBehalfOf(connect.connectedAccountId())
+            .setTransferData(PaymentIntentCreateParams.TransferData.builder()
+                .setDestination(connect.connectedAccountId())
+                .build());
+        if (connect.applicationFeeAmountCents() > 0) {
+          builder.setApplicationFeeAmount(connect.applicationFeeAmountCents());
+        }
+        String suffix = sanitizeStatementDescriptor(connect.statementDescriptorSuffix());
+        if (suffix != null) {
+          builder.setStatementDescriptorSuffix(suffix);
+        }
+        builder.putMetadata("fairtix_org_id", connect.organizationId());
+      }
+      builder.putMetadata("fairtix_channel", "box_office");
+      String requestId = MDC.get("requestId");
+      if (requestId != null && !requestId.isBlank()) {
+        builder.putMetadata("requestId", requestId);
+      }
+      return PaymentIntent.create(builder.build());
+    } catch (CardException e) {
+      throw new PaymentDeclinedException(
+          e.getUserMessage() != null ? e.getUserMessage() : e.getMessage());
+    } catch (StripeException e) {
+      throw new RuntimeException("Failed to create Stripe card-present intent: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Stripe Terminal SDK requires a short-lived connection token to pair the
+   * reader with our backend's Stripe account. Returns the raw {@code secret}
+   * field; the SDK consumes it directly.
+   */
+  public String createTerminalConnectionToken(String connectedAccountId) {
+    try {
+      com.stripe.param.terminal.ConnectionTokenCreateParams.Builder b =
+          com.stripe.param.terminal.ConnectionTokenCreateParams.builder();
+      com.stripe.net.RequestOptions opts = null;
+      if (connectedAccountId != null && !connectedAccountId.isBlank()) {
+        opts = com.stripe.net.RequestOptions.builder()
+            .setStripeAccount(connectedAccountId)
+            .build();
+      }
+      com.stripe.model.terminal.ConnectionToken token = opts == null
+          ? com.stripe.model.terminal.ConnectionToken.create(b.build())
+          : com.stripe.model.terminal.ConnectionToken.create(b.build(), opts);
+      return token.getSecret();
+    } catch (StripeException e) {
+      throw new RuntimeException("Failed to create Terminal connection token: " + e.getMessage(), e);
+    }
+  }
+
+  /**
    * Connect-aware PaymentIntent.
    *
    * When {@code connect} is non-null, the intent is routed to the connected
