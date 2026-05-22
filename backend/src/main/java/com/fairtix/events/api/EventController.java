@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.*;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.auth.domain.CustomUserPrincipal;
 import com.fairtix.events.application.EventService;
+import com.fairtix.organizations.application.PublicEndpoint;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.domain.EventStatus;
 import com.fairtix.events.dto.CancelEventRequest;
@@ -38,6 +39,8 @@ import java.util.UUID;
 @Tag(name = "Events", description = "Event management")
 @RestController
 @RequestMapping("/api/events")
+@PublicEndpoint("M2-01 deferred: mutation handlers still use @PreAuthorize(hasRole('ADMIN')); "
+    + "follow-up PR migrates each to @OrgScoped with EVENTS_WRITE / EVENTS_PUBLISH / etc.")
 public class EventController {
 
     private final EventService service;

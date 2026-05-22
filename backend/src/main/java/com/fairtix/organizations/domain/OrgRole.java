@@ -8,10 +8,13 @@ public enum OrgRole {
   MANAGER(EnumSet.of(
       OrgPermission.EVENTS_READ,
       OrgPermission.EVENTS_WRITE,
+      OrgPermission.EVENTS_PUBLISH,
       OrgPermission.SALES_READ,
       OrgPermission.REFUNDS_READ,
       OrgPermission.REFUNDS_WRITE,
+      OrgPermission.REFUNDS_APPROVE,
       OrgPermission.COMPS_WRITE,
+      OrgPermission.HOLDS_MANAGE,
       OrgPermission.TEAM_READ,
       OrgPermission.ATTENDEES_READ,
       OrgPermission.REPORTS_READ)),
@@ -19,6 +22,7 @@ public enum OrgRole {
       OrgPermission.EVENTS_READ,
       OrgPermission.SALES_READ,
       OrgPermission.COMPS_WRITE,
+      OrgPermission.HOLDS_MANAGE,
       OrgPermission.BOX_OFFICE_SELL,
       OrgPermission.ATTENDEES_READ)),
   DOOR(EnumSet.of(

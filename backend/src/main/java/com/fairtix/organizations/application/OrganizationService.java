@@ -11,6 +11,7 @@ import java.util.UUID;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
+import com.fairtix.audit.application.AuditService;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.organizations.domain.OrgPermission;
 import com.fairtix.organizations.domain.OrgRole;
@@ -37,15 +38,18 @@ public class OrganizationService {
   private final OrganizationMemberRepository members;
   private final OrganizationInviteRepository invites;
   private final UserRepository users;
+  private final AuditService auditService;
 
   public OrganizationService(OrganizationRepository organizations,
                              OrganizationMemberRepository members,
                              OrganizationInviteRepository invites,
-                             UserRepository users) {
+                             UserRepository users,
+                             AuditService auditService) {
     this.organizations = organizations;
     this.members = members;
     this.invites = invites;
     this.users = users;
+    this.auditService = auditService;
   }
 
   public Organization createOrganization(String name, String contactEmail, UUID ownerUserId) {
@@ -100,11 +104,17 @@ public class OrganizationService {
     requirePermission(actorUserId, orgId, OrgPermission.TEAM_WRITE);
     OrganizationMember member = members.findByOrganizationIdAndUserId(orgId, memberUserId)
         .orElseThrow(() -> new ResourceNotFoundException("Member not found"));
-    if (member.getRole() == OrgRole.OWNER && newRole != OrgRole.OWNER) {
+    OrgRole previousRole = member.getRole();
+    if (previousRole == OrgRole.OWNER && newRole != OrgRole.OWNER) {
       long owners = members.countByOrganizationIdAndRole(orgId, OrgRole.OWNER);
       if (owners <= 1) throw new IllegalStateException("Cannot demote the last OWNER");
     }
     member.setRole(newRole);
+    if (previousRole != newRole) {
+      auditService.log(actorUserId, "ORG_MEMBER_ROLE_CHANGED", "ORGANIZATION_MEMBER", member.getId(),
+          String.format("orgId=%s targetUserId=%s from=%s to=%s",
+              orgId, memberUserId, previousRole, newRole));
+    }
     return member;
   }
 
@@ -116,7 +126,11 @@ public class OrganizationService {
       long owners = members.countByOrganizationIdAndRole(orgId, OrgRole.OWNER);
       if (owners <= 1) throw new IllegalStateException("Cannot remove the last OWNER");
     }
+    UUID memberId = member.getId();
+    OrgRole removedRole = member.getRole();
     members.delete(member);
+    auditService.log(actorUserId, "ORG_MEMBER_REMOVED", "ORGANIZATION_MEMBER", memberId,
+        String.format("orgId=%s targetUserId=%s role=%s", orgId, memberUserId, removedRole));
   }
 
   // --- ACL helpers ---
