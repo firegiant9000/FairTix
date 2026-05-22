@@ -2,8 +2,9 @@ package com.fairtix.auth.application;
 
 import com.fairtix.auth.domain.EmailVerificationToken;
 import com.fairtix.auth.infrastructure.EmailVerificationTokenRepository;
-import com.fairtix.notifications.application.EmailService;
 import com.fairtix.notifications.application.EmailTemplateService;
+import com.fairtix.notifications.application.NotificationGate;
+import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import org.springframework.beans.factory.annotation.Value;
@@ -26,19 +27,19 @@ public class EmailVerificationService {
 
     private final EmailVerificationTokenRepository tokenRepository;
     private final UserRepository userRepository;
-    private final EmailService emailService;
+    private final NotificationGate notificationGate;
     private final EmailTemplateService emailTemplateService;
     private final String baseUrl;
 
     public EmailVerificationService(
             EmailVerificationTokenRepository tokenRepository,
             UserRepository userRepository,
-            EmailService emailService,
+            NotificationGate notificationGate,
             EmailTemplateService emailTemplateService,
             @Value("${app.base-url}") String baseUrl) {
         this.tokenRepository = tokenRepository;
         this.userRepository = userRepository;
-        this.emailService = emailService;
+        this.notificationGate = notificationGate;
         this.emailTemplateService = emailTemplateService;
         this.baseUrl = baseUrl;
     }
@@ -59,7 +60,8 @@ public class EmailVerificationService {
 
         String link = baseUrl + "/verify?token=" + token.getToken();
         String html = emailTemplateService.buildVerificationEmail(user.getEmail(), link);
-        emailService.sendEmail(user.getEmail(), "Verify your FairTix account", html);
+        notificationGate.sendEmail(user.getId(), NotificationCategory.ACCOUNT_VERIFICATION,
+                user.getEmail(), "Verify your FairTix account", html);
     }
 
     @Transactional

@@ -5,8 +5,8 @@ import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.fraud.domain.RiskTier;
-import com.fairtix.notifications.application.EmailService;
 import com.fairtix.notifications.application.EmailTemplateService;
+import com.fairtix.notifications.application.NotificationGate;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.users.infrastructure.UserRepository;
@@ -51,7 +51,7 @@ class TransferServiceTest {
                 mock(TicketTransferRequestRepository.class),
                 mock(UserRepository.class),
                 auditService,
-                mock(EmailService.class),
+                mock(NotificationGate.class),
                 mock(EmailTemplateService.class),
                 redissonClient,
                 riskScoringService);

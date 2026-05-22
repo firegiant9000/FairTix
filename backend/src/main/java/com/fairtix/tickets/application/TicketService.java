@@ -4,6 +4,7 @@ import com.fairtix.audit.application.AuditService;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.orders.domain.Order;
+import com.fairtix.organizations.application.PlanEnforcementService;
 import com.fairtix.tickets.domain.Ticket;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import org.springframework.stereotype.Service;
@@ -16,13 +17,21 @@ public class TicketService {
 
   private final TicketRepository ticketRepository;
   private final AuditService auditService;
+  private final PlanEnforcementService planEnforcementService;
 
-  public TicketService(TicketRepository ticketRepository, AuditService auditService) {
+  public TicketService(TicketRepository ticketRepository,
+                       AuditService auditService,
+                       PlanEnforcementService planEnforcementService) {
     this.ticketRepository = ticketRepository;
     this.auditService = auditService;
+    this.planEnforcementService = planEnforcementService;
   }
 
   public void issueTickets(Order order, List<SeatHold> holds) {
+    if (!holds.isEmpty()) {
+      planEnforcementService.checkCanIssueTicket(
+          holds.get(0).getSeat().getEvent().getOrganizationId());
+    }
     List<Ticket> tickets = holds.stream()
         .map(hold -> new Ticket(
             order,

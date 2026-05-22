@@ -6,15 +6,15 @@ import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
-import com.fairtix.notifications.application.EmailService;
 import com.fairtix.notifications.application.EmailTemplateService;
-import com.fairtix.notifications.application.NotificationPreferenceService;
-import com.fairtix.notifications.domain.NotificationPreference;
+import com.fairtix.notifications.application.NotificationGate;
+import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.transaction.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Periodically scans for active holds whose expiry has passed and marks them
@@ -51,67 +52,66 @@ public class HoldExpirationScheduler {
   private final SeatHoldRepository seatHoldRepository;
   private final SeatRepository seatRepository;
   private final UserRepository userRepository;
-  private final EmailService emailService;
+  private final NotificationGate notificationGate;
   private final EmailTemplateService emailTemplateService;
-  private final NotificationPreferenceService notificationPreferenceService;
 
   public HoldExpirationScheduler(SeatHoldRepository seatHoldRepository,
       SeatRepository seatRepository,
       UserRepository userRepository,
-      EmailService emailService,
-      EmailTemplateService emailTemplateService,
-      NotificationPreferenceService notificationPreferenceService) {
+      NotificationGate notificationGate,
+      EmailTemplateService emailTemplateService) {
     this.seatHoldRepository = seatHoldRepository;
     this.seatRepository = seatRepository;
     this.userRepository = userRepository;
-    this.emailService = emailService;
+    this.notificationGate = notificationGate;
     this.emailTemplateService = emailTemplateService;
-    this.notificationPreferenceService = notificationPreferenceService;
   }
 
   @Scheduled(fixedDelayString = "${holds.cleanup.interval-ms:30000}")
   @Transactional
   public void expireHolds() {
-    // Always query page 0: after mutation the ACTIVE items disappear from the
-    // result set, so a subsequent run naturally picks up the next batch.
-    Page<SeatHold> batch = seatHoldRepository.findAllByStatusAndExpiresAtBefore(
-        HoldStatus.ACTIVE, Instant.now(), PageRequest.of(0, PAGE_SIZE));
+    MDC.put("requestId", "sched-expireHolds-" + UUID.randomUUID());
+    try {
+      // Always query page 0: after mutation the ACTIVE items disappear from the
+      // result set, so a subsequent run naturally picks up the next batch.
+      Page<SeatHold> batch = seatHoldRepository.findAllByStatusAndExpiresAtBefore(
+          HoldStatus.ACTIVE, Instant.now(), PageRequest.of(0, PAGE_SIZE));
 
-    if (batch.isEmpty()) {
-      return;
-    }
-
-    List<Seat> seatsToRelease = new ArrayList<>();
-    List<SeatHold> expiredHolds = new ArrayList<>();
-    for (SeatHold hold : batch.getContent()) {
-      hold.setStatus(HoldStatus.EXPIRED);
-      expiredHolds.add(hold);
-      Seat seat = hold.getSeat();
-      if (seat.getStatus() == SeatStatus.HELD) {
-        seat.setStatus(SeatStatus.AVAILABLE);
-        seatsToRelease.add(seat);
+      if (batch.isEmpty()) {
+        return;
       }
-    }
 
-    seatHoldRepository.saveAll(expiredHolds);
-    seatRepository.saveAll(seatsToRelease);
-
-    List<SeatHold> toEmail = List.copyOf(expiredHolds);
-    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-      @Override
-      public void afterCommit() {
-        for (SeatHold hold : toEmail) {
-          sendHoldExpiryEmail(hold);
+      List<Seat> seatsToRelease = new ArrayList<>();
+      List<SeatHold> expiredHolds = new ArrayList<>();
+      for (SeatHold hold : batch.getContent()) {
+        hold.setStatus(HoldStatus.EXPIRED);
+        expiredHolds.add(hold);
+        Seat seat = hold.getSeat();
+        if (seat.getStatus() == SeatStatus.HELD) {
+          seat.setStatus(SeatStatus.AVAILABLE);
+          seatsToRelease.add(seat);
         }
       }
-    });
+
+      seatHoldRepository.saveAll(expiredHolds);
+      seatRepository.saveAll(seatsToRelease);
+
+      List<SeatHold> toEmail = List.copyOf(expiredHolds);
+      TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        @Override
+        public void afterCommit() {
+          for (SeatHold hold : toEmail) {
+            sendHoldExpiryEmail(hold);
+          }
+        }
+      });
+    } finally {
+      MDC.remove("requestId");
+    }
   }
 
   private void sendHoldExpiryEmail(SeatHold hold) {
     try {
-      NotificationPreference prefs = notificationPreferenceService.getPreferences(hold.getOwnerId());
-      if (!prefs.isEmailHold()) return;
-
       Optional<User> userOpt = userRepository.findById(hold.getOwnerId());
       if (userOpt.isEmpty()) return;
 
@@ -126,7 +126,8 @@ public class HoldExpirationScheduler {
 
       String body = emailTemplateService.buildHoldExpiryEmail(
           user.getEmail(), eventTitle, List.of(seatLine), hold.getId().toString());
-      emailService.sendEmail(user.getEmail(), "Your held seat has been released — " + eventTitle, body);
+      notificationGate.sendEmail(user.getId(), NotificationCategory.HOLD_EXPIRING,
+          user.getEmail(), "Your held seat has been released — " + eventTitle, body);
     } catch (Exception ex) {
       log.warn("Failed to send hold expiry email for hold {}: {}", hold.getId(), ex.getMessage());
     }
