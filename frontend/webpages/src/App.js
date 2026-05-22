@@ -24,9 +24,21 @@ import AdminLayout from './admin/AdminLayout';
 import OrganizerRoute from './organizer/OrganizerRoute';
 import OrganizerLayout from './organizer/OrganizerLayout';
 import OrganizerDashboard from './organizer/pages/OrganizerDashboard';
+import OrganizerEventsPage from './organizer/pages/OrganizerEventsPage';
+import OrganizerEventDetailPage from './organizer/pages/OrganizerEventDetailPage';
 import OrganizerTeam from './organizer/pages/OrganizerTeam';
 import OrganizerOnboarding from './organizer/pages/OrganizerOnboarding';
 import OrganizerPlaceholder from './organizer/pages/OrganizerPlaceholder';
+import CompsPage from './organizer/pages/CompsPage';
+import HoldsPage from './organizer/pages/HoldsPage';
+import WillCallPage from './organizer/pages/WillCallPage';
+import BoxOfficePage from './organizer/pages/BoxOfficePage';
+import SettlementPage from './organizer/pages/SettlementPage';
+import OrganizerBrandingPage from './organizer/pages/OrganizerBrandingPage';
+import OrganizerEventPagePage from './organizer/pages/OrganizerEventPagePage';
+import OrganizerDomainsPage from './organizer/pages/OrganizerDomainsPage';
+import PayoutsPage from './organizer/pages/PayoutsPage';
+import TaxPage from './organizer/pages/TaxPage';
 import AdminDashboard from './admin/pages/AdminDashboard';
 import AdminEventsPage from './admin/pages/AdminEventsPage';
 import AdminSeatsPage from './admin/pages/AdminSeatsPage';
@@ -36,6 +48,7 @@ import AdminRefundsPage from './admin/pages/AdminRefundsPage';
 import AdminSupportPage from './admin/pages/AdminSupportPage';
 import AdminFraudPage from './admin/pages/AdminFraudPage';
 import AdminPerformersPage from './admin/pages/AdminPerformersPage';
+import AdminOrgApprovalsPage from './admin/pages/AdminOrgApprovalsPage';
 import MyRefunds from './pages/MyRefunds';
 import OrderHistoryPage from './pages/OrderHistoryPage';
 import TicketDetailPage from './pages/TicketDetailPage';
@@ -102,6 +115,7 @@ function App() {
                 <Route path="support" element={<AdminSupportPage />} />
                 <Route path="fraud" element={<AdminFraudPage />} />
                 <Route path="performers" element={<AdminPerformersPage />} />
+                <Route path="org-approvals" element={<AdminOrgApprovalsPage />} />
               </Route>
             </Route>
 
@@ -111,14 +125,24 @@ function App() {
                 users with zero orgs to /organizer/onboarding. */}
             <Route element={<OrganizerRoute />}>
               <Route path="/organizer/onboarding" element={<OrganizerOnboarding />} />
+              {/* Box office runs full-screen (tablet) outside the organizer layout. */}
+              <Route path="/organizer/box-office" element={<BoxOfficePage />} />
               <Route path="/organizer" element={<OrganizerLayout />}>
                 <Route index element={<OrganizerDashboard />} />
-                <Route path="events" element={<OrganizerPlaceholder title="Events" description="Cross-event list and create-event wizard land in M2." />} />
+                <Route path="events" element={<OrganizerEventsPage />} />
                 <Route path="events/new" element={<OrganizerPlaceholder title="Create event" description="Create-event wizard lands in M2." />} />
-                <Route path="events/:eventId" element={<OrganizerPlaceholder title="Event detail" description="Sales, attendees, holds, comps, scan progress — all wired in M2." />} />
+                <Route path="events/:eventId" element={<OrganizerEventDetailPage />} />
+                <Route path="events/:eventId/page" element={<OrganizerEventPagePage />} />
+                <Route path="events/:eventId/comps" element={<CompsPage />} />
+                <Route path="events/:eventId/holds" element={<HoldsPage />} />
+                <Route path="events/:eventId/will-call" element={<WillCallPage />} />
+                <Route path="events/:eventId/settlement" element={<SettlementPage />} />
                 <Route path="sales" element={<OrganizerPlaceholder title="Sales" description="Cross-event sales reporting lands in M2." />} />
-                <Route path="payouts" element={<OrganizerPlaceholder title="Payouts" description="Stripe Connect status and payout history land with M2 #170." />} />
-                <Route path="settings" element={<OrganizerPlaceholder title="Settings" description="Organization details and branding controls land in M2." />} />
+                <Route path="payouts" element={<PayoutsPage />} />
+                <Route path="tax" element={<TaxPage />} />
+                <Route path="settings" element={<OrganizerPlaceholder title="Settings" description="Organization details and billing settings land in M2." />} />
+                <Route path="settings/branding" element={<OrganizerBrandingPage />} />
+                <Route path="settings/domains" element={<OrganizerDomainsPage />} />
                 <Route path="team" element={<OrganizerTeam />} />
                 <Route path="integrations" element={<OrganizerPlaceholder title="Integrations" description="API keys and webhooks are scheduled for M6." />} />
               </Route>

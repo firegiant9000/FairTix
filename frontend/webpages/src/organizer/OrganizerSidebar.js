@@ -16,16 +16,24 @@ import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
 import SettingsIcon from '@mui/icons-material/Settings';
 import GroupIcon from '@mui/icons-material/Group';
 import IntegrationInstructionsIcon from '@mui/icons-material/IntegrationInstructions';
+import PointOfSaleIcon from '@mui/icons-material/PointOfSale';
+import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
+import PaletteIcon from '@mui/icons-material/Palette';
+import LanguageIcon from '@mui/icons-material/Language';
 
 export const DRAWER_WIDTH = 240;
 
 const navItems = [
   { label: 'Dashboard', path: '/organizer', icon: <DashboardIcon /> },
   { label: 'Events', path: '/organizer/events', icon: <EventIcon /> },
+  { label: 'Box office', path: '/organizer/box-office', icon: <PointOfSaleIcon /> },
   { label: 'Sales', path: '/organizer/sales', icon: <TrendingUpIcon /> },
   { label: 'Payouts', path: '/organizer/payouts', icon: <AccountBalanceWalletIcon /> },
+  { label: 'Tax', path: '/organizer/tax', icon: <ReceiptLongIcon /> },
   { label: 'Team', path: '/organizer/team', icon: <GroupIcon /> },
   { label: 'Settings', path: '/organizer/settings', icon: <SettingsIcon /> },
+  { label: 'Branding', path: '/organizer/settings/branding', icon: <PaletteIcon /> },
+  { label: 'Domains', path: '/organizer/settings/domains', icon: <LanguageIcon /> },
   { label: 'Integrations', path: '/organizer/integrations', icon: <IntegrationInstructionsIcon /> },
 ];
 
