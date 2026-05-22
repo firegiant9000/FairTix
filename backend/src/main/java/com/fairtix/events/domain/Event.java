@@ -44,6 +44,9 @@ public class Event {
   @Column(name = "organizer_id")
   private UUID organizerId;
 
+  @Column(name = "organization_id")
+  private UUID organizationId;
+
   @Column(name = "queue_required", nullable = false)
   private boolean queueRequired = false;
 
@@ -169,6 +172,14 @@ public class Event {
 
   public UUID getOrganizerId() {
     return organizerId;
+  }
+
+  public UUID getOrganizationId() {
+    return organizationId;
+  }
+
+  public void setOrganizationId(UUID organizationId) {
+    this.organizationId = organizationId;
   }
 
   public boolean isQueueRequired() {

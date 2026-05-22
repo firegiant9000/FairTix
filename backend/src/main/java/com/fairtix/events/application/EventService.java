@@ -6,10 +6,9 @@ import com.fairtix.events.domain.EventStatus;
 import com.fairtix.events.dto.UpdateEventRequest;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.domain.HoldStatus;
-import com.fairtix.notifications.application.EmailService;
 import com.fairtix.notifications.application.EmailTemplateService;
-import com.fairtix.notifications.application.NotificationPreferenceService;
-import com.fairtix.notifications.domain.NotificationPreference;
+import com.fairtix.notifications.application.NotificationGate;
+import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.refunds.application.RefundService;
 import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.domain.SeatStatus;
@@ -53,26 +52,23 @@ public class EventService {
   private final SeatHoldRepository seatHoldRepository;
   private final TicketRepository ticketRepository;
   private final RefundService refundService;
-  private final EmailService emailService;
   private final EmailTemplateService emailTemplateService;
-  private final NotificationPreferenceService notificationPreferenceService;
+  private final NotificationGate notificationGate;
 
   public EventService(EventRepository repository, VenueRepository venueRepository,
       PerformerRepository performerRepository,
       SeatHoldRepository seatHoldRepository, TicketRepository ticketRepository,
       RefundService refundService,
-      EmailService emailService,
       EmailTemplateService emailTemplateService,
-      NotificationPreferenceService notificationPreferenceService) {
+      NotificationGate notificationGate) {
     this.repository = repository;
     this.venueRepository = venueRepository;
     this.performerRepository = performerRepository;
     this.seatHoldRepository = seatHoldRepository;
     this.ticketRepository = ticketRepository;
     this.refundService = refundService;
-    this.emailService = emailService;
     this.emailTemplateService = emailTemplateService;
-    this.notificationPreferenceService = notificationPreferenceService;
+    this.notificationGate = notificationGate;
   }
 
   public Event createEvent(String title, Instant startTime, UUID venueId, UUID organizerId,
@@ -190,10 +186,9 @@ public class EventService {
 
   private void sendCancellationEmail(User user, String eventTitle, String eventDate) {
     try {
-      NotificationPreference prefs = notificationPreferenceService.getPreferences(user.getId());
-      if (!prefs.isEmailTicket()) return;
       String body = emailTemplateService.buildEventCancelledEmail(user.getEmail(), eventTitle, eventDate);
-      emailService.sendEmail(user.getEmail(), "Event Cancelled: " + eventTitle, body);
+      notificationGate.sendEmail(user.getId(), NotificationCategory.EVENT_CANCELLED,
+          user.getEmail(), "Event Cancelled: " + eventTitle, body);
     } catch (Exception ex) {
       log.warn("Failed to send cancellation email to {}: {}", user.getEmail(), ex.getMessage());
     }
