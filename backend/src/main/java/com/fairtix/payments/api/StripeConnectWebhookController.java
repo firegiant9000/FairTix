@@ -3,7 +3,9 @@ package com.fairtix.payments.api;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
+import com.fairtix.organizations.application.PublicEndpoint;
 import com.fairtix.payments.application.StripeConnectService;
+import com.fairtix.reports.application.PayoutReportService;
 import com.stripe.exception.SignatureVerificationException;
 import com.stripe.model.Account;
 import com.stripe.model.Dispute;
@@ -37,6 +39,7 @@ import java.util.UUID;
 @Tag(name = "Webhooks", description = "Stripe Connect webhooks (separate signing secret)")
 @RestController
 @RequestMapping("/api/webhooks")
+@PublicEndpoint("Stripe Connect webhook receiver — auth via webhook signature, not org membership")
 public class StripeConnectWebhookController {
 
   private static final Logger log = LoggerFactory.getLogger(StripeConnectWebhookController.class);
@@ -54,13 +57,16 @@ public class StripeConnectWebhookController {
   private final OrganizationRepository organizationRepository;
   private final StripeConnectService connectService;
   private final AuditService auditService;
+  private final PayoutReportService payoutReportService;
 
   public StripeConnectWebhookController(OrganizationRepository organizationRepository,
                                         StripeConnectService connectService,
-                                        AuditService auditService) {
+                                        AuditService auditService,
+                                        PayoutReportService payoutReportService) {
     this.organizationRepository = organizationRepository;
     this.connectService = connectService;
     this.auditService = auditService;
+    this.payoutReportService = payoutReportService;
   }
 
   @PostConstruct
@@ -129,6 +135,7 @@ public class StripeConnectWebhookController {
     getObject(event, Payout.class).ifPresent(payout -> {
       Organization org = orgForEvent(event);
       if (org == null) return;
+      payoutReportService.syncPayout(org.getId(), payout);
       auditService.log(SYSTEM_ACTOR, auditAction, "ORGANIZATION", org.getId(),
           "payout=" + payout.getId() + " amount=" + payout.getAmount()
               + " currency=" + payout.getCurrency()
@@ -140,6 +147,7 @@ public class StripeConnectWebhookController {
     getObject(event, Payout.class).ifPresent(payout -> {
       Organization org = orgForEvent(event);
       if (org == null) return;
+      payoutReportService.syncPayout(org.getId(), payout);
       auditService.log(SYSTEM_ACTOR, "STRIPE_PAYOUT_FAILED", "ORGANIZATION", org.getId(),
           "payout=" + payout.getId()
               + " failureCode=" + payout.getFailureCode()
