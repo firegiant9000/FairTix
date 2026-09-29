@@ -65,7 +65,7 @@ class EventControllerTest {
     String body = """
         {
           "title":     "Test Concert",
-          "startTime": "2026-06-15T19:00:00Z",
+          "startTime": "2099-06-15T19:00:00Z",
           "venueId":   "%s"
         }
         """.formatted(testVenue.getId());
@@ -78,7 +78,7 @@ class EventControllerTest {
         .andExpect(jsonPath("$.id").value(notNullValue()))
         .andExpect(jsonPath("$.title").value("Test Concert"))
         .andExpect(jsonPath("$.venue.name").value("Main Arena"))
-        .andExpect(jsonPath("$.startTime").value("2026-06-15T19:00:00Z"))
+        .andExpect(jsonPath("$.startTime").value("2099-06-15T19:00:00Z"))
         .andExpect(jsonPath("$.organizerId").value(ADMIN_ID.toString()));
   }
 
@@ -87,7 +87,7 @@ class EventControllerTest {
     String body = """
         {
           "title":     "Test Concert",
-          "startTime": "2026-06-15T19:00:00Z",
+          "startTime": "2099-06-15T19:00:00Z",
           "venueId":   "%s"
         }
         """.formatted(testVenue.getId());
@@ -104,7 +104,7 @@ class EventControllerTest {
     String body = """
         {
           "title":     "Test Concert",
-          "startTime": "2026-06-15T19:00:00Z",
+          "startTime": "2099-06-15T19:00:00Z",
           "venueId":   "%s"
         }
         """.formatted(testVenue.getId());
@@ -121,7 +121,7 @@ class EventControllerTest {
 
   @Test
   void listEvents_unauthenticated_returns200() throws Exception {
-    Event ev = eventService.createEvent("Event 1", Instant.parse("2026-06-01T18:00:00Z"), testVenue.getId(), null, false, null, null);
+    Event ev = eventService.createEvent("Event 1", Instant.parse("2099-06-01T18:00:00Z"), testVenue.getId(), null, false, null, null);
     eventService.publishEvent(ev.getId(), null);
 
     mockMvc.perform(get("/api/events"))
@@ -135,9 +135,9 @@ class EventControllerTest {
   void listEvents_pagination_works() throws Exception {
     Venue venueB = venueRepository.save(new Venue("Venue B", null, null, null, null, null, null));
     Venue venueC = venueRepository.save(new Venue("Venue C", null, null, null, null, null, null));
-    Event evA = eventService.createEvent("Event A", Instant.parse("2026-06-01T18:00:00Z"), testVenue.getId(), null, false, null, null);
-    Event evB = eventService.createEvent("Event B", Instant.parse("2026-06-02T18:00:00Z"), venueB.getId(), null, false, null, null);
-    Event evC = eventService.createEvent("Event C", Instant.parse("2026-06-03T18:00:00Z"), venueC.getId(), null, false, null, null);
+    Event evA = eventService.createEvent("Event A", Instant.parse("2099-06-01T18:00:00Z"), testVenue.getId(), null, false, null, null);
+    Event evB = eventService.createEvent("Event B", Instant.parse("2099-06-02T18:00:00Z"), venueB.getId(), null, false, null, null);
+    Event evC = eventService.createEvent("Event C", Instant.parse("2099-06-03T18:00:00Z"), venueC.getId(), null, false, null, null);
     eventService.publishEvent(evA.getId(), null);
     eventService.publishEvent(evB.getId(), null);
     eventService.publishEvent(evC.getId(), null);
@@ -158,7 +158,7 @@ class EventControllerTest {
 
   @Test
   void getEvent_existingId_returns200() throws Exception {
-    Event event = eventService.createEvent("My Event", Instant.parse("2026-07-01T20:00:00Z"), testVenue.getId(), null, false, null, null);
+    Event event = eventService.createEvent("My Event", Instant.parse("2099-07-01T20:00:00Z"), testVenue.getId(), null, false, null, null);
 
     mockMvc.perform(get("/api/events/{id}", event.getId()))
         .andExpect(status().isOk())
