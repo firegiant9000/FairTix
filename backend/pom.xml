@@ -172,7 +172,7 @@
     <dependency>
       <groupId>com.stripe</groupId>
       <artifactId>stripe-java</artifactId>
-      <version>26.3.0</version>
+      <version>33.4.2</version>
     </dependency>
   </dependencies>
 
