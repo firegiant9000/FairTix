@@ -176,6 +176,4 @@ history lives in [docs/planning](docs/planning).
 
 ## License
 
-No license has been chosen yet, so the code is all rights reserved by its
-authors. Because this was a team project, adding a license needs agreement
-from the contributors listed above.
+[MIT](LICENSE). Contributors are listed under Team and contributions above.
