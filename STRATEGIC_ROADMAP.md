@@ -16,6 +16,217 @@ The 6-month plan below assumes the **independent-venue vertical**. If you pick d
 
 ---
 
+## Revision 2026-09-29: FairTix as a distributed-systems laboratory
+
+_This revision supersedes the framing above. The original text from 2026-05-12 is preserved below as history; each phase heading now carries a status tag. Evidence for every decision here is in [`docs/roadmap-review-2026-09.md`](docs/roadmap-review-2026-09.md), which was verified against `origin/main` at `60ed8901`._
+
+### R1. Decision
+
+FairTix is no longer a ticketing SaaS roadmap. It is **a distributed-systems and production-backend engineering laboratory that uses ticketing as its domain**. The "Path A vs Path C" question in Section 3 is answered: neither. Path A (venue SaaS) is cancelled; the market analysis in Section 2 still holds, and one person cannot run on-sale support, PCI scope and chargebacks. Path C's engineering deliverables (deployable, documented, measured) are adopted; its marketing deliverables (blog, HN) are optional.
+
+The stack does not change. FairTix stays Spring Boot 4, PostgreSQL 16, Redis 7 and React. There is no .NET rewrite and no microservices split. The one thing the old roadmap ruled out that this revision requires is **running two replicas of the monolith**, because multi-instance correctness is the evidence the portfolio lacks.
+
+This repository owns, for the whole portfolio: Terraform, Azure container infrastructure, OpenTelemetry, SLOs, k6 and failure injection. No other personal repository should duplicate them.
+
+### R2. What the code proves today, and what it does not
+
+Verified: sorted `PESSIMISTIC_WRITE` seat locking with `@Version` backstop, hold expiry sweep, audit log in `REQUIRES_NEW`, signature-verified Stripe webhooks, refund execution, 45 forward-only Flyway migrations, 410 `@Test` methods, a CI gate with Trivy and Dependency-Check.
+
+Not proven by anything in the repository: that the locking works on PostgreSQL (all tests run on H2 with Flyway disabled), that any concurrent test exists (none does), any throughput or latency number, any run at more than one replica, any trace or metric, any infrastructure definition, any failure-injection result. The README's "tests cover seat-hold concurrency" and the roadmap's "handles 10k concurrent users" are design claims, corrected in this revision.
+
+Known defects found by inspection, each of which becomes a red-before / green-after test: no unique ticket per seat; `CONFIRMED` holds never expire if payment fails; no Stripe idempotency keys; Stripe calls inside DB transactions; no webhook event ledger; ten `@Scheduled` jobs on every replica; per-JVM SSE registry; fail-open, spoofable rate limiter.
+
+### R3. Status of the 2026-05 roadmap items
+
+| Item | Status | Previous goal | New decision and reason | Effect on usefulness | Effect on evidence |
+|---|---|---|---|---|---|
+| Phase 0: pick Path A/C, board, domain, positioning README | SUPERSEDED | Commit to a business direction | Decided here: laboratory. No domain purchase. README already repositioned 2026-09. | None | Removes a distraction |
+| Phase 0: staging environment on Railway | SUPERSEDED | Railway preview env | Replaced by the Terraform-defined Azure environment (L3). Railway, Cloud Run and Netlify configs stay as unmaintained legacy paths and are marked OPTIONAL. | Same | Turns "staging" into IaC evidence |
+| Phase 1 code items (refunds, NotificationGate, correlation IDs, cookie auth, coverage gates, runbook) | CURRENT (done) | Production-blocking fixes | Done and verified. Correlation ID work is extended in L5 (echo `X-Request-Id`, honour inbound). | n/a | Baseline |
+| Phase 1 gap 1: rebaseline JaCoCo | CURRENT | Raise floor to baseline−1 % | Do it in L1 once tests run on Postgres and the number is real. | None | Honest coverage gate |
+| Phase 1 gap 2: deploy staging (Railway/Neon/Upstash) | SUPERSEDED | Staging on hosted free tiers | Replaced by L3. | Same | IaC and cloud evidence |
+| Phase 1 gap 3: cookie-domain ADR | CURRENT | ADR 0002 | Already written (`docs/adr/0002-cross-subdomain-cookies.md`). Revisit only when the ACA hostname is known. | None | None |
+| Phase 1 gap 4: prod-restore migration test | SUPERSEDED | Run V32–V36 on an anonymised restore | There is no prod. Replaced by "Flyway V1–V45 runs against real Postgres in CI" (L1) and a PITR restore drill (L3). | None | Migration evidence |
+| Phase 1 gap 5: Stripe refund IT (needs secret) | DEFERRED | Run `StripeRefundIntegrationIT` in CI | Keep gated; L4 replaces the money-movement risk with idempotency keys and a replay test that needs no live Stripe. | None | Replaced by a stronger test |
+| Phase 1 gaps 6–7: screencap, organizer RTL tests | CANCELLED | Demo polish | No engineering evidence. | Low | None |
+| Phase 2 M2-01..M2-25 (done rows) | CURRENT (done) | Organizer self-service | Keep as-is; no further organizer breadth. | n/a | Baseline |
+| M2-04 dashboard cache and four indexes | OPTIONAL | Perf fix | Do only if the L6 load run shows these queries as a bottleneck. Measure first. | None | Only if measured |
+| M2-05 attendee CSV, velocity chart | DEFERRED | Organizer UI | Feature breadth. | Low | None |
+| M2-07 partial-refund IT | DEFERRED | Stripe test-mode IT | Same as gap 5. | None | Replaced |
+| M2-10 Stripe Terminal SDK frontend | DEFERRED | Card-present at box office | Hardware-blocked; irrelevant to the laboratory. | None | None |
+| M2-22 custom-domain daily health check | SUPERSEDED | Scheduled check | Never implemented despite the ✅. Would add an eleventh replicated scheduler; only build it after L4 leader election, and only if needed. | None | None |
+| Phase 2 DoD: scan at door, payout schedule, card path, screencap | CANCELLED | Product completeness | Not evidence-producing. | Low | None |
+| Phase 3 (signed QR, scan endpoint, wallet passes, ticket trust) | CANCELLED | Gate entry | No concurrency, cloud or reliability evidence. Revisit only if a load experiment needs a second write path. | Medium for a real venue, zero for this project | None |
+| Phase 4 (promo codes, presales, access controls, pricing) | CANCELLED | Monetisation mechanics | Feature breadth for zero customers. | Low | None |
+| Phase 5 (attendee UX, marketing site) | CANCELLED | Growth | No evidence. | Low | None |
+| Phase 6 (first customers, GTM) | CANCELLED | Business | Path A cancelled. | n/a | n/a |
+| Phase 7 week 24: k6 at 1,000 users | SUPERSEDED | One load test | Becomes L6 with defined metrics, an environment definition and a committed results table. | None | The headline number |
+| Phase 7: wire `RiskScoringService` into checkout | DEFERRED | Real-time fraud blocking | Adds latency to the path under test without adding evidence. | Low | None |
+| Phase 7 stretch: backup and DR runbook | CURRENT | Runbook | Folded into L3 as a PostgreSQL Flexible Server PITR restore drill with recorded counts and time. | None | Recovery evidence |
+| Phase 7 stretch: public API keys, Mailchimp, DocuSign, status page, affiliate codes | CANCELLED | Integrations | No evidence. | Low | None |
+| Section 5 "no horizontal scaling" | SUPERSEDED | Stay single-instance | Two replicas is the point of L4. The monolith stays a monolith. | None | Multi-instance evidence |
+| Section 5 "no stack replacement" | CURRENT | Keep the stack | Unchanged. | n/a | n/a |
+| Section 7 next-7-days, Open questions | SUPERSEDED | Business setup | Replaced by the portfolio execution plan. | n/a | n/a |
+
+### R4. Laboratory milestones
+
+Each milestone lists its acceptance criterion, the artifact it produces, a resume bullet with placeholders that must not be filled until the experiment runs, and the interview questions it should prepare you for. Order is fixed; L1 unblocks everything else.
+
+#### L1. Realistic database correctness
+
+**Goal.** Make the test suite run against the real database engine, then prove the seat-hold invariants under concurrency, deterministically.
+
+Work:
+1. Add Testcontainers (PostgreSQL 16 and Redis 7) to the backend test build. Replace the H2 datasource and the `TestRedisConfig` Mockito bean for integration tests with real containers. Let Flyway run V1–V45 in every test run; remove `ddl-auto=create-drop` from the test profile.
+2. Keep fast unit tests where they are pure Mockito; only tests that touch a repository, a transaction or Redis move to containers. Split the Maven surefire and failsafe phases so the container suite is `verify`, not `test`.
+3. Write a deterministic **contention correctness test**: N virtual clients (start with 200) request overlapping seat sets from a 50-seat section across several rounds, using an `ExecutorService` and a `CountDownLatch` so every thread hits the lock at once. Assert zero seats with more than one active hold, zero oversells, and that every rejected request failed with the expected conflict. Sample `pg_locks` and `pg_stat_activity` during the run. Add a second variant with the sorted-ID ordering removed that asserts a `DeadlockLoserDataAccessException` occurs, proving the ordering matters.
+4. Fix the three inventory and payment defects with reproducing tests that are red on the parent commit and green on the fix:
+   - Partial unique index on `tickets(seat_id)` for non-cancelled tickets, mapped to a 409. A two-thread checkout test on the same confirmed hold reproduces two tickets before and one after.
+   - Expire `CONFIRMED` holds that never reach a paid order: a second expiry window on confirmation, and an explicit release on payment failure. Test that a failed PaymentIntent returns the seat to available.
+   - Hold and payment failure paths: enumerate what happens when Stripe succeeds and the DB commit fails, and when the DB commits and Stripe fails; write the test for each, even if the fix lands in L4.
+5. CI hygiene in the same milestone: add a `push: main` trigger, pin `Dependency-Check_Action` and `trivy-action` to commit SHAs, give Dependency-Check a `failBuildOnCVSS` threshold, add `mvnw`, rebaseline the JaCoCo floor to the measured number minus one point.
+
+**Acceptance.** CI runs Flyway V1–V45 against a PostgreSQL container on every PR and on push to `main`; the contention test passes with zero oversells and the no-ordering variant demonstrates a deadlock; the three defect tests exist with the red commit hash recorded in their Javadoc; the H2 dependency is gone from the integration path.
+
+**Separation of concerns.** L1 is correctness. It records counts (holds, conflicts, deadlocks, retries), not latency. Latency belongs to L2.
+
+**Evidence produced.** `docs/experiments/l1-contention-correctness.md` with the test names, the commit hash, the container image tags, the counts per round, and links to the red and green commits for each defect.
+
+**Resume potential.** "Verified FairTix seat holds under [N] concurrent clients contending for [M] seats on PostgreSQL 16 with zero oversells and zero duplicate ownership, and demonstrated that removing sorted lock acquisition produces [D] deadlocks; closed a double-sell race with a database uniqueness backstop verified by a concurrent test."
+
+**Interview questions.**
+- Why sort seat IDs before acquiring row locks, and what happens if you do not?
+- Why is `@Version` still needed when you already hold a pessimistic lock?
+- What does H2 get wrong about `SELECT ... FOR UPDATE` compared with PostgreSQL?
+- Where should oversell protection live: application code, a lock, or a constraint? Why all three?
+- How do you make a concurrency test deterministic enough for CI?
+
+#### L2. Measured contention
+
+**Goal.** Put numbers on the design from L1, in a controlled local environment, with the limitations written down.
+
+Experiment: about 200 concurrent operations against a 50-seat section with overlapping requests, repeated for multiple rounds, on Testcontainers Postgres on a developer machine (not GitHub Actions). Record successful holds, rejected conflicts, oversells (must be 0), deadlocks, optimistic-lock retries, database lock waits from `pg_stat_activity`, and hold-latency p50, p95 and p99. Run at Hikari pool size 10 and one tuned size. Repeat three times and report the spread.
+
+**Acceptance.** A results table in `docs/experiments/l2-contention-measured.md` with the machine spec, JVM flags, container versions, commit hash and the three-run spread. GitHub Actions latency numbers are explicitly excluded from the resume.
+
+**Evidence produced.** The results table and the JMH-free harness (a JUnit test tagged `@Tag("experiment")`, excluded from CI by default).
+
+**Resume potential.** "Measured FairTix seat-hold contention at [N] concurrent clients on PostgreSQL: [X] ms p95 hold latency, [C] rejected conflicts, [R] optimistic-lock retries, zero oversells; identified [bottleneck] as the limiting factor."
+
+**Interview questions.**
+- What is the difference between a lock wait and a deadlock, and how did you observe each?
+- Why do p50 and p99 diverge under row contention?
+- What changed when you changed the connection pool size, and why?
+- Why are CI runner numbers not trustworthy for latency?
+
+#### L3. Azure infrastructure in Terraform
+
+**Goal.** A cloud environment that is created, used for an experiment and destroyed, entirely from code, with no long-lived cloud credentials in GitHub.
+
+Architecture (verified against Microsoft Learn and the `azurerm` provider on 2026-09-29):
+- Resource group; Azure Container Registry (Basic).
+- Azure Container Apps environment with Log Analytics; one backend app with `min_replicas = 2` during experiments and an HTTP scale rule; system-assigned managed identity.
+- Azure Database for PostgreSQL Flexible Server, Burstable B1ms, stop/start between experiments; PITR retained 7 days.
+- Redis: **Azure Managed Redis** (`azurerm_managed_redis`, smallest Balanced or Memory Optimized SKU, `high_availability_enabled = false` for cost) **or** a Redis container app in the same environment for the cheapest experiments. **Azure Cache for Redis is not an option**: Microsoft blocks creation of new Basic, Standard and Premium caches for existing customers from 1 October 2026 and retires the service in 2028.
+- Key Vault with RBAC; secrets referenced from the container app through the managed identity (`secret { key_vault_secret_id, identity }`), never as plain values in Terraform state or workflow files.
+- Application Insights workspace-based resource for L5.
+- Subscription budget with an alert at a stated monthly amount (`azurerm_consumption_budget_subscription`) applied before the first `apply`.
+- GitHub Actions authenticating through OIDC federated credentials on a user-assigned managed identity; no client secret anywhere.
+
+Workflows: `terraform fmt -check` and `validate` on every PR; `plan` on PR with the plan posted as a comment; `apply` only on `workflow_dispatch` with an environment approval; `destroy` on `workflow_dispatch` with the same approval. Remote state in an Azure Storage account created once by hand and documented.
+
+Also in this milestone: harden the Dockerfile (non-root user, `HEALTHCHECK`, explicit JVM memory flags, remove the dead block), delete or mark unmaintained the Railway, Cloud Run and Netlify deploy paths, and run one PITR restore drill on the Flexible Server recording row counts and elapsed time.
+
+**Acceptance.** `apply` and `destroy` both succeed from CI through OIDC; `/actuator/health` answers on the Container Apps hostname with two replicas running; the budget alert exists before the first apply; `docs/infra/cost.md` records the estimated and the actual monthly cost for one experiment window; `terraform destroy` leaves an empty resource group; the restore drill is recorded.
+
+**Estimated cost.** Confirm with the Azure pricing calculator before applying. Expected order of magnitude: ACA consumption plus ACR Basic a few dollars per month idle; Flexible Server B1ms and the smallest Managed Redis add tens of dollars per month while running, less if the Flexible Server is stopped between experiments and Redis runs as a container app. Target: under a stated cap per experiment cycle, written into the budget resource.
+
+**Evidence produced.** The `infra/` Terraform module, the four workflow runs (plan, apply, destroy, restore drill), the cost document, a screenshot of the resource group before and after destroy.
+
+**Resume potential.** "Provisioned a two-replica Azure Container Apps environment (Container Registry, PostgreSQL Flexible Server, Managed Redis, Key Vault, managed identity, Log Analytics) with Terraform and OIDC-federated GitHub Actions; created and destroyed it on demand at about $[C] per experiment cycle."
+
+**Interview questions.**
+- Why OIDC federation instead of a service-principal secret, and what does the federated credential actually trust?
+- How does a container app read a Key Vault secret without any credential in its configuration?
+- What is in Terraform state that you would not want in a public repository, and how did you keep it out?
+- Why Container Apps instead of AKS for this workload?
+- What did the destroy workflow fail to remove the first time, and why?
+
+#### L4. Multi-instance correctness
+
+**Goal.** Make the service correct at two replicas, with each known single-instance assumption fixed and proven by a reproducing test.
+
+Known assumptions to fix (from the review): ten `@Scheduled` jobs run on every replica; the SSE emitter registry is a per-JVM map; queue admission and expiry run on every replica; webhook processing has no event ledger; Stripe calls have no idempotency keys and run inside DB transactions; checkout has no client idempotency.
+
+Work, each with a red-before / green-after test:
+1. Scheduler leader election: ShedLock on PostgreSQL (or an advisory-lock wrapper). Test: two application contexts against one database, one sweep tick, exactly one execution.
+2. SSE fan-out through Redis pub/sub (Redisson `RTopic`) so admission on replica A notifies a client connected to replica B. Test: two contexts, one Redis container, client subscribed on B, admission on A, event received on B.
+3. Webhook event ledger: a `stripe_events` table written in the same transaction as the side effect; redelivery and out-of-order delivery are no-ops. Test: replay recorded `charge.refunded` payloads twice and out of order; exactly one refund completion.
+4. Stripe idempotency keys on `PaymentIntent.create` and `Refund.create`, derived from the order or refund ID; move the Stripe call out of the DB transaction or make the post-call commit failure retry-safe. Test: simulate commit failure after the Stripe call; the retry sends the same idempotency key.
+5. `Idempotency-Key` header on checkout with a stored response; duplicate submits return the original result.
+6. Retry-safe external calls (Stripe, SMTP) with bounded retries, backoff and jitter.
+
+Two-replica compose profile (two backend containers behind nginx) for local verification before the cloud run.
+
+**Acceptance.** All six tests exist and pass; a two-replica compose run of the waiting room admits 100 queued users split across replicas with zero duplicate admissions and zero missed notifications; the same on Container Apps at two replicas.
+
+**Evidence produced.** `docs/experiments/l4-two-replicas.md` with duplicate counts before and after each fix, the test names, and the compose file.
+
+**Resume potential.** "Made FairTix safe to run at [R] replicas: added scheduler leader election, replaced per-JVM SSE fan-out with Redis pub/sub, and made Stripe webhooks and checkout idempotent (event ledger, idempotency keys), each verified by a reproducing test that showed [K] duplicates before the fix."
+
+**Interview questions.**
+- What breaks when you run this service at two replicas? List everything.
+- Why is a database lock a reasonable leader-election primitive here, and when would it not be?
+- What does an idempotency key protect against that a unique constraint does not?
+- Why must the webhook ledger row be written in the same transaction as the side effect?
+- How do you test "exactly once" without flakiness?
+
+#### L5. Observability and SLOs
+
+**Goal.** One trace across the whole hold path, structured logs with correlation, metrics, two SLIs, an SLO, an alert and a runbook.
+
+Work: Micrometer with the OpenTelemetry exporter (or the Application Insights Java agent; choose one and record why) sending to Application Insights through the Container Apps managed OpenTelemetry agent (traces and logs; metrics go to Azure Monitor through Micrometer directly because the ACA agent's App Insights destination does not accept metrics). Propagate one trace across HTTP request, application logic, seat locking, database commit, the scheduler tick where relevant, the SSE notification and the Stripe boundary. Switch to JSON logs, honour inbound `X-Request-Id`, echo it in every response and put the trace ID in every log line.
+
+SLIs: hold-request success rate (non-5xx, non-timeout responses to hold requests divided by all hold requests) and waiting-room admission notification latency (time from admission decision to SSE event delivered). Derive one initial SLO for each with a stated window, one alert rule each, and one runbook each.
+
+**Acceptance.** A single trace in Application Insights shows request → lock → commit → SSE for one hold; both SLIs are visible on a dashboard; both alerts fire during the L6 drill; both runbooks exist and were followed once.
+
+**Evidence produced.** Trace screenshot, dashboard screenshot, alert rule definitions in Terraform, `docs/runbooks/`.
+
+**Resume potential.** "Instrumented FairTix with OpenTelemetry (traces, JSON logs with correlation IDs, Micrometer metrics) into Azure Monitor; defined [k] SLIs and SLOs with alerts and runbooks that fired within [T] s during fault-injection drills."
+
+**Interview questions.**
+- How does trace context cross the scheduler and the SSE boundary, where there is no HTTP request to carry it?
+- Why is "hold-request success rate" a better SLI than "error rate"?
+- How did you choose the SLO target without historical data, and what would you change after a month?
+- What is the difference between the OTel agent approach and the SDK approach, and why did you pick one?
+
+#### L6. Load and failure testing
+
+**Goal.** External load numbers on the cloud environment and documented failure behaviour, with one postmortem.
+
+k6 scripts for queue join, admission wait, hold and checkout. Ramp VUs against the Container Apps environment at two replicas, then with the scale rule active. Record VUs, throughput, p50/p95/p99 per endpoint, error rate, oversells (must be 0), DB pool exhaustion events, lock waits, replica count over time, and queue admission behaviour. Repeat at Hikari 10 and a tuned size.
+
+Failure injection with Toxiproxy locally (Redis outage for 60 s, Redis restart, PostgreSQL latency at 50 ms and 200 ms) and on Container Apps by stopping a replica mid-hold, replaying webhooks and failing an external dependency. Observe the fail-open rate limiter, queue position resets, sweep drift, SSE reconnects and time-to-alert. Fix the rate limiter's trust of `X-Forwarded-For` before the load run, or the load numbers are invalid.
+
+**Acceptance.** `docs/experiments/l6-load.md` and `docs/experiments/l6-faults.md` with tables, the k6 script version, the Terraform commit and the replica timeline; one postmortem-style document for one drill; the environment destroyed afterwards. No number appears on the resume until it appears in these files.
+
+**Evidence produced.** k6 summary JSON committed, results tables, the postmortem.
+
+**Resume potential.** "Load-tested FairTix's waiting-room and seat-hold pipeline on Azure Container Apps to [N] concurrent clients at [Y] req/s and [Z] ms p95 with zero oversells under PostgreSQL row contention; ran fault-injection drills (Redis loss, database latency, replica restart, webhook replay) and documented failure modes and recovery in runbooks and a postmortem."
+
+**Interview questions.**
+- What was the first bottleneck and how did you find it?
+- What did the system do when Redis disappeared, and was that the right behaviour?
+- How does the waiting room behave under a replica restart, and what did you change?
+- Walk me through the postmortem: detection, impact, root cause, action items.
+
+### R5. Do not do (2026-09 revision)
+
+Marketing site, customer acquisition, wallet passes, QR ticket expansion, promotion engine, consumer-growth features, additional organizer breadth, Kubernetes, a .NET rewrite, microservices, CodeQL or security scanning beyond the existing Trivy and Dependency-Check (Hacker Tracker owns security assurance), and any number on the resume that is not in a `docs/experiments/` file.
+
+---
+
 ## Section 1: Honest Project Evaluation
 
 ### What's actually built (and good)
@@ -224,7 +435,7 @@ The rest of this document assumes **Path A**, with Path C deliverables baked in 
 - Every phase ends with a demo and a written reflection — used to decide whether to continue
 - Treat the first 3 months as engineering, the last 3 months as 50/50 engineering + go-to-market
 
-### Phase 0 — Decision & setup (Week 0, ~1 week)
+### Phase 0 — Decision & setup (Week 0, ~1 week) — SUPERSEDED 2026-09-29 (see R3)
 
 **Goal:** Commit to a direction and clear the runway.
 
@@ -235,7 +446,7 @@ The rest of this document assumes **Path A**, with Path C deliverables baked in 
 - [ ] Replace the school-style README with a positioning README (one-liner, who it's for, how to run)
 - [ ] Write one paragraph in this file under "Customer hypothesis": who is the venue, what do they currently use, what do they pay, why would they switch
 
-### Phase 1 — Production-blocking fixes (Weeks 1–3) ✅ code complete
+### Phase 1 — Production-blocking fixes (Weeks 1–3) ✅ code complete — CURRENT (done); remaining gaps reclassified in R3
 
 _Audited 2026-05-22. M1 code work landed in `feat/m1-phase-1` (18 commits, issues #161–#169). Verified files exist: V30 (audit request_id), V31 (refund.stripe_refund_id), V32–V36 (org tables + backfill), `RequestLoggingFilter` (MDC), `RefundService` (Stripe `Refund.create`), `NotificationGate`, `jacoco` in `backend/pom.xml`, `docs/runbook-staging.md`._
 
@@ -260,7 +471,7 @@ _Audited 2026-05-22. M1 code work landed in `feat/m1-phase-1` (18 commits, issue
 
 **Exit criteria** (unchanged): refund test in staging returns money; email opt-outs respected; CI fails on coverage regressions. Items 1–6 are the path to closing the criteria.
 
-### Phase 2 — Organizer self-service & box office (Weeks 4–8) ✅ code complete
+### Phase 2 — Organizer self-service & box office (Weeks 4–8) ✅ code complete — CURRENT (done); partial rows DEFERRED or OPTIONAL per R3
 
 _Audited & remediated 2026-05-22 on branch `feat/m2-main`. **22 done / 3 partial / 0 blocker.** Backend full-suite: **439 / 439 pass.** Full per-issue status is in [`M2_IMPLEMENTATION_PLAN.md`](M2_IMPLEMENTATION_PLAN.md); summary below._
 
@@ -305,7 +516,7 @@ _Audited & remediated 2026-05-22 on branch `feat/m2-main`. **22 done / 3 partial
 
 **Carryover into M3 (none of these are M2 feature gaps; all are operational or hardware):** Stripe test-mode partial-refund integration test, Terminal SDK frontend wiring, dashboard 30s cache + missing indexes, attendee CSV + velocity chart, frontend RTL tests for organizer routes, staging cutover screencap.
 
-### Phase 3 — Gate entry, wallet passes & ticket trust (Weeks 9–12)
+### Phase 3 — Gate entry, wallet passes & ticket trust (Weeks 9–12) — CANCELLED 2026-09-29 (no engineering evidence; see R3)
 
 **Goal:** A venue can actually use FairTix at the door, and attendees get the modern wallet-pass experience they expect from a 2026 ticketing platform.
 
@@ -358,7 +569,7 @@ This is table stakes in 2026 and a major attendee-side delight.
 
 **Exit criteria:** A real test event runs end-to-end. Apple Wallet passes work. Scanner PWA works offline. Refunds invalidate the wallet pass within 30 seconds. The organizer's live attendance dashboard agrees with the count from the door scanners to the unit.
 
-### Phase 4 — Monetization mechanics & access controls (Weeks 13–15)
+### Phase 4 — Monetization mechanics & access controls (Weeks 13–15) — CANCELLED 2026-09-29 (see R3)
 
 **Goal:** Add the revenue-shaping features venues use to actually sell out shows. Most of this is what turns FairTix from "an online ticket form" into "a tool a promoter cares about."
 
@@ -433,7 +644,7 @@ Three refund paths per request, organizer chooses which to offer:
 
 **Exit criteria:** A test organizer can run a presale window with codes, gate by member status, sell a $150 ticket bundle with Apple Pay + Klarna, offer parking add-on, run a lottery on the next show, and have all of it tie out in the settlement report.
 
-### Phase 5 — Attendee experience & marketing site (Weeks 16–18)
+### Phase 5 — Attendee experience & marketing site (Weeks 16–18) — CANCELLED 2026-09-29 (see R3)
 
 **Goal:** Make FairTix delightful for the buyer side, not just usable. Build the public-facing site so cold venues can discover and self-serve.
 
@@ -494,7 +705,7 @@ Three refund paths per request, organizer chooses which to offer:
 
 **Exit criteria:** Public marketing site is live at the root domain. A new visitor can land, understand what FairTix does, see a pricing page, sign up, complete Stripe Connect onboarding, publish an event, and email their (imported) past-customer list — all without your involvement.
 
-### Phase 6 — First customers & GTM (Weeks 19–22)
+### Phase 6 — First customers & GTM (Weeks 19–22) — CANCELLED 2026-09-29 (Path A not pursued; see R1)
 
 **Goal:** Get the first paying venue. Then the second and third.
 
@@ -511,7 +722,7 @@ Three refund paths per request, organizer chooses which to offer:
 
 **Exit criteria for continuing:** At least one venue is in production. At least one of: (a) they pay you, (b) they refer another venue, (c) they're running real ticket volume on the platform.
 
-### Phase 7 — Scale or exit cleanly (Weeks 23–24, with longer if continuing)
+### Phase 7 — Scale or exit cleanly (Weeks 23–24, with longer if continuing) — SUPERSEDED 2026-09-29 (k6 and DR items promoted to L6 and L3; the rest CANCELLED or DEFERRED per R3)
 
 Decision point at week 22.
 
@@ -549,6 +760,8 @@ In Scenario B you exit with: a polished portfolio asset, public proof of senior-
 ---
 
 ## Section 5: What I'm explicitly telling you NOT to do
+
+_2026-09-29: the "no horizontal scaling" guidance below is SUPERSEDED by L4 (two replicas of the monolith). Everything else in this section still stands; see R5 for the current list._
 
 - **Don't add features that aren't on this list** during the 6 months. Every "wouldn't it be cool if" idea is a tax on the things that matter.
 - **Don't refactor the modules into microservices.** The monolith is correct at your scale and for the next 50x.
