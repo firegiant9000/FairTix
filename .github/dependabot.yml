@@ -1,0 +1,44 @@
+# Dependabot: weekly dependency and security updates, with minor and patch
+# bumps grouped into one PR per ecosystem so the queue stays readable.
+# Major bumps arrive as their own PRs. https://docs.github.com/code-security/dependabot
+version: 2
+updates:
+- package-ecosystem: "maven"
+  directory: "/backend"
+  schedule:
+    interval: "weekly"
+    day: "monday"
+  open-pull-requests-limit: 5
+  groups:
+    minor-and-patch:
+      update-types: ["minor", "patch"]
+
+- package-ecosystem: "npm"
+  directory: "/frontend/webpages"
+  schedule:
+    interval: "weekly"
+    day: "monday"
+  open-pull-requests-limit: 5
+  groups:
+    minor-and-patch:
+      update-types: ["minor", "patch"]
+
+- package-ecosystem: "docker"
+  directory: "/backend"
+  schedule:
+    interval: "weekly"
+    day: "monday"
+  open-pull-requests-limit: 5
+  groups:
+    minor-and-patch:
+      update-types: ["minor", "patch"]
+
+- package-ecosystem: "github-actions"
+  directory: "/"
+  schedule:
+    interval: "weekly"
+    day: "monday"
+  open-pull-requests-limit: 5
+  groups:
+    minor-and-patch:
+      update-types: ["minor", "patch"]
