@@ -1,44 +1,41 @@
-# Dependabot: weekly dependency and security updates, with minor and patch
-# bumps grouped into one PR per ecosystem so the queue stays readable.
-# Major bumps arrive as their own PRs. https://docs.github.com/code-security/dependabot
+# Dependabot: one pull request a month covering every ecosystem in this repo.
+#
+# - All minor and patch updates land together in a single "monthly-dependencies" PR.
+# - Major version bumps of libraries are ignored here; take those deliberately
+#   in their own branch. GitHub Actions majors are included (they rarely break).
+# - Security updates are separate: Dependabot opens those as soon as an
+#   advisory affects a dependency, regardless of this schedule.
+# https://docs.github.com/code-security/dependabot/working-with-dependabot/configuring-multi-ecosystem-updates
 version: 2
+
+multi-ecosystem-groups:
+  monthly-dependencies:
+    schedule:
+      interval: "monthly"
+
 updates:
-- package-ecosystem: "maven"
-  directory: "/backend"
-  schedule:
-    interval: "weekly"
-    day: "monday"
-  open-pull-requests-limit: 5
-  groups:
-    minor-and-patch:
-      update-types: ["minor", "patch"]
-
-- package-ecosystem: "npm"
-  directory: "/frontend/webpages"
-  schedule:
-    interval: "weekly"
-    day: "monday"
-  open-pull-requests-limit: 5
-  groups:
-    minor-and-patch:
-      update-types: ["minor", "patch"]
-
-- package-ecosystem: "docker"
-  directory: "/backend"
-  schedule:
-    interval: "weekly"
-    day: "monday"
-  open-pull-requests-limit: 5
-  groups:
-    minor-and-patch:
-      update-types: ["minor", "patch"]
-
-- package-ecosystem: "github-actions"
-  directory: "/"
-  schedule:
-    interval: "weekly"
-    day: "monday"
-  open-pull-requests-limit: 5
-  groups:
-    minor-and-patch:
-      update-types: ["minor", "patch"]
+  - package-ecosystem: "maven"
+    directory: "/backend"
+    patterns: ["*"]
+    multi-ecosystem-group: "monthly-dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: "npm"
+    directory: "/frontend/webpages"
+    patterns: ["*"]
+    multi-ecosystem-group: "monthly-dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    patterns: ["*"]
+    multi-ecosystem-group: "monthly-dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    patterns: ["*"]
+    multi-ecosystem-group: "monthly-dependencies"
