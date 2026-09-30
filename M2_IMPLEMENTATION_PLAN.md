@@ -1,5 +1,7 @@
 # FairTix — Month 2 (Phase 2) Implementation Plan
 
+> **Status 2026-09-29: HISTORICAL.** The done rows are merged and stay as the record. The partial rows are reclassified in [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md) R3: M2-04 cache and indexes OPTIONAL (only if the L6 load run measures them as a bottleneck), M2-05 and M2-10 DEFERRED, M2-07 DEFERRED (replaced by L4's idempotency and replay tests), M2-22 health-check scheduler SUPERSEDED (it was marked done but never implemented). The "439 / 439 pass" count below was never re-verified; 410 `@Test` methods exist as of 2026-09-29. No further organizer breadth is planned.
+
 _Branch: `feat/m2-main` · Drafted 2026-05-22 · Audited & remediated 2026-05-22_
 
 Phase 2 of the strategic roadmap: **Organizer self-service & box office**

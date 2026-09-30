@@ -6,6 +6,8 @@ _Prepared 2026-05-12_
 
 ## TL;DR
 
+> **2026-09-29:** this TL;DR, Sections 1 to 3 and the Path A recommendation are the original 2026-05-12 analysis, kept as history. The current direction is the **Revision 2026-09-29** section below. Where the original text states a fact the code contradicts, a dated correction is inline. Seat holds are PostgreSQL row locks, not Redis.
+
 FairTix is a **technically strong MVP** that already covers ~80% of the surface area of a real ticketing platform: events, venues, performers, seat holds (Redis), queues (SSE), Stripe payments, refunds, transfers, fraud scoring, audit logging, admin console, deployment pipeline. Code quality is high, tech debt is low, test coverage is respectable.
 
 The hard question is **not whether FairTix can be finished** — it's whether finishing it produces something a market will pay for. As a solo developer, you cannot out-build Ticketmaster, Eventbrite, SeatGeek, AXS, or DICE on the general ticketing front. They have 10–500 person engineering teams, decade-long venue relationships, and exclusive contracts.
@@ -227,14 +229,14 @@ Marketing site, customer acquisition, wallet passes, QR ticket expansion, promot
 
 ---
 
-## Section 1: Honest Project Evaluation
+## Section 1: Honest Project Evaluation — HISTORICAL (2026-05-12; see R2 for the 2026-09 verified state)
 
 ### What's actually built (and good)
 
 | Area | State | Notable |
 |---|---|---|
 | Backend modules | 21 domains, layered cleanly | api/application/domain/infrastructure split is consistent |
-| Seat holds | Redis-backed, deadlock-safe (UUID-ordered locks), 10-min TTL, per-user caps | Genuinely correct concurrency — most homegrown ticketing systems get this wrong |
+| Seat holds | ~~Redis-backed~~ PostgreSQL rows under sorted `PESSIMISTIC_WRITE` locks with `@Version` (corrected 2026-09-29), deadlock-safe by design, expiry column swept every 30 s, per-user caps | Design is correct; never exercised on PostgreSQL or under concurrency by a test (L1) |
 | Queue / waiting room | Redis position + SSE stream + admin admit | Real-time, the hardest UX piece in fair-access ticketing |
 | Auth | JWT in HttpOnly cookies + refresh rotation + email verification + reCAPTCHA + login throttle | Mature; better than most side projects |
 | Payments | Stripe PaymentIntent + webhook + simulated fallback | Real integration, not a stub |
@@ -244,7 +246,7 @@ Marketing site, customer acquisition, wallet passes, QR ticket expansion, promot
 | Admin console | 9 sub-pages, charts, CRUD across all entities | More complete than expected |
 | CI/CD | GitHub Actions + Trivy + OWASP DC, Railway backend, Netlify frontend, GCP Cloud Build prepped | Deployable today |
 | Frontend | React 18, no Redux noise, geo search via Leaflet, Stripe Elements | Clean, no abandoned migrations |
-| DB | 29 Flyway migrations, all forward-only | Schema discipline is intact |
+| DB | 29 Flyway migrations at the time (45 as of 2026-09-29), all forward-only | Schema discipline is intact; the chain has never run against PostgreSQL in CI (L1) |
 
 ### What's weak
 
@@ -269,7 +271,7 @@ Don't build these yet, regardless of direction:
 - Internationalization until you have a non-English customer
 - ML-based real-time fraud blocking (your rule-based scoring is more than enough at MVP scale)
 - Native mobile apps (PWA + scanner-only mobile is sufficient for 6 months)
-- Microservices / horizontal scaling (single Spring Boot deploy handles 10k concurrent users on Railway)
+- Microservices / horizontal scaling (single Spring Boot deploy handles 10k concurrent users on Railway) — _2026-09-29: the 10k figure was never measured; horizontal scaling of the monolith is now milestone L4, and microservices stay out._
 
 ---
 
@@ -313,7 +315,7 @@ That bundle is genuinely valuable to organizers who got burned by bots — but o
 
 ## Section 3: Three Strategic Paths
 
-### Path A — Independent venue SaaS (RECOMMENDED)
+### Path A — Independent venue SaaS (recommended 2026-05; CANCELLED 2026-09-29, see R1)
 
 **Pitch:** "Eventbrite for indie venues, with the anti-bot story Ticketmaster wishes it had — and the box-office tooling Eventbrite never built."
 
@@ -424,7 +426,7 @@ The rest of this document assumes **Path A**, with Path C deliverables baked in 
 
 ---
 
-## Section 4: 6-Month Solo Roadmap (Path A)
+## Section 4: 6-Month Solo Roadmap (Path A) — SUPERSEDED 2026-09-29 by the laboratory milestones L1–L6 (per-phase statuses in R3)
 
 ### Operating assumptions
 
@@ -785,7 +787,7 @@ _2026-09-29: the "no horizontal scaling" guidance below is SUPERSEDED by L4 (two
 
 ---
 
-## Section 7: Concrete next 7 days
+## Section 7: Concrete next 7 days — SUPERSEDED 2026-09-29 (next work is L1; see the portfolio execution plan)
 
 If you agree with this plan:
 
@@ -799,7 +801,9 @@ If you agree with this plan:
 
 ---
 
-## Open questions (fill in as you go)
+## Open questions (fill in as you go) — ANSWERED 2026-09-29
+
+_Path chosen: neither A nor C; laboratory (R1). Customer hypothesis, domain, target venues, blog titles and quit criteria: not applicable to a laboratory. Left blank below as history._
 
 - Customer hypothesis (1 paragraph):
 - Path chosen (A or C):
@@ -810,7 +814,9 @@ If you agree with this plan:
 
 ---
 
-## M1 deferred items — picked up early in M2 or as needed
+## M1 deferred items — picked up early in M2 or as needed — RECLASSIFIED 2026-09-29
+
+_Every row below now has a status in R3. In short: JaCoCo rebaseline is CURRENT (in L1); staging on Railway, Neon, Upstash and Mailtrap is SUPERSEDED by L3; the cookie-domain decision is done (ADR 0002); the prod-restore migration test is SUPERSEDED (no prod exists; L1 runs Flyway on Postgres and L3 runs a PITR drill); the Stripe test-mode IT is DEFERRED in favour of L4's replay and idempotency tests; the screencap is CANCELLED; the ops webhook is DEFERRED until L5 alerting exists. The original table is kept below._
 
 Recorded 2026-05-21 after the M1 commit train (`feat/m1-phase-1`, 18 commits).
 The code work for #161–#169 is in; the items below are work that was either
@@ -862,7 +868,9 @@ The M1 Flyway numbering took V30–V37 (audit request_id, refund stripe id, org 
 
 ---
 
-## Appendix A: Full Feature Catalog (priority-tagged)
+## Appendix A: Full Feature Catalog (priority-tagged) — HISTORICAL
+
+_2026-09-29: the priority tags below belong to the cancelled Path A plan. No item here is scheduled unless it appears in L1–L6. Appendices B and C are also historical._
 
 Every feature considered, with rationale and priority. Use this as a backlog after the 6-month plan completes, or pull from it if a customer specifically requests something. **Tags:** `P0` = in the 6-month plan, must-have; `P1` = strong nice-to-have for months 7–12; `P2` = consider only after PMF; `SKIP` = not worth building yourself.
 
