@@ -1,5 +1,7 @@
 # Staging runbook
 
+> **Status 2026-09-29: OPTIONAL, legacy.** This Railway/Neon/Upstash/Netlify staging environment was never provisioned and is no longer the plan. The target environment is the Terraform-defined Azure Container Apps environment in milestone L3 of [STRATEGIC_ROADMAP.md](../STRATEGIC_ROADMAP.md), which will get its own runbooks under `docs/runbooks/`. Keep this file only as a reference for the environment variables and the reset script. Correction: Redis is used for the waiting-room queue, rate limits and login throttling; seat holds live in PostgreSQL.
+
 Companion to issue [#165](https://github.com/firegiant9000/FairTix/issues/165). Walk through this once per environment; revisit when a piece breaks.
 
 ## What lives where
@@ -9,7 +11,7 @@ Companion to issue [#165](https://github.com/firegiant9000/FairTix/issues/165). 
 | Backend service | Railway (hobby plan ~$5/mo) | Spring Boot container built from `backend/Dockerfile` |
 | Frontend site | Netlify (free) | Built from CRA, deploys on push to `develop` |
 | Postgres | Railway-managed or Neon free tier | **Must** have `staging` in its name (see `scripts/reset-staging.sh`) |
-| Redis | Railway-managed or Upstash free tier | Used for seat holds + rate limits |
+| Redis | Railway-managed or Upstash free tier | Used for the queue, rate limits and login throttling (not seat holds) |
 | Mail | Mailtrap sandbox (free) | Captures all outbound mail — no real users get emails |
 | DNS | Cloudflare or registrar | `staging.fairtix.io` + `api.staging.fairtix.io` |
 | Stripe | Stripe test mode | sk_test_* keys, separate webhook signing secret from prod |

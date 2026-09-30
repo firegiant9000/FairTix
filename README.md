@@ -11,6 +11,15 @@ webhooks.
 > milestones M1 to M8 after the course. It runs end to end locally with Docker
 > Compose. It has never been deployed to production and has no live users.
 > Stripe and reCAPTCHA are integrated but disabled by default.
+>
+> **Direction (2026-09):** FairTix is a technical showcase, not a business. It
+> is being used as a distributed-systems and production-backend laboratory
+> (real-Postgres contention tests, Terraform-defined Azure environment,
+> multi-instance correctness, OpenTelemetry and SLOs, k6 load and failure
+> drills). See the 2026-09 revision at the top of
+> [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md) and the audit in
+> [docs/roadmap-review-2026-09.md](docs/roadmap-review-2026-09.md).
+> No number below is a measured result until it appears under `docs/experiments/`.
 
 <!-- Screenshots: docs/screenshots/ does not exist yet. Capture the event page,
      the waiting room, the seat map with a live hold, and the organizer
@@ -118,20 +127,23 @@ documented in [docs/api-contract.md](docs/api-contract.md).
 ## Tests and CI
 
 ```bash
-cd backend && ./mvnw verify                 # 285 JUnit tests across 45 classes
+cd backend && mvn verify                    # ~410 JUnit tests across 62 classes (no mvnw yet)
 cd frontend/webpages && npm test -- --coverage
 ```
 
-Backend tests cover seat-hold concurrency, queue admission, risk scoring,
-step-up gating, refunds, and webhook handling. The CI workflow
+Backend tests cover seat-hold logic (single-threaded, on H2), queue admission,
+risk scoring, step-up gating, refunds, and webhook handling. There is no
+multi-threaded contention test yet and the suite does not run on PostgreSQL;
+both are the first laboratory milestone in the roadmap. The CI workflow
 ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull
 request to `main`: `mvn clean verify` with a Redis service container, the
 frontend suite with coverage, OWASP Dependency-Check, and a Trivy image scan.
 
 ## Security notes
 
-- Passwords are BCrypt-hashed; sessions are short-lived JWT bearer tokens signed
-  with `JWT_SECRET` (see [docs/api-contract.md](docs/api-contract.md)).
+- Passwords are BCrypt-hashed; sessions are short-lived JWTs in HttpOnly
+  cookies with rotated refresh tokens, signed with `JWT_SECRET`
+  (see [docs/adr/0001-cookie-auth.md](docs/adr/0001-cookie-auth.md)).
 - Every secret comes from `.env` (gitignored). `.env.example` holds names and
   placeholders only.
 - Stripe webhooks are rejected unless the signature verifies against
@@ -147,9 +159,13 @@ frontend suite with coverage, OWASP Dependency-Check, and a Trivy image scan.
   instance only.
 - Refund webhooks are verified but not deduplicated. A redelivered
   `charge.refunded` event can re-run refund completion.
-- Backend tests run without a PostgreSQL service in CI, so repository-level
-  behaviour against a real database is exercised locally, not in CI.
-- No end-to-end browser tests.
+- Backend tests run on H2 with Flyway disabled, so the 45 migrations and the
+  row-locking behaviour have never been exercised against PostgreSQL by an
+  automated test.
+- Ten `@Scheduled` jobs run on every replica; there is no leader election.
+- Stripe calls carry no idempotency keys and run inside database transactions.
+- The rate limiter trusts `X-Forwarded-For` and fails open when Redis is down.
+- No end-to-end browser tests, no load test, no metrics or tracing.
 
 ## Team and contributions
 

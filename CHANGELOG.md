@@ -3,6 +3,20 @@
 All notable changes to FairTix. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is loose — milestones (M1, M2, …) drive cuts, not semver.
 
+## [Unreleased] — Docs (2026-09)
+
+### Changed
+
+- **Roadmap reframed as a distributed-systems laboratory.** `STRATEGIC_ROADMAP.md`
+  gains a dated revision (milestones L1 to L6) and status tags on every
+  2026-05 phase; `docs/roadmap-review-2026-09.md` records the code-verified
+  audit; `docs/planning/README.md` indexes the older plans as historical.
+- **Corrections.** Seat holds are PostgreSQL row locks, not Redis. Tests run
+  on H2 with Flyway disabled and include no concurrency test. The refund
+  "idempotent on `stripeRefundId`" note in the M1 entry below means a local
+  guard only: no Stripe idempotency key is sent, so a retry after a rolled-back
+  transaction can refund twice (fixed in milestone L4).
+
 ## [Unreleased] — M1 (2026-05)
 
 ### Added

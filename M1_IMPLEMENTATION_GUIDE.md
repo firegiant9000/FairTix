@@ -1,5 +1,7 @@
 # Month 1 — Implementation Guide
 
+> **Status 2026-09-29: HISTORICAL, complete.** The M1 code work described here is merged. Its remaining operational gaps are reclassified in the Revision 2026-09-29 section of [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md) (R3); that section is the only current plan.
+
 _Companion to [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md). Covers GitHub issues [#161](https://github.com/firegiant9000/FairTix/issues/161) through [#169](https://github.com/firegiant9000/FairTix/issues/169)._
 
 ---

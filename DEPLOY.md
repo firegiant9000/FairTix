@@ -125,6 +125,8 @@ Then re-run `docker compose up --build` to re-apply the fixed migration.
 
 ## Deploying to Netlify + Railway (Recommended for Course Demo)
 
+> **Status 2026-09-29: OPTIONAL, legacy path, not maintained.** This path (and `cloudbuild.yaml` for Cloud Run) was written for the course demo. The planned deployment is the Terraform-defined Azure Container Apps environment in milestone L3 of [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md). Local Docker Compose above remains the supported way to run FairTix.
+
 This is the fastest path to a publicly reachable deployment using free-tier platforms.
 
 ### Architecture
