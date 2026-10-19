@@ -1,6 +1,6 @@
 # Staging runbook
 
-> **Status 2026-09-29: OPTIONAL, legacy.** This Railway/Neon/Upstash/Netlify staging environment was never provisioned and is no longer the plan. The target environment is the Terraform-defined Azure Container Apps environment in milestone L3 of [STRATEGIC_ROADMAP.md](../STRATEGIC_ROADMAP.md), which will get its own runbooks under `docs/runbooks/`. Keep this file only as a reference for the environment variables and the reset script. Correction: Redis is used for the waiting-room queue, rate limits and login throttling; seat holds live in PostgreSQL.
+> **Status 2026-09-29: OPTIONAL, legacy.** This Railway/Neon/Upstash/Netlify staging environment was never provisioned and is no longer the plan. The target environment is the Terraform-defined ~~Azure Container Apps~~ AWS (ECS Fargate, changed 2026-10-18) environment in milestone L3 of [STRATEGIC_ROADMAP.md](../STRATEGIC_ROADMAP.md), which will get its own runbooks under `docs/runbooks/`. Keep this file only as a reference for the environment variables and the reset script. Correction: Redis is used for the waiting-room queue, rate limits and login throttling; seat holds live in PostgreSQL.
 
 Companion to issue [#165](https://github.com/firegiant9000/FairTix/issues/165). Walk through this once per environment; revisit when a piece breaks.
 

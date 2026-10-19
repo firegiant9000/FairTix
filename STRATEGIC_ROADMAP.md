@@ -22,13 +22,15 @@ The 6-month plan below assumes the **independent-venue vertical**. If you pick d
 
 _This revision supersedes the framing above. The original text from 2026-05-12 is preserved below as history; each phase heading now carries a status tag. Evidence for every decision here is in [`docs/roadmap-review-2026-09.md`](docs/roadmap-review-2026-09.md), which was verified against `origin/main` at `60ed8901`._
 
+_**Revision 2026-10-18: L3 on AWS.** L3 moves from Azure to AWS: ECS Fargate, RDS for PostgreSQL, ElastiCache and Terraform, with OIDC from GitHub Actions to IAM. The reason is a 2026-10-18 sample of reachable job postings: AWS is required by 12 employers, Azure by 7, and every one of the 7 lists Azure as one option among other clouds. The owner's Azure work (Functions, Service Bus, Key Vault, managed identity, OpenTelemetry, Bicep) is already professional, so public AWS evidence fills a gap that public Azure evidence would only duplicate. The 2026-09-29 Azure design was sound and is kept below, struck through, as the decision trail. L5 and L6 follow L3 to AWS. A new optional L3b (experiment guard) is added after L3, and L1 item 5 is reworded because `backend/mvnw` exists but CI still calls bare `mvn`. Order is unchanged: L1 → L2 → L3 → (L3b) → L4 → L5 → L6._
+
 ### R1. Decision
 
 FairTix is no longer a ticketing SaaS roadmap. It is **a distributed-systems and production-backend engineering laboratory that uses ticketing as its domain**. The "Path A vs Path C" question in Section 3 is answered: neither. Path A (venue SaaS) is cancelled; the market analysis in Section 2 still holds, and one person cannot run on-sale support, PCI scope and chargebacks. Path C's engineering deliverables (deployable, documented, measured) are adopted; its marketing deliverables (blog, HN) are optional.
 
 The stack does not change. FairTix stays Spring Boot 4, PostgreSQL 16, Redis 7 and React. There is no .NET rewrite and no microservices split. The one thing the old roadmap ruled out that this revision requires is **running two replicas of the monolith**, because multi-instance correctness is the evidence the portfolio lacks.
 
-This repository owns, for the whole portfolio: Terraform, Azure container infrastructure, OpenTelemetry, SLOs, k6 and failure injection. No other personal repository should duplicate them.
+This repository owns, for the whole portfolio: Terraform, ~~Azure container infrastructure~~ cloud container infrastructure (AWS; changed 2026-10-18), OpenTelemetry, SLOs, k6 and failure injection. No other personal repository should duplicate them.
 
 ### R2. What the code proves today, and what it does not
 
@@ -43,11 +45,11 @@ Known defects found by inspection, each of which becomes a red-before / green-af
 | Item | Status | Previous goal | New decision and reason | Effect on usefulness | Effect on evidence |
 |---|---|---|---|---|---|
 | Phase 0: pick Path A/C, board, domain, positioning README | SUPERSEDED | Commit to a business direction | Decided here: laboratory. No domain purchase. README already repositioned 2026-09. | None | Removes a distraction |
-| Phase 0: staging environment on Railway | SUPERSEDED | Railway preview env | Replaced by the Terraform-defined Azure environment (L3). Railway, Cloud Run and Netlify configs stay as unmaintained legacy paths and are marked OPTIONAL. | Same | Turns "staging" into IaC evidence |
+| Phase 0: staging environment on Railway | SUPERSEDED | Railway preview env | Replaced by the Terraform-defined ~~Azure~~ AWS environment (L3; 2026-10-18). Railway, Cloud Run and Netlify configs stay as unmaintained legacy paths and are marked OPTIONAL. | Same | Turns "staging" into IaC evidence |
 | Phase 1 code items (refunds, NotificationGate, correlation IDs, cookie auth, coverage gates, runbook) | CURRENT (done) | Production-blocking fixes | Done and verified. Correlation ID work is extended in L5 (echo `X-Request-Id`, honour inbound). | n/a | Baseline |
 | Phase 1 gap 1: rebaseline JaCoCo | CURRENT | Raise floor to baseline−1 % | Do it in L1 once tests run on Postgres and the number is real. | None | Honest coverage gate |
 | Phase 1 gap 2: deploy staging (Railway/Neon/Upstash) | SUPERSEDED | Staging on hosted free tiers | Replaced by L3. | Same | IaC and cloud evidence |
-| Phase 1 gap 3: cookie-domain ADR | CURRENT | ADR 0002 | Already written (`docs/adr/0002-cross-subdomain-cookies.md`). Revisit only when the ACA hostname is known. | None | None |
+| Phase 1 gap 3: cookie-domain ADR | CURRENT | ADR 0002 | Already written (`docs/adr/0002-cross-subdomain-cookies.md`). Revisit only when the ~~ACA~~ ALB hostname (2026-10-18) is known. | None | None |
 | Phase 1 gap 4: prod-restore migration test | SUPERSEDED | Run V32–V36 on an anonymised restore | There is no prod. Replaced by "Flyway V1–V45 runs against real Postgres in CI" (L1) and a PITR restore drill (L3). | None | Migration evidence |
 | Phase 1 gap 5: Stripe refund IT (needs secret) | DEFERRED | Run `StripeRefundIntegrationIT` in CI | Keep gated; L4 replaces the money-movement risk with idempotency keys and a replay test that needs no live Stripe. | None | Replaced by a stronger test |
 | Phase 1 gaps 6–7: screencap, organizer RTL tests | CANCELLED | Demo polish | No engineering evidence. | Low | None |
@@ -64,7 +66,7 @@ Known defects found by inspection, each of which becomes a red-before / green-af
 | Phase 6 (first customers, GTM) | CANCELLED | Business | Path A cancelled. | n/a | n/a |
 | Phase 7 week 24: k6 at 1,000 users | SUPERSEDED | One load test | Becomes L6 with defined metrics, an environment definition and a committed results table. | None | The headline number |
 | Phase 7: wire `RiskScoringService` into checkout | DEFERRED | Real-time fraud blocking | Adds latency to the path under test without adding evidence. | Low | None |
-| Phase 7 stretch: backup and DR runbook | CURRENT | Runbook | Folded into L3 as a PostgreSQL Flexible Server PITR restore drill with recorded counts and time. | None | Recovery evidence |
+| Phase 7 stretch: backup and DR runbook | CURRENT | Runbook | Folded into L3 as ~~a PostgreSQL Flexible Server~~ an RDS PITR restore drill (2026-10-18) with recorded counts and time. | None | Recovery evidence |
 | Phase 7 stretch: public API keys, Mailchimp, DocuSign, status page, affiliate codes | CANCELLED | Integrations | No evidence. | Low | None |
 | Section 5 "no horizontal scaling" | SUPERSEDED | Stay single-instance | Two replicas is the point of L4. The monolith stays a monolith. | None | Multi-instance evidence |
 | Section 5 "no stack replacement" | CURRENT | Keep the stack | Unchanged. | n/a | n/a |
@@ -86,7 +88,7 @@ Work:
    - Partial unique index on `tickets(seat_id)` for non-cancelled tickets, mapped to a 409. A two-thread checkout test on the same confirmed hold reproduces two tickets before and one after.
    - Expire `CONFIRMED` holds that never reach a paid order: a second expiry window on confirmation, and an explicit release on payment failure. Test that a failed PaymentIntent returns the seat to available.
    - Hold and payment failure paths: enumerate what happens when Stripe succeeds and the DB commit fails, and when the DB commits and Stripe fails; write the test for each, even if the fix lands in L4.
-5. CI hygiene in the same milestone: add a `push: main` trigger, pin `Dependency-Check_Action` and `trivy-action` to commit SHAs, give Dependency-Check a `failBuildOnCVSS` threshold, add `mvnw`, rebaseline the JaCoCo floor to the measured number minus one point.
+5. CI hygiene in the same milestone: add a `push: main` trigger, pin `Dependency-Check_Action` and `trivy-action` to commit SHAs, give Dependency-Check a `failBuildOnCVSS` threshold, ~~add `mvnw`~~ switch CI to `./mvnw` (2026-10-18: `backend/mvnw` exists, but `ci.yml` still runs bare `mvn clean verify`), rebaseline the JaCoCo floors (`pom.xml`: line 0.15, branch 0.05) to the measured numbers minus one point.
 
 **Acceptance.** CI runs Flyway V1–V45 against a PostgreSQL container on every PR and on push to `main`; the contention test passes with zero oversells and the no-ordering variant demonstrates a deadlock; the three defect tests exist with the red commit hash recorded in their Javadoc; the H2 dependency is gone from the integration path.
 
@@ -121,38 +123,96 @@ Experiment: about 200 concurrent operations against a 50-seat section with overl
 - What changed when you changed the connection pool size, and why?
 - Why are CI runner numbers not trustworthy for latency?
 
-#### L3. Azure infrastructure in Terraform
+#### L3. AWS infrastructure in Terraform (retargeted from Azure 2026-10-18)
 
-**Goal.** A cloud environment that is created, used for an experiment and destroyed, entirely from code, with no long-lived cloud credentials in GitHub.
+**Goal.** A cloud environment that is created, used for an experiment and destroyed, entirely from code, with no long-lived cloud credentials in GitHub. (Unchanged.)
 
-Architecture (verified against Microsoft Learn and the `azurerm` provider on 2026-09-29):
-- Resource group; Azure Container Registry (Basic).
-- Azure Container Apps environment with Log Analytics; one backend app with `min_replicas = 2` during experiments and an HTTP scale rule; system-assigned managed identity.
-- Azure Database for PostgreSQL Flexible Server, Burstable B1ms, stop/start between experiments; PITR retained 7 days.
-- Redis: **Azure Managed Redis** (`azurerm_managed_redis`, smallest Balanced or Memory Optimized SKU, `high_availability_enabled = false` for cost) **or** a Redis container app in the same environment for the cheapest experiments. **Azure Cache for Redis is not an option**: Microsoft blocks creation of new Basic, Standard and Premium caches for existing customers from 1 October 2026 and retires the service in 2028.
-- Key Vault with RBAC; secrets referenced from the container app through the managed identity (`secret { key_vault_secret_id, identity }`), never as plain values in Terraform state or workflow files.
-- Application Insights workspace-based resource for L5.
-- Subscription budget with an alert at a stated monthly amount (`azurerm_consumption_budget_subscription`) applied before the first `apply`.
-- GitHub Actions authenticating through OIDC federated credentials on a user-assigned managed identity; no client secret anywhere.
+**Account.** A new AWS account, opened for this milestone, on the Free plan's credits. Per aws.amazon.com/free on 2026-10-18, that is $100 plus up to $100 more for exploring services, valid for 6 months. On the Free plan the account closes at 6 months or when the credits run out, unless it is upgraded to Paid. Schedule L3 and L6 inside that window, or upgrade deliberately.
 
-Workflows: `terraform fmt -check` and `validate` on every PR; `plan` on PR with the plan posted as a comment; `apply` only on `workflow_dispatch` with an environment approval; `destroy` on `workflow_dispatch` with the same approval. Remote state in an Azure Storage account created once by hand and documented.
+Architecture (2026-10-18; confirm each resource against the AWS provider docs when implementing):
+- **Network.** A VPC across two AZs. Public subnets hold the ALB and the ECS tasks; private subnets hold RDS and the cache. **No NAT Gateway**: tasks get public IPs, and their security group admits only the ALB. Record this trade-off in `docs/infra/cost.md`.
+- **Containers.** An ECR repository. An ECS cluster on Fargate. The backend service runs at `desired_count = 2` during experiments, behind an ALB whose target group health-checks `/actuator/health`. The task role is separate from the task execution role.
+- **Database.** RDS for PostgreSQL 16, `db.t4g.micro`, Single-AZ, 20 GB gp3, 7-day automated backups (PITR). Stop it between experiments. AWS restarts a stopped instance after 7 days, so destroy it for longer gaps.
+- **Redis.** ElastiCache for Valkey `cache.t4g.micro`, **or** a Redis task in the same cluster for the cheapest runs. Confirm Redisson compatibility with Valkey before choosing it.
+- **Secrets.** Secrets Manager. The task definition references them through `secrets { valueFrom = <ARN> }` via the execution role. Never put plain values in Terraform state or workflow files.
+- **Logs.** CloudWatch Logs, with a retention period set.
+- **Budget.** An AWS Budgets alert at $20/month, applied before the first `apply`.
+- **CI access.** GitHub Actions uses an IAM OIDC identity provider plus a role whose trust policy pins `sub` to this repository and a protected environment. No access keys anywhere.
+- **State.** Remote Terraform state in an S3 bucket created once by hand and documented, with S3-native state locking (check the backend docs when implementing).
 
-Also in this milestone: harden the Dockerfile (non-root user, `HEALTHCHECK`, explicit JVM memory flags, remove the dead block), delete or mark unmaintained the Railway, Cloud Run and Netlify deploy paths, and run one PITR restore drill on the Flexible Server recording row counts and elapsed time.
+Workflows (unchanged): `terraform fmt -check` and `validate` on every PR; `plan` on PR with the plan posted as a comment; `apply` only on `workflow_dispatch` with an environment approval; `destroy` on `workflow_dispatch` with the same approval.
 
-**Acceptance.** `apply` and `destroy` both succeed from CI through OIDC; `/actuator/health` answers on the Container Apps hostname with two replicas running; the budget alert exists before the first apply; `docs/infra/cost.md` records the estimated and the actual monthly cost for one experiment window; `terraform destroy` leaves an empty resource group; the restore drill is recorded.
+Also in this milestone (unchanged except the target): harden the Dockerfile (non-root user, `HEALTHCHECK`, explicit JVM memory flags, remove the dead block), delete or mark unmaintained the Railway, Cloud Run and Netlify deploy paths, and run one PITR restore drill (RDS point-in-time restore to a new instance), recording row counts and elapsed time.
 
-**Estimated cost.** Confirm with the Azure pricing calculator before applying. Expected order of magnitude: ACA consumption plus ACR Basic a few dollars per month idle; Flexible Server B1ms and the smallest Managed Redis add tens of dollars per month while running, less if the Flexible Server is stopped between experiments and Redis runs as a container app. Target: under a stated cap per experiment cycle, written into the budget resource.
+**Acceptance.**
+- `apply` and `destroy` both succeed from CI through OIDC.
+- `/actuator/health` answers on the ALB DNS name, with 2 running tasks.
+- The budget alert exists before the first apply.
+- `docs/infra/cost.md` records the estimated and actual cost for one experiment window.
+- After `destroy`, a tag query for the project returns no resources.
+- The restore drill is recorded.
 
-**Evidence produced.** The `infra/` Terraform module, the four workflow runs (plan, apply, destroy, restore drill), the cost document, a screenshot of the resource group before and after destroy.
+**Verification.**
+```sh
+terraform -chdir=infra fmt -check -recursive
+terraform -chdir=infra validate
+gh run list --repo firegiant9000/FairTix --workflow <infra-apply workflow> --limit 3
+aws ecs describe-services --cluster <cluster> --services backend --query "services[0].runningCount"   # expect 2
+curl -fsS https://<alb-dns>/actuator/health
+aws resourcegroupstaggingapi get-resources --tag-filters Key=project,Values=fairtix-lab   # after destroy: empty
+```
 
-**Resume potential.** "Provisioned a two-replica Azure Container Apps environment (Container Registry, PostgreSQL Flexible Server, Managed Redis, Key Vault, managed identity, Log Analytics) with Terraform and OIDC-federated GitHub Actions; created and destroyed it on demand at about $[C] per experiment cycle."
+**Estimated cost** (AWS Price List, us-east-1, on-demand, checked 2026-10-18; re-check before the first apply). 2 Fargate tasks at 0.5 vCPU / 1 GB, `db.t4g.micro` with 20 GB gp3, Valkey `cache.t4g.micro`, an ALB in 2 AZs, 4 public IPv4 addresses and 3 secrets come to about **$0.12 per hour while up** (about $0.11 with ARM images), or about $92 a month if left running. The rule is create, experiment, destroy: at 40 environment-hours a month that is about $5. NAT Gateway and VPC endpoints are deliberately absent.
+
+**Evidence produced.** The `infra/` Terraform module, the four workflow runs (plan, apply, destroy, restore drill), the cost document, and the empty tag query after destroy.
+
+**Resume potential.** "Provisioned a two-replica AWS environment (ECS Fargate behind an ALB, RDS PostgreSQL, ElastiCache, Secrets Manager, CloudWatch) with Terraform and OIDC-federated GitHub Actions; created and destroyed it on demand at about $[C] per experiment cycle."
 
 **Interview questions.**
-- Why OIDC federation instead of a service-principal secret, and what does the federated credential actually trust?
-- How does a container app read a Key Vault secret without any credential in its configuration?
+- What exactly does the OIDC trust policy's `sub` condition trust?
+- How does an ECS task read a Secrets Manager secret with no credential in its configuration (execution role vs task role)?
 - What is in Terraform state that you would not want in a public repository, and how did you keep it out?
-- Why Container Apps instead of AKS for this workload?
-- What did the destroy workflow fail to remove the first time, and why?
+- Why Fargate rather than EKS here?
+- What did dropping the NAT Gateway cost you in security, and what did it save?
+- What did `destroy` fail to remove the first time, and why?
+
+**Superseded Azure design (2026-09-29; struck 2026-10-18 for the job-market reason in the revision note above):**
+- ~~Architecture (verified against Microsoft Learn and the `azurerm` provider on 2026-09-29):~~
+- ~~Resource group; Azure Container Registry (Basic).~~
+- ~~Azure Container Apps environment with Log Analytics; one backend app with `min_replicas = 2` during experiments and an HTTP scale rule; system-assigned managed identity.~~
+- ~~Azure Database for PostgreSQL Flexible Server, Burstable B1ms, stop/start between experiments; PITR retained 7 days.~~
+- ~~Redis: **Azure Managed Redis** (`azurerm_managed_redis`, smallest Balanced or Memory Optimized SKU, `high_availability_enabled = false` for cost) **or** a Redis container app in the same environment for the cheapest experiments.~~ The Azure Cache for Redis retirement note (no new Basic, Standard or Premium caches from 1 October 2026; retirement in 2028) is now history, not a constraint.
+- ~~Key Vault with RBAC; secrets referenced from the container app through the managed identity (`secret { key_vault_secret_id, identity }`), never as plain values in Terraform state or workflow files.~~
+- ~~Application Insights workspace-based resource for L5.~~
+- ~~Subscription budget with an alert at a stated monthly amount (`azurerm_consumption_budget_subscription`) applied before the first `apply`.~~
+- ~~GitHub Actions authenticating through OIDC federated credentials on a user-assigned managed identity; no client secret anywhere.~~
+- ~~Remote state in an Azure Storage account created once by hand and documented.~~
+- ~~Acceptance: `/actuator/health` answers on the Container Apps hostname with two replicas running; `terraform destroy` leaves an empty resource group.~~
+- ~~Estimated cost: ACA consumption plus ACR Basic a few dollars per month idle; Flexible Server B1ms and the smallest Managed Redis add tens of dollars per month while running.~~
+- ~~Resume potential: "Provisioned a two-replica Azure Container Apps environment (Container Registry, PostgreSQL Flexible Server, Managed Redis, Key Vault, managed identity, Log Analytics) with Terraform and OIDC-federated GitHub Actions; created and destroyed it on demand at about $[C] per experiment cycle."~~
+- ~~Interview questions: Why OIDC federation instead of a service-principal secret, and what does the federated credential actually trust? How does a container app read a Key Vault secret without any credential in its configuration? Why Container Apps instead of AKS for this workload?~~
+
+#### L3b. Experiment guard (optional; added 2026-10-18; decide after L3 is accepted)
+
+**Goal.** Enforce L3's budget rule automatically, so a forgotten environment can't run for days.
+
+An EventBridge Scheduler rule runs a Python Lambda every 30 minutes. The Lambda reads an `expires-at` tag on the environment. If the time has passed, it scales the ECS service to 0 and stops the RDS instance; both actions can be undone. Each action is recorded in a DynamoDB table (`env_guard_actions`, keyed by environment and timestamp). It is defined in the same Terraform, with `lifecycle { ignore_changes = [desired_count] }` on the service so the guard doesn't create drift.
+
+**Acceptance.**
+- pytest tests (botocore `Stubber` or moto) cover four cases: expired → stop; not expired → no-op; already stopped → idempotent; missing tag → no-op plus a log line.
+- One real scheduled run in CloudWatch Logs shows the service scaled to 0 and a DynamoDB row written.
+- The IAM policy is scoped to the one cluster and the one DB instance ARN.
+
+**Estimated cost.** About $0 beyond L3. A few thousand invocations a month is inside Lambda's free tier and EventBridge's free scheduled invocations.
+
+**Timebox.** One week. If it grows past that, stop: it's a guard, not a product.
+
+**Resume potential.** "Wrote a Python Lambda on an EventBridge schedule that enforces environment expiry (scale ECS to zero, stop RDS) with an audit trail in DynamoDB and least-privilege IAM, tested with [N] stubbed AWS cases."
+
+**Interview questions.**
+- Why `ignore_changes = [desired_count]`, and what drift would you see without it?
+- How is the guard idempotent, and why does that matter for a scheduled job?
+- What is the smallest IAM policy that lets it do its job?
 
 #### L4. Multi-instance correctness
 
@@ -167,10 +227,11 @@ Work, each with a red-before / green-after test:
 4. Stripe idempotency keys on `PaymentIntent.create` and `Refund.create`, derived from the order or refund ID; move the Stripe call out of the DB transaction or make the post-call commit failure retry-safe. Test: simulate commit failure after the Stripe call; the retry sends the same idempotency key.
 5. `Idempotency-Key` header on checkout with a stored response; duplicate submits return the original result.
 6. Retry-safe external calls (Stripe, SMTP) with bounded retries, backoff and jitter.
+7. _Optional (added 2026-10-18; decide after L1–L3; outside the current 12-week window unless L3 finishes early):_ a transactional outbox for order and refund events, with a RabbitMQ consumer in the two-replica compose profile. Test: kill the consumer mid-batch, restart it, and get zero lost and zero duplicate side effects. Reason: Kafka or RabbitMQ appears in 7 reachable job postings in the 2026-10-18 sample, mostly as one option in a list.
 
 Two-replica compose profile (two backend containers behind nginx) for local verification before the cloud run.
 
-**Acceptance.** All six tests exist and pass; a two-replica compose run of the waiting room admits 100 queued users split across replicas with zero duplicate admissions and zero missed notifications; the same on Container Apps at two replicas.
+**Acceptance.** All six tests exist and pass; a two-replica compose run of the waiting room admits 100 queued users split across replicas with zero duplicate admissions and zero missed notifications; the same on ~~Container Apps~~ ECS Fargate (2026-10-18) at two replicas. Items 1–6 are required; item 7 is optional.
 
 **Evidence produced.** `docs/experiments/l4-two-replicas.md` with duplicate counts before and after each fix, the test names, and the compose file.
 
@@ -187,15 +248,15 @@ Two-replica compose profile (two backend containers behind nginx) for local veri
 
 **Goal.** One trace across the whole hold path, structured logs with correlation, metrics, two SLIs, an SLO, an alert and a runbook.
 
-Work: Micrometer with the OpenTelemetry exporter (or the Application Insights Java agent; choose one and record why) sending to Application Insights through the Container Apps managed OpenTelemetry agent (traces and logs; metrics go to Azure Monitor through Micrometer directly because the ACA agent's App Insights destination does not accept metrics). Propagate one trace across HTTP request, application logic, seat locking, database commit, the scheduler tick where relevant, the SSE notification and the Stripe boundary. Switch to JSON logs, honour inbound `X-Request-Id`, echo it in every response and put the trace ID in every log line.
+Work: ~~Micrometer with the OpenTelemetry exporter (or the Application Insights Java agent; choose one and record why) sending to Application Insights through the Container Apps managed OpenTelemetry agent (traces and logs; metrics go to Azure Monitor through Micrometer directly because the ACA agent's App Insights destination does not accept metrics).~~ _(2026-10-18, follows L3 to AWS:)_ the OpenTelemetry SDK or Java agent (choose one and record why) sending to an AWS Distro for OpenTelemetry collector running as a sidecar in the ECS task, which exports traces to X-Ray and metrics to CloudWatch. Alarms are defined in Terraform. Propagate one trace across HTTP request, application logic, seat locking, database commit, the scheduler tick where relevant, the SSE notification and the Stripe boundary. Switch to JSON logs, honour inbound `X-Request-Id`, echo it in every response and put the trace ID in every log line.
 
 SLIs: hold-request success rate (non-5xx, non-timeout responses to hold requests divided by all hold requests) and waiting-room admission notification latency (time from admission decision to SSE event delivered). Derive one initial SLO for each with a stated window, one alert rule each, and one runbook each.
 
-**Acceptance.** A single trace in Application Insights shows request → lock → commit → SSE for one hold; both SLIs are visible on a dashboard; both alerts fire during the L6 drill; both runbooks exist and were followed once.
+**Acceptance.** A single trace in ~~Application Insights~~ X-Ray (2026-10-18) shows request → lock → commit → SSE for one hold; both SLIs are visible on a dashboard; both alerts fire during the L6 drill; both runbooks exist and were followed once.
 
 **Evidence produced.** Trace screenshot, dashboard screenshot, alert rule definitions in Terraform, `docs/runbooks/`.
 
-**Resume potential.** "Instrumented FairTix with OpenTelemetry (traces, JSON logs with correlation IDs, Micrometer metrics) into Azure Monitor; defined [k] SLIs and SLOs with alerts and runbooks that fired within [T] s during fault-injection drills."
+**Resume potential.** "Instrumented FairTix with OpenTelemetry (traces, JSON logs with correlation IDs, Micrometer metrics) into ~~Azure Monitor~~ AWS X-Ray and CloudWatch (2026-10-18); defined [k] SLIs and SLOs with alerts and runbooks that fired within [T] s during fault-injection drills."
 
 **Interview questions.**
 - How does trace context cross the scheduler and the SSE boundary, where there is no HTTP request to carry it?
@@ -207,15 +268,15 @@ SLIs: hold-request success rate (non-5xx, non-timeout responses to hold requests
 
 **Goal.** External load numbers on the cloud environment and documented failure behaviour, with one postmortem.
 
-k6 scripts for queue join, admission wait, hold and checkout. Ramp VUs against the Container Apps environment at two replicas, then with the scale rule active. Record VUs, throughput, p50/p95/p99 per endpoint, error rate, oversells (must be 0), DB pool exhaustion events, lock waits, replica count over time, and queue admission behaviour. Repeat at Hikari 10 and a tuned size.
+k6 scripts for queue join, admission wait, hold and checkout. Ramp VUs against the ~~Container Apps~~ ECS Fargate (2026-10-18) environment at two replicas, then with ~~the scale rule~~ a service auto-scaling policy active. Record VUs, throughput, p50/p95/p99 per endpoint, error rate, oversells (must be 0), DB pool exhaustion events, lock waits, replica count over time, and queue admission behaviour. Repeat at Hikari 10 and a tuned size.
 
-Failure injection with Toxiproxy locally (Redis outage for 60 s, Redis restart, PostgreSQL latency at 50 ms and 200 ms) and on Container Apps by stopping a replica mid-hold, replaying webhooks and failing an external dependency. Observe the fail-open rate limiter, queue position resets, sweep drift, SSE reconnects and time-to-alert. Fix the rate limiter's trust of `X-Forwarded-For` before the load run, or the load numbers are invalid.
+Failure injection with Toxiproxy locally (Redis outage for 60 s, Redis restart, PostgreSQL latency at 50 ms and 200 ms) and on ~~Container Apps by stopping a replica~~ ECS Fargate by stopping a task (2026-10-18) mid-hold, replaying webhooks and failing an external dependency. Observe the fail-open rate limiter, queue position resets, sweep drift, SSE reconnects and time-to-alert. Fix the rate limiter's trust of `X-Forwarded-For` before the load run, or the load numbers are invalid.
 
 **Acceptance.** `docs/experiments/l6-load.md` and `docs/experiments/l6-faults.md` with tables, the k6 script version, the Terraform commit and the replica timeline; one postmortem-style document for one drill; the environment destroyed afterwards. No number appears on the resume until it appears in these files.
 
 **Evidence produced.** k6 summary JSON committed, results tables, the postmortem.
 
-**Resume potential.** "Load-tested FairTix's waiting-room and seat-hold pipeline on Azure Container Apps to [N] concurrent clients at [Y] req/s and [Z] ms p95 with zero oversells under PostgreSQL row contention; ran fault-injection drills (Redis loss, database latency, replica restart, webhook replay) and documented failure modes and recovery in runbooks and a postmortem."
+**Resume potential.** "Load-tested FairTix's waiting-room and seat-hold pipeline on ~~Azure Container Apps~~ AWS ECS Fargate (2026-10-18) to [N] concurrent clients at [Y] req/s and [Z] ms p95 with zero oversells under PostgreSQL row contention; ran fault-injection drills (Redis loss, database latency, replica restart, webhook replay) and documented failure modes and recovery in runbooks and a postmortem."
 
 **Interview questions.**
 - What was the first bottleneck and how did you find it?
