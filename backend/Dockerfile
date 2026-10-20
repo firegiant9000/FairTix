@@ -11,7 +11,10 @@ COPY src ./src
 RUN mvn clean package -DskipTests
 
 # -------- Run Stage --------
-FROM eclipse-temurin:21-jre
+# Pinned to the Ubuntu 24.04 (noble) variant. The floating 21-jre tag now
+# resolves to Ubuntu 26.04, whose image ships usr/bin/pebble built with Go 1.27.1
+# (3 HIGH stdlib CVEs, fixed in Go 1.27.2).
+FROM eclipse-temurin:21-jre-noble
 WORKDIR /app
 
 COPY --from=build /app/target/*jar app.jar

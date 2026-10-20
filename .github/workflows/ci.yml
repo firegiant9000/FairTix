@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, develop]
   push:
-    branches: [develop]
+    branches: [main, develop]
 
 jobs:
 
@@ -33,7 +33,7 @@ jobs:
           cache: maven
 
       - name: Run tests
-        run: mvn clean verify
+        run: ./mvnw clean verify
 
       - name: Upload JaCoCo coverage report
         if: always()
