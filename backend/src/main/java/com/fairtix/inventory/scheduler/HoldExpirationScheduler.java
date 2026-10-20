@@ -110,6 +110,12 @@ public class HoldExpirationScheduler {
     }
   }
 
+  @Scheduled(fixedDelayString = "${holds.cleanup.interval-ms:30000}")
+  @Transactional
+  public void expireConfirmedHolds() {
+    // Not yet implemented (red commit).
+  }
+
   private void sendHoldExpiryEmail(SeatHold hold) {
     try {
       Optional<User> userOpt = userRepository.findById(hold.getOwnerId());
