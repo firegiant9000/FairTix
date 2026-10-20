@@ -15,9 +15,9 @@ RUN mvn clean package -DskipTests
 # resolves to Ubuntu 26.04, whose image ships usr/bin/pebble built with Go 1.27.1
 # (3 HIGH stdlib CVEs, fixed in Go 1.27.2).
 # The tag pins the distro, not the digest, so the image still moves with
-# upstream patches. Decision (2026-10-20): no digest pin here. Dependabot's
-# docker ecosystem and the CI container-scan catch drift, and the L3 deployment
-# runs the pushed image by its registry digest.
+# upstream patches. Decision (2026-10-20): no digest pin here. The CI
+# container-scan rescans the base image on every build, and L3 must deploy the
+# pushed image by its registry digest (an L3 follow-up, not yet in place).
 FROM eclipse-temurin:21-jre-noble
 WORKDIR /app
 
@@ -32,9 +32,11 @@ USER 10001:10001
 EXPOSE 8080
 
 # curl already ships in the base image; this adds no package.
-# /actuator/health is permitAll and returns 503 when a dependency is down.
+# /actuator/health is permitAll. When a dependency is down it returns 503, or
+# times out if Redis is unreachable; either way the probe fails.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
   CMD curl -fsS -o /dev/null --max-time 4 http://127.0.0.1:8080/actuator/health || exit 1
 
-# Size the heap from the container's memory limit rather than the host's.
+# Give the heap 75% of the container memory limit (the JVM default is 25%).
+# Leaves ~25% for metaspace, threads and direct buffers: size tasks at 1 GiB+.
 ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
