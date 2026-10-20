@@ -70,7 +70,11 @@ import org.springframework.test.context.TestPropertySource;
  * than the test suite's 2, so a 3- or 4-seat request is not rejected by the soft
  * limit before it ever contends for a seat.
  */
-@TestPropertySource(properties = "holds.max-active-per-holder=5")
+@TestPropertySource(properties = {
+    "holds.max-active-per-holder=5",
+    // Pinned to Hikari's (and production's) default so the worker count below is stable.
+    "spring.datasource.hikari.maximum-pool-size=10"
+})
 class SeatHoldContentionIT extends PostgresIT {
 
   static final int USERS = 200;
@@ -131,8 +135,10 @@ class SeatHoldContentionIT extends PostgresIT {
 
     // createHold holds one pooled connection and needs a second for the
     // REQUIRES_NEW audit write, so more than (pool - 1) concurrent callers starve
-    // the pool (Hikari: pool >= threads * (2 - 1) + 1). See the class Javadoc.
+    // the pool (Hikari's pool-starvation-free bound: pool >= threads * (2 - 1) + 1).
+    // See the class Javadoc.
     int workers = hikariPoolSize - 1;
+    assertThat(workers).as("enough workers to contend").isGreaterThanOrEqualTo(8);
     CountDownLatch ready = new CountDownLatch(workers);
     CountDownLatch start = new CountDownLatch(1);
     Map<UUID, List<SeatHold>> winners = new ConcurrentHashMap<>();
