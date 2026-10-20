@@ -235,7 +235,7 @@ public class StripePaymentService {
     PaymentRecord record = new PaymentRecord(
         orderId, userId, amount, currency, PaymentStatus.SUCCESS, paymentIntentId, null);
     PaymentRecord saved = paymentRecordRepository.save(record);
-    auditService.log(userId, "PAYMENT_PROCESSED", "PAYMENT", saved.getId(),
+    auditService.logInCurrentTransaction(userId, "PAYMENT_PROCESSED", "PAYMENT", saved.getId(),
         "stripe_intent=" + paymentIntentId);
     return saved;
   }

@@ -174,7 +174,7 @@ public class SeatHoldService {
     String seatIdsSummary = saved.stream()
         .map(h -> h.getSeat().getId()).map(UUID::toString)
         .collect(Collectors.joining(", "));
-    auditService.log(ownerId, "CREATE", "HOLD", saved.get(0).getId(),
+    auditService.logInCurrentTransaction(ownerId, "CREATE", "HOLD", saved.get(0).getId(),
         "Created " + saved.size() + " hold(s) for event " + eventId
             + "; seatIds=[" + seatIdsSummary + "]"
             + "; holdIds=[" + holdIdsSummary + "]"
@@ -221,7 +221,7 @@ public class SeatHoldService {
       seatRepository.save(seat);
     }
     SeatHold saved = seatHoldRepository.save(hold);
-    auditService.log(ownerId, "RELEASE", "HOLD", holdId,
+    auditService.logInCurrentTransaction(ownerId, "RELEASE", "HOLD", holdId,
         "Hold released, seat " + seat.getId() + " returned to AVAILABLE");
 
     // If the event uses a queue, reinstate the user's queue entry so they can re-select
@@ -268,7 +268,7 @@ public class SeatHoldService {
     seat.setStatus(SeatStatus.BOOKED);
     seatRepository.save(seat);
     SeatHold saved = seatHoldRepository.save(hold);
-    auditService.log(ownerId, "CONFIRM", "HOLD", holdId,
+    auditService.logInCurrentTransaction(ownerId, "CONFIRM", "HOLD", holdId,
         "Hold confirmed, seat " + seat.getId() + " status set to BOOKED");
     return saved;
   }

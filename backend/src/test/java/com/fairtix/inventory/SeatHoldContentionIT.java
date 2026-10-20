@@ -53,14 +53,17 @@ import org.springframework.test.context.TestPropertySource;
  * after every winner confirms and checks out, at most one active ticket per seat.
  * No retries.
  *
- * <p>Concurrency is bounded at (Hikari pool size - 1) worker threads, released
- * together by one latch, with the 200 tasks queued behind them. {@code createHold}
- * holds one pooled connection and opens a second for the {@code REQUIRES_NEW}
- * {@code AuditService.log}; with 200 threads on the default pool of 10, every
- * connection ended up waiting for a second one, and 197 of 200 calls failed with
- * {@code CannotCreateTransactionException} after Hikari's 30 s timeout (still with
- * zero oversells). That pool starvation is recorded as a finding for L1-rest, not
- * fixed here; see {@code docs/experiments/l1-contention-correctness.md}.
+ * <p>Concurrency is 2 x (Hikari pool size) worker threads, released together by
+ * one latch, with the 200 tasks queued behind them. This is the pool-starvation
+ * proof: {@code createHold} used to hold one pooled connection and open a second
+ * for the {@code REQUIRES_NEW} {@code AuditService.log}, so more than (pool - 1)
+ * concurrent callers could each hold one connection while waiting for another.
+ * Red on commit {@code a9fbbf6}: 20 workers on a pool of 10, 40 of 200 calls failed
+ * with {@code CannotCreateTransactionException} after the 5 s connection timeout
+ * (L1-min measured 197 of 200 with 200 threads and the 30 s default). The hold and
+ * checkout paths now audit through {@code AuditService.logInCurrentTransaction},
+ * on the caller's connection; see
+ * {@code docs/experiments/l1-contention-correctness.md}.
  *
  * <p>A background thread samples {@code pg_locks} and {@code pg_stat_activity}
  * every 50 ms on its own unpooled connection and records the maxima. This is a
