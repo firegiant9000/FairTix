@@ -42,8 +42,9 @@ Config:             backend/src/main/resources/application.properties
 # Testing
 
 - `*Test` classes run in surefire (Maven `test`) on H2 with Hibernate `create-drop`; Flyway is off there.
-- `*IT` classes run in failsafe (Maven `verify`) on PostgreSQL 16 via Testcontainers. They extend `com.fairtix.support.PostgresIT`, which applies every Flyway migration to an empty database and runs Hibernate `validate`. Redis is still the `TestRedisConfig` mock in both suites.
-- ITs share one container, so each IT rolls back (`@Transactional`) or deletes what it commits.
+- `*IT` classes run in failsafe (Maven `verify`) on PostgreSQL 16 via Testcontainers. They extend `com.fairtix.support.PostgresIT`, which applies every Flyway migration to an empty database and runs Hibernate `validate`. Redis is still the `TestRedisConfig` mock in both suites; `@Scheduled` jobs are off in ITs.
+- ITs share one container. `PostgresIT` removes the migrations' seed rows and truncates every table after each test (a `@Transactional` rollback alone misses `REQUIRES_NEW` writes such as audit rows), so each IT starts with no rows.
+- No Docker: `./mvnw verify -DskipITs` runs the unit tests only. JaCoCo counts IT coverage too, so leave headroom for `-DskipITs` when raising the floors.
 - `StripeRefundIntegrationIT` is excluded from failsafe (it needs `STRIPE_TEST_SECRET_KEY`); run it with `./mvnw verify -Dit.test=StripeRefundIntegrationIT`.
 
 # Implementation rules

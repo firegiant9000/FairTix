@@ -32,8 +32,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * {@link PurchaseFlowIntegrationTest} on PostgreSQL 16 with the Flyway schema:
  * create hold -> confirm hold -> checkout (payment) -> verify tickets + seat status.
- * The H2 original stays until L1-rest removes H2. Each test rolls back, so nothing
- * leaks into the shared container.
+ * The H2 original stays until L1-rest removes H2. Each test rolls back, and
+ * {@link PostgresIT} truncates the committed {@code REQUIRES_NEW} audit rows.
  */
 @Transactional
 class PurchaseFlowPostgresIT extends PostgresIT {

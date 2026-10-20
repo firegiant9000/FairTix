@@ -14,7 +14,10 @@ import org.flywaydb.core.api.MigrationInfo;
 import org.flywaydb.core.api.MigrationState;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.core.env.Environment;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor;
 
 /**
  * Proves the full Flyway history applies to an empty PostgreSQL 16 database and
@@ -28,6 +31,8 @@ class FlywayPostgresIT extends PostgresIT {
   @Autowired private Flyway flyway;
   @Autowired private DataSource dataSource;
   @Autowired private Environment environment;
+  @Autowired private ApplicationContext applicationContext;
+  @Autowired private JdbcTemplate jdbcTemplate;
 
   @Test
   void runsAgainstPostgres16_notH2() throws Exception {
@@ -42,6 +47,25 @@ class FlywayPostgresIT extends PostgresIT {
   void hibernateValidatesTheMigratedSchema() {
     assertThat(environment.getProperty("spring.jpa.hibernate.ddl-auto")).isEqualTo("validate");
     assertThat(environment.getProperty("spring.flyway.enabled")).isEqualTo("true");
+  }
+
+  @Test
+  void backgroundSchedulersAreOff() {
+    assertThat(applicationContext.getBeanNamesForType(ScheduledAnnotationBeanPostProcessor.class))
+        .isEmpty();
+  }
+
+  /** Seed rows and anything an earlier IT committed (e.g. REQUIRES_NEW audit rows) are gone. */
+  @Test
+  void startsWithNoRowsInAnyTable() {
+    List<String> nonEmpty = jdbcTemplate.queryForList(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                + " AND tablename <> 'flyway_schema_history'", String.class)
+        .stream()
+        .filter(table -> Boolean.TRUE.equals(jdbcTemplate.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM public.\"" + table + "\")", Boolean.class)))
+        .toList();
+    assertThat(nonEmpty).isEmpty();
   }
 
   @Test

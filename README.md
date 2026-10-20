@@ -128,6 +128,7 @@ documented in [docs/api-contract.md](docs/api-contract.md).
 
 ```bash
 cd backend && ./mvnw verify                  # unit tests on H2, then the *IT suite on PostgreSQL 16 (Docker required)
+cd backend && ./mvnw verify -DskipITs        # no Docker: unit tests only
 cd frontend/webpages && npm test -- --coverage
 ```
 
