@@ -32,11 +32,12 @@ USER 10001:10001
 EXPOSE 8080
 
 # curl already ships in the base image; this adds no package.
-# /actuator/health is permitAll. When a dependency is down it returns 503, or
-# times out if Redis is unreachable; either way the probe fails.
+# /actuator/health is permitAll. When a dependency is down it returns 503 or
+# hangs past --max-time (seen with Redis stopped); either way the probe fails.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
   CMD curl -fsS -o /dev/null --max-time 4 http://127.0.0.1:8080/actuator/health || exit 1
 
-# Give the heap 75% of the container memory limit (the JVM default is 25%).
-# Leaves ~25% for metaspace, threads and direct buffers: size tasks at 1 GiB+.
+# Cap the heap at 75% of the container memory limit (the JVM default is 25%).
+# This flag does not cap metaspace, thread stacks or direct buffers (direct
+# memory defaults to the max heap size); size L3 tasks with that in mind.
 ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
