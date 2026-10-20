@@ -43,6 +43,11 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  * {@code CONFIRMED} by the MVP {@code createOrder} path before it released its
  * holds) becomes {@code RELEASED} and the seat stays sold.
  *
+ * <p>Red on commit {@code 6408921}: the sweep was an empty stub (before it, only
+ * ACTIVE holds were swept), so an expired CONFIRMED hold kept its seat BOOKED
+ * forever, and {@code createOrder} left its holds CONFIRMED. Four of the six tests
+ * failed; the grace and race tests pass either way.
+ *
  * <p>Scheduling is off in the {@code it} profile, so the tests call the sweep
  * directly. Not {@code @Transactional}: every write commits, and
  * {@link PostgresIT} truncates the tables after each test.

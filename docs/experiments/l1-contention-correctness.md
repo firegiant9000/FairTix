@@ -84,4 +84,4 @@ Both are fixed on `fix/l1rest-correctness`:
 - Concurrency is 20 workers (9 in L1-min, bounded by finding 2), so at most 20 transactions contend at once, and only 10 hold a connection. It is not 200-way contention.
 - One round only. The roadmap's multi-round run and the no-ordering deadlock variant are L1-rest, so this doc makes no "deadlock-free" claim.
 - Redis is a mock, and the queue gate is off for this event.
-- Scheduled expiry is off. Expiry of `CONFIRMED` holds and the payment-failure paths are not exercised (L1-rest).
+- Scheduled expiry is off in this test. `CONFIRMED`-hold expiry, including a checkout racing the sweep, is covered separately by `ConfirmedHoldExpiryIT` (L1-rest). The payment-failure paths are not exercised (L1-rest).

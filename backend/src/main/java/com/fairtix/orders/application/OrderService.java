@@ -120,6 +120,10 @@ public class OrderService {
     Order order = new Order(user, holdIds, totalAmount, "USD");
     order = orderRepository.save(order);
     ticketService.issueTickets(order, holds);
+    for (SeatHold hold : holds) {
+      hold.setStatus(HoldStatus.RELEASED);
+      seatHoldRepository.save(hold);
+    }
     auditService.logInCurrentTransaction(userId, "CREATE", "ORDER", order.getId(),
         "Order completed: " + holdIds.size() + " hold(s), total=" + totalAmount + " USD");
     sendOrderConfirmationEmail(user, order, holds);
