@@ -41,7 +41,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 public abstract class PostgresIT {
 
   /** Pinned, and the Debian (glibc) variant like docker-compose, so collation matches. */
-  static final String POSTGRES_IMAGE = "postgres:16.10";
+  protected static final String POSTGRES_IMAGE = "postgres:16.10";
 
   @ServiceConnection
   static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE);
