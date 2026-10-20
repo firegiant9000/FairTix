@@ -127,18 +127,18 @@ class SeatHoldContentionIT extends PostgresIT {
     int requestedSeats = requests.stream().mapToInt(List::size).sum();
 
     int hikariPoolSize = dataSource.unwrap(HikariDataSource.class).getMaximumPoolSize();
-
-    // ---- race ----
-    LockSampler sampler = new LockSampler(connectionDetails);
-    Thread samplerThread = new Thread(sampler, "pg-lock-sampler");
-    samplerThread.start();
-
     // createHold holds one pooled connection and needs a second for the
     // REQUIRES_NEW audit write, so more than (pool - 1) concurrent callers starve
     // the pool (Hikari's pool-starvation-free bound: pool >= threads * (2 - 1) + 1).
     // See the class Javadoc.
     int workers = hikariPoolSize - 1;
     assertThat(workers).as("enough workers to contend").isGreaterThanOrEqualTo(8);
+
+    // ---- race ----
+    LockSampler sampler = new LockSampler(connectionDetails);
+    Thread samplerThread = new Thread(sampler, "pg-lock-sampler");
+    samplerThread.start();
+
     CountDownLatch ready = new CountDownLatch(workers);
     CountDownLatch start = new CountDownLatch(1);
     Map<UUID, List<SeatHold>> winners = new ConcurrentHashMap<>();

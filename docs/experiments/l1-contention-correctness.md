@@ -44,7 +44,7 @@ Tests: `SeatHoldContentionIT`, `TicketSeatUniquenessIT`, `FlywayPostgresIT`, all
 | 1 | local | 22 | 178 | 0 | 43 | **0** | **0** | 4 | 4 | 537 |
 | 2 | local | 21 | 179 | 0 | 41 | **0** | **0** | 3 | 3 | 616 |
 | 3 | local, full Maven `verify` | 22 | 178 | 0 | 44 | **0** | **0** | 4 | 4 | 542 |
-| 4 | CI, [run 39362555002](https://github.com/firegiant9000/FairTix/actions/runs/39362555002) | 21 | 179 | 0 | 41 | **0** | **0** | 3 | 3 | 635 |
+| 4 | CI on `98878fd`, [run 39362555002](https://github.com/firegiant9000/FairTix/actions/runs/39362555002) | 21 | 179 | 0 | 41 | **0** | **0** | 3 | 3 | 635 |
 
 Successes, seats held and wait counts vary between runs because thread scheduling decides which overlapping request wins. The invariants don't vary. The wait maxima show that requests really did queue on row locks.
 
