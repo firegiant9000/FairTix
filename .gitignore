@@ -11,6 +11,11 @@ frontend/node_modules/
 frontend/dist/
 frontend/build/
 
+### Infra (Python) ###
+infra/.venv/
+infra/**/__pycache__/
+infra/.pytest_cache/
+
 ### IDE / Editor ###
 .idea/
 *.iml

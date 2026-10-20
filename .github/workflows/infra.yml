@@ -1,0 +1,47 @@
+name: Infra
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+
+  teardown-tests:
+    name: Teardown policy tests (T1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: infra
+
+    # No AWS credentials exist in this job. Dummy values and IMDS off make any call that
+    # escaped a Stubber fail loudly instead of finding real credentials.
+    env:
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_ACCESS_KEY_ID: testing
+      AWS_SECRET_ACCESS_KEY: testing
+      AWS_DEFAULT_REGION: us-east-1
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: infra/teardown/requirements-dev.txt
+
+      - name: Install pinned dependencies
+        run: python -m pip install -r teardown/requirements-dev.txt
+
+      - name: Run teardown tests
+        run: python -m pytest teardown/tests -q
