@@ -86,4 +86,20 @@ class FlywayPostgresIT extends PostgresIT {
         .mapToObj(String::valueOf)
         .toList());
   }
+
+  /** V46: one active ticket per seat, as a partial unique index. */
+  @Test
+  void v46AddsThePartialUniqueIndexOnTicketSeat() {
+    assertThat(Arrays.stream(flyway.info().applied()).map(info -> info.getVersion().getVersion()))
+        .contains("46");
+
+    String indexDef = jdbcTemplate.queryForObject(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'uk_tickets_seat_active'",
+        String.class);
+    assertThat(indexDef)
+        .startsWith("CREATE UNIQUE INDEX uk_tickets_seat_active ON public.tickets USING btree (seat_id)")
+        .contains("WHERE")
+        .contains("'CANCELLED'")
+        .contains("'REFUNDED'");
+  }
 }

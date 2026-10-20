@@ -2,7 +2,11 @@ package com.fairtix.tickets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fairtix.config.GlobalExceptionHandler;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.application.SeatHoldConflictException;
@@ -39,6 +43,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 /**
  * One active ticket per seat ({@code tickets.seat_id}), on PostgreSQL 16.
@@ -47,6 +55,12 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  * the same seat must be rejected, while a refunded or cancelled ticket must not
  * block resale. (b) is an honest attempt at the service-level race: two threads
  * check out the same CONFIRMED hold through {@link OrderService} at once.
+ *
+ * <p>Red on the parent: on commit {@code a240f06} (before V46) (a)'s two-VALID
+ * case failed because both tickets inserted. No service-level path duplicated, so
+ * per Arlo's FT-2 ruling (a) is the red test; (b) passed there too, because
+ * {@code Seat.@Version} stops the second checkout. V46 makes (a) green, and an
+ * overlapping (b) loser now hits the index (409) before the version check.
  *
  * <p>Not {@code @Transactional}: every write commits, and {@link PostgresIT}
  * truncates the tables after each test.
@@ -61,6 +75,7 @@ class TicketSeatUniquenessIT extends PostgresIT {
   @Autowired private SeatHoldService seatHoldService;
   @Autowired private OrderService orderService;
   @Autowired private JdbcTemplate jdbcTemplate;
+  @Autowired private GlobalExceptionHandler globalExceptionHandler;
 
   private Event event;
   private Seat seat;
@@ -103,6 +118,41 @@ class TicketSeatUniquenessIT extends PostgresIT {
     ticketRepository.saveAndFlush(validTicketFor(newUser("buyer@test.com")));
 
     assertThat(activeTicketsForSeat()).isEqualTo(1);
+  }
+
+  /**
+   * The V46 violation reaches clients as 409, not 500. No production endpoint can
+   * create a duplicate, so a test-only controller performs the insert against the
+   * real database, behind the application's {@link GlobalExceptionHandler}.
+   */
+  @Test
+  void duplicateActiveTicket_mapsTo409() throws Exception {
+    ticketRepository.saveAndFlush(validTicketFor(newUser("first@test.com")));
+    Ticket duplicate = validTicketFor(newUser("second@test.com"));
+
+    MockMvc mockMvc = MockMvcBuilders
+        .standaloneSetup(new DuplicateTicketController(() -> ticketRepository.saveAndFlush(duplicate)))
+        .setControllerAdvice(globalExceptionHandler)
+        .build();
+
+    mockMvc.perform(post("/test/duplicate-ticket"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("DATA_CONFLICT"));
+    assertThat(activeTicketsForSeat()).isEqualTo(1);
+  }
+
+  @RestController
+  static class DuplicateTicketController {
+    private final Runnable insert;
+
+    DuplicateTicketController(Runnable insert) {
+      this.insert = insert;
+    }
+
+    @PostMapping("/test/duplicate-ticket")
+    void insert() {
+      insert.run();
+    }
   }
 
   // ---- (b) the service-level race ----
@@ -151,12 +201,17 @@ class TicketSeatUniquenessIT extends PostgresIT {
 
     assertThat(successes).isEqualTo(1);
     assertThat(activeTicketsForSeat()).isEqualTo(1);
-    // The loser either overlapped (Seat.@Version -> optimistic lock) or ran after
-    // the winner committed (hold RELEASED / seat SOLD). Known gap, not fixed here:
-    // GlobalExceptionHandler has no handler for the optimistic-lock case, so over
-    // HTTP the overlapping loser gets a 500, not a 409. See
-    // docs/experiments/l1-contention-correctness.md.
+    // How the loser fails depends on overlap and on V46:
+    // - ran after the winner committed: hold RELEASED / seat SOLD (400 / 409);
+    // - overlapped, with V46: Hibernate flushes the ticket INSERT before the seat
+    //   UPDATE, so the loser's insert waits on the winner's index entry and then
+    //   violates uk_tickets_seat_active (DataIntegrityViolationException, 409);
+    // - overlapped, before V46 (a240f06): the duplicate ticket inserted and only
+    //   Seat.@Version rolled it back (ObjectOptimisticLockingFailureException).
+    //   GlobalExceptionHandler has no handler for that, so over HTTP it is a 500.
+    //   Known gap, not fixed here; see docs/experiments/l1-contention-correctness.md.
     assertThat(failures).singleElement().isInstanceOfAny(
+        DataIntegrityViolationException.class,
         ObjectOptimisticLockingFailureException.class,
         SeatHoldConflictException.class,
         IllegalArgumentException.class);
