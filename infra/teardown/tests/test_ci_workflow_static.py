@@ -4,6 +4,7 @@ Third-party actions must be pinned to commit SHAs, and the Dependency-Check job 
 the real runtime JARs with a CVSS threshold. PyYAML reads the `on:` key as boolean True.
 
 Red commit (SHA-pin test): bac1c09
+Red commit (Dependency-Check tests): 30aa13a
 """
 import re
 from pathlib import Path
