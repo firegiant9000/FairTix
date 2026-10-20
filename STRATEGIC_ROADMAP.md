@@ -186,7 +186,7 @@ Experiment: about 200 concurrent operations against a 50-seat section with overl
 
 _(Revised 2026-10-19.)_ A new AWS account, opened when L3 starts (not before: a Free plan's six-month clock starts at sign-up).
 - **Plan:** the Free plan is offered only to **new** AWS customers. The FAQ excludes anyone with an existing, or reportedly a previous, AWS account. Check which plans the sign-up flow offers. If it's the Free plan, take it, after confirming in the console that ECS on Fargate and the IAM OIDC provider are available on it. Otherwise use the Paid plan.
-- **On the Paid plan** there is no hard spending cap. The three-layer teardown in [`docs/infra/teardown-design.md`](docs/infra/teardown-design.md) is the cost control and must pass its tests T1–T4 before the first full `apply`.
+- **On the Paid plan** there is no hard spending cap. The three-layer teardown in [`docs/infra/teardown-design.md`](docs/infra/teardown-design.md) is the cost control and must pass its tests T1–T6 before the first full `apply`.
 - Don't join AWS Organizations or Control Tower: joining upgrades a Free plan account to Paid.
 
 Architecture (2026-10-18; confirm each resource against the AWS provider docs when implementing):
@@ -207,7 +207,7 @@ Architecture (2026-10-18; confirm each resource against the AWS provider docs wh
 - **CI access.** GitHub Actions uses an IAM OIDC identity provider plus a role whose trust policy pins `sub` to this repository and a protected environment. No access keys anywhere.
 - **State.** Remote Terraform state in an S3 bucket created once by hand and documented, with S3-native state locking (check the backend docs when implementing).
 
-Workflows (unchanged): `terraform fmt -check` and `validate` on every PR; `plan` on PR with the plan posted as a comment; `apply` only on `workflow_dispatch` with an environment approval; `destroy` on `workflow_dispatch` ~~with the same approval~~. _(2026-10-19: **teardown must never wait for an approval.** A job that references an environment with required reviewers waits up to 30 days, scheduled runs included. Destroy therefore runs in its own `lab-teardown` environment: no reviewers, no wait timer, `main` only, OIDC `sub` pinned to `repo:firegiant9000/FairTix:environment:lab-teardown`. It runs hourly on `schedule` and on `workflow_dispatch`, and shares a concurrency group with apply (`cancel-in-progress: false`). An AWS-side reaper backs it up. Design, tests and recovery runbook: [`docs/infra/teardown-design.md`](docs/infra/teardown-design.md).)_
+Workflows (unchanged): `terraform fmt -check` and `validate` on every PR; `plan` on PR with the plan posted as a comment; `apply` only on `workflow_dispatch` with an environment approval; `destroy` on `workflow_dispatch` ~~with the same approval~~. _(2026-10-19: **teardown must never wait for an approval.** A job that references an environment with required reviewers waits up to 30 days, scheduled runs included. Destroy therefore runs in its own `lab-teardown` environment: no reviewers, no wait timer, `main` only, OIDC `sub` pinned to `repo:firegiant9000/FairTix:environment:lab-teardown` and `job_workflow_ref` pinned to `lab-teardown.yml` on `main`. It runs hourly on `schedule` and on `workflow_dispatch`, in its **own** concurrency group, so an apply waiting for approval can't hold it up. The S3 state lock (`-lock-timeout`) keeps it from colliding with an apply. `lab-apply` is also `main`-only. An AWS-side reaper backs it up. Design, tests and recovery runbook: [`docs/infra/teardown-design.md`](docs/infra/teardown-design.md).)_
 
 Also in this milestone (unchanged except the target): harden the Dockerfile (non-root user, `HEALTHCHECK`, explicit JVM memory flags, remove the dead block), delete or mark unmaintained the Railway, Cloud Run and Netlify deploy paths, and run one PITR restore drill (RDS point-in-time restore to a new instance), recording row counts and elapsed time.
 
@@ -217,7 +217,12 @@ Also in this milestone (unchanged except the target): harden the Dockerfile (non
 - The budget alert exists before the first apply.
 - `docs/infra/cost.md` records the estimated and actual cost for one experiment window.
 - ~~After `destroy`, a tag query for the project returns no resources.~~ _(Replaced 2026-10-19: tag queries miss untagged and auto-created resources.)_ After every session, the state-free `verify` script (teardown design §6) finds nothing, and Cost Explorer at T + 24 h and T + 48 h shows nothing still accruing for ECS, ELB, RDS, ElastiCache or VPC.
-- Teardown tests T4 (scheduled teardown of a canary stack, never waiting for approval), T5 (the reaper acts with the workflow disabled) and T7 (first real session) are recorded in `docs/infra/teardown-tests.md`. _(Added 2026-10-19.)_
+- Teardown tests are recorded in `docs/infra/teardown-tests.md` _(added 2026-10-19)_:
+  - T4: scheduled teardown of a canary stack, never waiting for approval;
+  - T5: the reaper acts with the workflow disabled;
+  - T5b: a reaper IAM simulation and a dry-run against the real stack;
+  - T6: fault injection;
+  - T7: the first real session.
 - The restore drill is recorded, and its restored instance is deleted and verified gone.
 
 **Verification.**
@@ -231,13 +236,13 @@ aws elbv2 describe-target-health --target-group-arn <tg-arn>   # expect 2 health
 python -m teardown.verify   # 2026-10-19: replaces the tag query; after destroy, expect nothing found
 ```
 
-**Estimated cost** (AWS Price List, us-east-1, on-demand, checked 2026-10-18; re-check before the first apply). 2 Fargate tasks at 0.5 vCPU / 1 GB, `db.t4g.micro` with 20 GB gp3, Valkey `cache.t4g.micro`, an ALB in 2 AZs, 4 public IPv4 addresses and 3 secrets come to about **$0.12 per hour while up** (about $0.11 with ARM images), or about $92 a month if left running. The rule is create, experiment, destroy: at 40 environment-hours a month that is about $5. NAT Gateway and VPC endpoints are deliberately absent. _(2026-10-19 additions:_
+**Estimated cost** (AWS Price List, us-east-1, on-demand, checked 2026-10-18; re-check before the first apply). 2 Fargate tasks at 0.5 vCPU / 1 GB, `db.t4g.micro` with 20 GB gp3, Valkey `cache.t4g.micro`, an ALB in 2 AZs, 4 public IPv4 addresses and 3 secrets come to about **$0.12 per hour while up** (about $0.11 with ARM images), or about ~~$92~~ $88 a month if left running _(2026-10-19: 0.12 × 730 h)_. The rule is create, experiment, destroy: at 40 environment-hours a month that is about $5. NAT Gateway and VPC endpoints are deliberately absent. _(2026-10-19 additions:_
 - _a forgotten environment costs about $20 a week, or about $88 a month;_
 - _scaling ECS to 0 and stopping RDS still leaves about $0.05/h (≈ $37 a month);_
 - _AWS restarts a stopped RDS instance after 7 days;_
 - _so the bound on a forgotten environment is the teardown system: at most a few hours of runtime past expiry.)_
 
-**Evidence produced.** The `infra/` Terraform module, the four workflow runs (plan, apply, destroy, restore drill), the cost document, ~~and the empty tag query after destroy~~ the `verify` output after destroy, and the teardown test records (T4, T5, T7). _(Revised 2026-10-19.)_
+**Evidence produced.** The `infra/` Terraform module, the four workflow runs (plan, apply, destroy, restore drill), the cost document, ~~and the empty tag query after destroy~~ the `verify` output after destroy, and the teardown test records (T4, T5, T5b, T6, T7). _(Revised 2026-10-19.)_
 
 **Effort.** About 40–62 hours, including the teardown system. _(Added 2026-10-19.)_
 
@@ -300,7 +305,11 @@ An EventBridge Scheduler rule runs a Python Lambda every 30 minutes. The Lambda 
 
 #### Exposure gate (added 2026-10-19; required before any public URL)
 
-A private lab (one `/32`, synthetic data, Stripe test mode, destroyed after each session) can run with the weaknesses below, as long as they are listed under "Known exposure" in `docs/infra/cost.md`. **A public URL needs every row closed.** These come from a 2026-10-18 code review; rows marked *unverified* need checking first.
+A private lab (one `/32`, synthetic data, Stripe test mode, destroyed after each session) can run with the weaknesses below, as long as they are listed under "Known exposure" in `docs/infra/cost.md`. **A public URL needs every row closed, and each row closes with a linked test or config artifact.** These come from a 2026-10-18 code review, extended by the 2026-10-19 risk review of the teardown design. Rows marked *unverified* need checking first.
+
+The private lab's own guards aren't in this table, because they apply from the first session (teardown design §3):
+- the ALB ingress variable rejects anything but one `/32`;
+- the state bucket is encrypted and blocks public access.
 
 | Weakness | Risk once public | Fix |
 |---|---|---|
@@ -314,6 +323,11 @@ A private lab (one `/32`, synthetic data, Stripe test mode, destroyed after each
 | Open registration plus outbound email *(unverified)* | Spam or relay abuse | Invite-only or disabled registration; no real SMTP credentials in the lab |
 | Actuator exposure; seeded admin credentials *(unverified)* | Information leak; default logins | Expose only `health`; confirm that no migration seeds a usable admin |
 | No HTTPS | Credentials in cleartext | Own domain + ACM certificate on the ALB (Route 53 or registrar DNS) |
+| No edge rate limiting; abuse cost *(added 2026-10-19)* | Floods drive ALB LCU and egress charges, which no budget alert stops in time | AWS WAF rate-based rule on the ALB, plus the per-hour cost in `cost.md` |
+| Security headers, CORS, JWT/signing secrets *(added 2026-10-19, unverified)* | Clickjacking, cross-origin reads, forgeable tokens if a default secret ships | Explicit header and CORS config; secrets only from Secrets Manager, rotated off any default |
+| Data in transit and at rest *(added 2026-10-19)* | Plaintext DB and cache traffic inside the VPC | RDS `rds.force_ssl`, ElastiCache in-transit and at-rest encryption, with Redisson on TLS |
+| `lab-apply` role is broad *(added 2026-10-19)* | A leaked workflow run can create anything in the account | A permission boundary limiting it to the L3 services and the `fairtix-lab-*` prefix |
+| No audit or error alarms *(added 2026-10-19)* | Abuse or a break-in goes unseen | CloudTrail (the free management-event trail) and an ALB 5xx alarm |
 
 **Effort.** About 15–25 hours. Not scheduled. A recorded walkthrough of the private lab is the default way to demo it.
 
