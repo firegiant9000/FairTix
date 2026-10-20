@@ -148,6 +148,17 @@
       <artifactId>spring-security-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- PostgreSQL container suite (*IT, run by failsafe). Versions are Boot-managed. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.redisson</groupId>
       <artifactId>redisson</artifactId>
@@ -197,6 +208,31 @@
             <include>**/*Test.java</include>
           </includes>
         </configuration>
+      </plugin>
+      <plugin>
+        <!-- Container suite: *IT classes run against PostgreSQL via Testcontainers
+             in Maven `verify`. Docker is required. Version is Boot-managed. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <useModulePath>false</useModulePath>
+          <includes>
+            <include>**/*IT.java</include>
+          </includes>
+          <excludes>
+            <!-- Hits Stripe's test-mode API and needs STRIPE_TEST_SECRET_KEY; gated, not
+                 part of the container suite. Run it on demand with -Dit.test=StripeRefundIntegrationIT. -->
+            <exclude>**/StripeRefundIntegrationIT.java</exclude>
+          </excludes>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

@@ -8,15 +8,15 @@ Team: group
 # Stack
 
 Languages: Java 21 (backend), JavaScript (frontend)
-Frameworks: Spring Boot 4.0.5, React 18.2 (Create React App)
+Frameworks: Spring Boot 4.0.8, React 18.2 (Create React App)
 Data layer: PostgreSQL 16 via JPA/Hibernate + Flyway migrations (seat holds live here, as rows under pessimistic row locks); Redis 7 via Redisson for the waiting-room queue, rate limiting and login throttling
 Auth: JWT (JJWT 0.13.0) via HttpOnly cookies; /auth/me for user hydration
 Deployment: Docker Compose (local/dev); GitHub Actions CI with Trivy + OWASP checks
 
 # Commands
 
-Build (backend):   cd backend && mvn clean package
-Test (backend):    cd backend && mvn clean verify
+Build (backend):   cd backend && ./mvnw clean package
+Test (backend):    cd backend && ./mvnw clean verify   (runs the Postgres container suite; Docker required)
 Test (frontend):   cd frontend/webpages && npm test
 Lint/format:       n/a (no formatter configured)
 Run locally:       docker compose up --build
@@ -34,10 +34,18 @@ Config:             backend/src/main/resources/application.properties
 # Architecture notes
 
 - Backend is domain-driven and modular: each feature (events, orders, payments, inventory, auth, audit, analytics, notifications, venues) follows an api/application/domain/infrastructure layer pattern.
-- Seat holds are PostgreSQL rows: `SeatRepository.findAndLockByIdIn` takes `PESSIMISTIC_WRITE` locks in sorted-ID order inside one transaction, `Seat` carries `@Version`, holds carry an expiry column and `HoldExpirationScheduler` sweeps expired `ACTIVE` holds every 30 seconds. Per-user limits come from `holds.max-active-per-holder` (check the property, do not assume a number). Never bypass `SeatHoldService` for concurrency correctness. Known gap (2026-09): `CONFIRMED` holds are not swept, and `tickets.seat_id` has no unique index; see `docs/roadmap-review-2026-09.md`.
+- Seat holds are PostgreSQL rows: `SeatRepository.findAndLockByIdIn` takes `PESSIMISTIC_WRITE` locks in sorted-ID order inside one transaction, `Seat` carries `@Version`, holds carry an expiry column and `HoldExpirationScheduler` sweeps expired `ACTIVE` holds every 30 seconds. Per-user limits come from `holds.max-active-per-holder` (check the property, do not assume a number). Never bypass `SeatHoldService` for concurrency correctness. Known gap (2026-09): `CONFIRMED` holds are not swept; see `docs/roadmap-review-2026-09.md`. Since V46 the database allows one active ticket per seat (`uk_tickets_seat_active`, a partial unique index ignoring `CANCELLED`/`REFUNDED`); see `docs/experiments/l1-contention-correctness.md`.
 - Auth is transitioning from sessionStorage + Bearer token to HttpOnly cookies + /auth/me. New code must follow the cookie-based approach.
 - Database schema is managed entirely via Flyway versioned migrations. Never modify the DB schema directly — always add a new migration file.
 - Audit logging tracks all user actions with request ID correlation. New features that mutate state should emit audit events.
+
+# Testing
+
+- `*Test` classes run in surefire (Maven `test`) on H2 with Hibernate `create-drop`; Flyway is off there.
+- `*IT` classes run in failsafe (Maven `verify`) on PostgreSQL 16 via Testcontainers. They extend `com.fairtix.support.PostgresIT`, which applies every Flyway migration to an empty database and runs Hibernate `validate`. Redis is still the `TestRedisConfig` mock in both suites; `@Scheduled` jobs are off in ITs.
+- ITs share one container. `PostgresIT` removes the migrations' seed rows and truncates every table after each test (a `@Transactional` rollback alone misses `REQUIRES_NEW` writes such as audit rows), so each IT starts with no rows.
+- No Docker: `./mvnw verify -DskipITs` runs the unit tests only. JaCoCo counts IT coverage too, so leave headroom for `-DskipITs` when raising the floors.
+- `StripeRefundIntegrationIT` is excluded from failsafe (it needs `STRIPE_TEST_SECRET_KEY`); run it with `./mvnw verify -Dit.test=StripeRefundIntegrationIT`.
 
 # Implementation rules
 
