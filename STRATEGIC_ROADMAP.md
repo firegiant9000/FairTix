@@ -220,9 +220,9 @@ Also in this milestone (unchanged except the target): harden the Dockerfile (non
 - Teardown tests are recorded in `docs/infra/teardown-tests.md` _(added 2026-10-19)_:
   - T4: scheduled teardown of a canary stack, never waiting for approval;
   - T5: the reaper acts with the workflow disabled;
-  - T5b: a reaper IAM simulation and a dry-run against the real stack;
+  - T5b: a reaper IAM simulation;
   - T6: fault injection;
-  - T7: the first real session.
+  - T7: the first real session, including a reaper dry-run against the real stack.
 - The restore drill is recorded, and its restored instance is deleted and verified gone.
 
 **Verification.**

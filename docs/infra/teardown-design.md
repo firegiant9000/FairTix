@@ -75,27 +75,31 @@ jobs:
 
 **Why teardown has its own concurrency group:** an apply run waiting for environment approval can hold a shared group for up to 30 days, and the hourly teardown ticks would queue or cancel behind it. Mutual exclusion on state comes from Terraform's S3 lockfile instead: `-lock-timeout=15m` makes teardown wait out an apply rather than fail. `lab-apply` keeps its own group, `fairtix-lab-apply`.
 
+**Known race (costs nothing):** a tick that decided `destroy` on the old expiry can wait on the lock while a new apply runs, then destroy the fresh lab. That loses a session but can't leave anything running. To make it rare, the apply preflight refuses to start while a `lab-teardown` run is queued or in progress (`gh run list --workflow lab-teardown.yml --status in_progress` and `--status queued`).
+
 **Layer 3: the AWS reaper (Lambda, every 30 minutes).**
 - It calls the same `decide()`, but with the **billable** census only (§4). If the lab is past expiry **plus a 2-hour grace period**, which gives layer 2 time to act first, it deletes the expensive resources directly. It finds them by the `fairtix-lab-` name prefix, and by the `project=fairtix-lab` tag for Elastic IPs, which have no name:
   - set ECS services to 0, then delete the services and the cluster;
-  - delete the ALB and its target groups;
+  - delete the ALB and its target groups, clearing the ALB's deletion protection first if it's set;
   - delete the ElastiCache replication groups and clusters (a Valkey replication group can't be removed with `delete-cache-cluster`);
   - delete RDS with `--skip-final-snapshot --delete-automated-backups`, clearing `deletion_protection` first if it's set;
+  - delete any NAT gateways (the design has none, but one would never leave the billable census);
   - release any Elastic IPs.
 - Then it emails SNS: "reaper acted; run lab-destroy to clean state". Once the billable census is empty, `decide()` returns `noop`, so the reaper goes quiet instead of emailing every 30 minutes.
 - **It doesn't touch the VPC, ECR, secrets or log groups:** they cost nothing or pennies, and layers 1–2 clean them up.
 - **Its IAM role** grants:
   - Describe/List (most can't be scoped below `*`);
-  - the Delete actions above, plus `ecs:UpdateService` and `rds:ModifyDBInstance`;
+  - the Delete actions above (including `ec2:DeleteNatGateway`), plus `ecs:UpdateService`, `rds:ModifyDBInstance` and `elasticloadbalancing:ModifyLoadBalancerAttributes`;
   - `ssm:GetParameter` on the expiry parameter and `sns:Publish` on its topic.
 
-  Mutating actions use resource-level ARNs on the `fairtix-lab-*` prefix wherever the service supports them (ECS, ELBv2, RDS, ElastiCache). Elastic IP release requires the condition `aws:ResourceTag/project = fairtix-lab`.
+  Mutating actions use resource-level ARNs on the `fairtix-lab-*` prefix wherever the service supports them (ECS, ELBv2, RDS, ElastiCache). Elastic IP release and NAT deletion require the condition `aws:ResourceTag/project = fairtix-lab`.
 - **State drift:** after the reaper acts, the next `terraform destroy` refreshes, sees the resources are gone, and removes the rest. No `state rm` is needed.
 
 **Apply workflow preflight (`lab-apply.yml`; its environment `lab-apply` may require the owner's approval):**
 1. `gh api repos/{repo}/environments/lab-teardown` must show **no** `required_reviewers` rule and **no** `wait_timer`. Then `gh api .../environments/lab-teardown/deployment-branch-policies` must return exactly one policy, `main`. Otherwise, fail before touching AWS.
 2. `gh workflow enable lab-teardown.yml`, in case the 60-day rule disabled it. This needs `permissions: { actions: write }` on the apply job. Then `gh workflow view lab-teardown.yml --json state` must report `active`, or the preflight fails.
 3. The reaper schedule must be `ENABLED` (`aws scheduler get-schedule`).
+3a. No `lab-teardown` run is queued or in progress (see "Known race").
 4. Write SSM `expires_at = now + TTL` (default 4 h, maximum 12 h). **Then** run `terraform apply`.
 
 The `lab-apply` environment also has a `main`-only branch policy, and the `lab-apply` role's trust pins `job_workflow_ref` to `lab-apply.yml@refs/heads/main`. Without both, a `workflow_dispatch` run of a branch copy of the workflow could skip this preflight.
@@ -112,7 +116,7 @@ The ALB ingress variable has a Terraform `validation` that rejects anything othe
 - It holds only lab resources. Bootstrap resources (the §6 allow-list: the state bucket, roles, the reaper, the SSM parameter, the SNS topic) are never counted.
 - It splits into `billable` (ECS, ELB, RDS, ElastiCache, Elastic IPs, NAT) and `free` (VPC, security groups, ECR, secrets, log groups).
 - Layer 2 passes the whole census. The reaper passes `billable` only, because it only deletes billable items.
-- `oldest_created` is the oldest creation time among **billable** items that report one. That keeps an old log group from pulling the clamp into the past.
+- `oldest_created` is the oldest creation time among the **billable** items that report one. When `billable` is empty, it comes from the `free` items instead. So an old log group can't pull the clamp into the past while a new stack is up, and free leftovers still get clamped. Some items report no creation time (Elastic IPs, or an RDS instance that is still creating), so `oldest_created` can be `None`.
 - **Census errors raise.** An API error, a throttle, or a listing whose pagination didn't finish never yields an empty census. The caller treats it as "resources may exist": layer 2 attempts `destroy`, and the reaper fails, which trips its error alarm.
 
 **Order:** parse `expires_at`, then clamp, then compare. Any exception while parsing or doing date arithmetic (for example, year 9999 + grace overflows) counts as malformed.
@@ -120,8 +124,9 @@ The ALB ingress variable has a Terraform `validation` that rejects anything othe
 | Case | Result |
 |---|---|
 | Census empty | `noop` (nothing to pay for) |
-| Census non-empty; `expires_at` missing, `none`, malformed, has no timezone, or overflows | **`destroy`** (fail closed) |
+| Census non-empty; `expires_at` missing, `none`, malformed, has no timezone, or overflows | **`destroy`** (fail closed). With `grace > 0` (the reaper), only once `now ≥ oldest_created + grace`, or at once if `oldest_created` is `None`, so layer 2 still gets the first try |
 | `oldest_created` exists and `expires_at > oldest_created + max_ttl` (someone set a far-future expiry) | Clamp `expires_at` to `oldest_created + max_ttl`, then continue |
+| `oldest_created` is `None` and `expires_at > now + max_ttl` | **`destroy`**: a far-future expiry that can't be clamped is treated as tampering |
 | `now ≥ expires_at + grace` | `destroy` |
 | Otherwise | `noop` |
 
@@ -132,6 +137,9 @@ The ALB ingress variable has a Terraform `validation` that rejects anything othe
 - a census error → the caller destroys (layer 2) or raises (reaper), never `noop`;
 - a year-9999 expiry → `destroy`;
 - a month-old free item next to a new billable stack → no clamp into the past;
+- an Elastic-IP-only census (no timestamps) with a far-future expiry → `destroy`;
+- free leftovers only, with a far-future expiry → clamped from the oldest free item;
+- a missing expiry with `grace = 2h` and a 30-minute-old stack → `noop`; with a 3-hour-old stack → `destroy`;
 - a census holding only bootstrap items → `noop`, so an empty lab doesn't loop forever;
 - a `free`-only census past expiry → layer 2 `destroy`, reaper `noop`.
 
@@ -143,10 +151,10 @@ The ALB ingress variable has a Terraform `validation` that rejects anything othe
 | T2 | Static checks: `actionlint`; a test that parses both workflow files | $0 | The teardown job's `environment == lab-teardown`; teardown's `concurrency.group == fairtix-lab-teardown` and differs from apply's; `cancel-in-progress: false` on both; the destroy step passes `-lock-timeout`; the schedule exists; `id-token: write`; apply has `actions: write` |
 | T3 | Environment check: run the apply preflight on its own, then **temporarily add yourself as a required reviewer** to `lab-teardown` and run it again | $0 | The first run passes; the second **fails** before any AWS call. Then remove the reviewer |
 | T4 | **Canary end-to-end** (after the AWS account exists): apply a canary stack with free items only (a VPC with no NAT and no public IPv4, a security group, a 1-day log group, a tagged SSM parameter) and `expires_at = now + 10 min` | about $0 | Within 75 minutes, a **scheduled** (not dispatched) run starts, never shows "Waiting", destroys the canary, and `verify` comes back empty. Record the run URL and the delay between expiry and start |
-| T5 | **Layer-3 test:** disable `lab-teardown.yml`, apply the canary again with `grace` set to 5 minutes for the test | about $0 | The reaper (adapted to delete the canary's VPC in test mode) acts within 40 minutes; an SNS email arrives; then re-enable the workflow |
-| T5b | **Reaper against the real code path**, before T7:<br>• `aws iam simulate-principal-policy` for every action the reaper calls, on `fairtix-lab-*` ARNs;<br>• during T7, a `--dry-run` reaper invocation that logs the calls it would make | $0 | Every action is `allowed`; the dry-run lists the T7 stack's ECS service, ALB, target group, cache and DB instance |
+| T5 | **Layer-3 test:** apply the canary again, **then** disable `lab-teardown.yml` (`gh workflow disable`; the apply preflight would re-enable it), with `grace` set to 5 minutes for the test | about $0 | The reaper (adapted to delete the canary's VPC in test mode) acts within 40 minutes; an SNS email arrives; then re-enable the workflow |
+| T5b | **Reaper IAM simulation:** `aws iam simulate-principal-policy` for every action the reaper calls, on `fairtix-lab-*` ARNs | $0 | Every action is `allowed` |
 | T6 | **Fault injection:** create an untagged log group and a stray security group by hand, outside Terraform | about $0 | `verify` flags both; you delete them by hand |
-| T7 | **First real session:** the full stack for 1 hour, then the layer-1 destroy | about $0.12 | `verify` is empty; Cost Explorer at T + 24 h and T + 48 h shows ≤ $0.25 in total, with nothing accruing on day 2 |
+| T7 | **First real session:** the full stack for 1 hour. While it's up, invoke the reaper with `--dry-run` (it logs the calls it would make). Then run the layer-1 destroy | about $0.12 | The dry-run lists the stack's ECS service, ALB, target group, cache and DB instance; `verify` is empty; Cost Explorer at T + 24 h and T + 48 h shows ≤ $0.25 in total, with nothing accruing on day 2 |
 
 **Re-test:**
 - T1–T2 on every PR;
@@ -154,7 +162,7 @@ The ALB ingress variable has a Terraform `validation` that rejects anything othe
 - T4 again whenever the workflow or the roles change;
 - an L3 acceptance item: T4, T5, T5b, T6 and T7 recorded in `docs/infra/teardown-tests.md`.
 
-T1–T6 must pass before the first full `apply`. T5b's dry-run half runs during T7.
+T1–T6 must pass before the first full `apply`. T7 is that first apply, and it includes the reaper dry-run.
 
 ## 6. Verification script (`python -m teardown.verify`)
 
