@@ -42,6 +42,53 @@ def _third_party_refs(workflow):
     return refs
 
 
+def _dc_job(ci):
+    return ci["jobs"]["dependency-scan"]
+
+
+def _dc_step_index(job):
+    for i, step in enumerate(_steps(job)):
+        if step.get("uses", "").startswith("dependency-check/Dependency-Check_Action@"):
+            return i
+    pytest.fail("no Dependency-Check step in dependency-scan")
+
+
+def test_dependency_scan_builds_runtime_jars_before_scanning(ci):
+    job = _dc_job(ci)
+    steps = _steps(job)
+    dc = _dc_step_index(job)
+    builds = [
+        i for i, s in enumerate(steps)
+        if "dependency:copy-dependencies" in s.get("run", "")
+        and "-DincludeScope=runtime" in s.get("run", "")
+    ]
+    assert builds, "no step copies runtime-scope dependencies"
+    assert builds[0] < dc
+    assert str(steps[dc]["with"]["path"]).rstrip("/").endswith("target/dependency")
+
+
+def test_dependency_scan_fails_on_cvss_7_with_suppressions(ci):
+    job = _dc_job(ci)
+    args = _steps(job)[_dc_step_index(job)]["with"]["args"]
+    assert "--failOnCVSS 7" in args
+    match = re.search(r"--suppression\s+(\S+)", args)
+    assert match, "no --suppression argument"
+    assert match.group(1).endswith("backend/dependency-check-suppressions.xml")
+    assert (REPO / "backend" / "dependency-check-suppressions.xml").is_file()
+
+
+def test_dependency_scan_uploads_report(ci):
+    job = _dc_job(ci)
+    out = _steps(job)[_dc_step_index(job)]["with"]["out"].rstrip("/")
+    uploads = [
+        s for s in _steps(job)
+        if s.get("uses", "").startswith("actions/upload-artifact@")
+        and s.get("if") == "always()"
+        and str(s["with"]["path"]).rstrip("/") == out
+    ]
+    assert uploads, "no always() upload of the Dependency-Check out directory"
+
+
 def test_ci_third_party_actions_are_sha_pinned(ci):
     refs = _third_party_refs(ci)
     assert refs, "expected third-party actions in ci.yml"
