@@ -22,7 +22,24 @@ The 6-month plan below assumes the **independent-venue vertical**. If you pick d
 
 _This revision supersedes the framing above. The original text from 2026-05-12 is preserved below as history; each phase heading now carries a status tag. Evidence for every decision here is in [`docs/roadmap-review-2026-09.md`](docs/roadmap-review-2026-09.md), which was verified against `origin/main` at `60ed8901`._
 
-_**Revision 2026-10-18: L3 on AWS.** L3 moves from Azure to AWS: ECS Fargate, RDS for PostgreSQL, ElastiCache and Terraform, with OIDC from GitHub Actions to IAM. The reason is a 2026-10-18 sample of reachable job postings: AWS is required by 12 employers, Azure by 7, and every one of the 7 lists Azure as one option among other clouds. The owner's Azure work (Functions, Service Bus, Key Vault, managed identity, OpenTelemetry, Bicep) is already professional, so public AWS evidence fills a gap that public Azure evidence would only duplicate. The 2026-09-29 Azure design was sound and is kept below, struck through, as the decision trail. L5 and L6 follow L3 to AWS. A new optional L3b (experiment guard) is added after L3, and L1 item 5 is reworded because `backend/mvnw` exists but CI still calls bare `mvn`. Order is unchanged: L1 → L2 → L3 → (L3b) → L4 → L5 → L6._
+_**Revision 2026-10-18: L3 on AWS.** L3 moves from Azure to AWS: ECS Fargate, RDS for PostgreSQL, ElastiCache and Terraform, with OIDC from GitHub Actions to IAM. The reason is a 2026-10-18 sample of reachable job postings: AWS is required by 12 employers, Azure by 7, and every one of the 7 lists Azure as one option among other clouds. The owner's Azure work (Functions, Service Bus, Key Vault, managed identity, OpenTelemetry, Bicep) is already professional, so public AWS evidence fills a gap that public Azure evidence would only duplicate. The 2026-09-29 Azure design was sound and is kept below, struck through, as the decision trail. L5 and L6 follow L3 to AWS. A new optional L3b (experiment guard) is added after L3, and L1 item 5 is reworded because `backend/mvnw` exists but CI still calls bare `mvn`. ~~Order is unchanged: L1 → L2 → L3 → (L3b) → L4 → L5 → L6.~~ (Order changed 2026-10-19; see below.)_
+
+_**Revision 2026-10-19: F0 added, L1 split, L3 run as a private lab with tested teardown.** Changes:_
+- _**New order:** **F0 → L1-min → L3 (with the teardown reaper that replaces L3b) → L1-rest → L2 → L4 → L5 → L6.** L1-rest and L2 are optional._
+- _**Why the order changed:** the 10-18 note's job-sample figures needed a split between hard requirements and "one of" options:_
+  - _AWS is named by 12 reachable employers, but 7 of those also accept Azure, so it is a hard requirement at **5**._
+  - _**No** posting in the sample requires Testcontainers, concurrency testing or load testing._
+  - _So AWS evidence comes before the full L1 and L2. L1-min keeps the parts L3 needs: a database tested on real PostgreSQL, one contention test, and the `tickets.seat_id` uniqueness fix._
+- _**F0 (new):** main's container image fails `container-scan` with HIGH CVEs (a vulnerability-database update, not a code change), and CI doesn't run on `main` at all. That is fixed before anything is deployed._
+- _**L3 changes:**_
+  - _A **budget alert is a notification, not a cap**: Budgets data updates up to three times a day, and budget actions can't stop ECS, an ALB or ElastiCache._
+  - _The Free plan is for new AWS customers only, so plan for the Paid plan._
+  - _L3 therefore runs as a **private lab**: ALB ingress from one `/32`, no public URL, plain HTTP._
+  - _Its cost control is the tested three-layer teardown in [`docs/infra/teardown-design.md`](docs/infra/teardown-design.md)._
+  - _L3b's scale-to-zero guard would leave about $0.05/h running (the ALB, its IPv4 addresses, ElastiCache, RDS storage, secrets). It is replaced by a reaper that deletes those resources._
+- _**Exposure gate (new):** must be closed before any public URL._
+
+_The 10-18 text is kept below, struck through where it changed._
 
 ### R1. Decision
 
@@ -74,9 +91,47 @@ Known defects found by inspection, each of which becomes a red-before / green-af
 
 ### R4. Laboratory milestones
 
-Each milestone lists its acceptance criterion, the artifact it produces, a resume bullet with placeholders that must not be filled until the experiment runs, and the interview questions it should prepare you for. Order is fixed; L1 unblocks everything else.
+Each milestone lists its acceptance criterion, the artifact it produces, a resume bullet with placeholders that must not be filled until the experiment runs, and the interview questions it should prepare you for. ~~Order is fixed; L1 unblocks everything else.~~ _(2026-10-19: the order is F0 → L1-min → L3 → L1-rest → L2 → L4 → L5 → L6; see the revision note above.)_
+
+#### F0. Container scan green and CI on `main` (added 2026-10-19; first)
+
+**Goal.** Nothing with a known HIGH CVE gets deployed, and `main` itself is tested.
+
+Work:
+- Targeted patch bumps until `container-scan` (Trivy, CRITICAL/HIGH) passes:
+  - the Jackson 2 and Jackson 3 BOMs to the first fixed patch releases;
+  - the runtime base image to a tag whose bundled `pebble` is built with Go ≥ 1.27.2.
+- Not the Dependabot group bump to Spring Boot 4.1.x: it breaks `AnalyticsControllerTest`, `SupportTicketServiceTest` and the frontend tests.
+- Add a `push: main` trigger to `ci.yml`. This moves the corresponding part of L1 item 5 here.
+
+**Acceptance.** `container-scan` is green on the PR and on the first push to `main`. Every other check is unchanged.
+
+**Effort.** 2–4 hours.
 
 #### L1. Realistic database correctness
+
+_**Split 2026-10-19 into L1-min (runs second, after F0) and L1-rest (after L3, optional).**_
+- **L1-min:**
+  - item 1, with PostgreSQL 16 only (a Redis container only if a moved test needs one);
+  - item 2;
+  - item 3 without the no-ordering deadlock variant;
+  - the first defect in item 4 (the partial unique index on `tickets(seat_id)`, as a new forward-only migration, with its two-thread test);
+  - from item 5: `./mvnw` in CI, if F0 didn't already do it.
+- **L1-min acceptance:**
+  - CI runs Flyway V1–V45+ against a PostgreSQL container on every PR and on push to `main`;
+  - the contention test passes with zero oversells;
+  - the `seat_id` defect test was red on the parent commit and is green on the fix;
+  - a short `docs/experiments/l1-contention-correctness.md` exists.
+- **L1-rest (everything else):**
+  - the deadlock variant;
+  - CONFIRMED-hold expiry and the payment-failure-path tests;
+  - Redis containers;
+  - SHA pinning of the scan actions and the Dependency-Check threshold;
+  - the JaCoCo rebaseline;
+  - removing H2 completely.
+- **Effort:** L1-min is 12–20 hours.
+
+The full text below is unchanged and is now the union of the two.
 
 **Goal.** Make the test suite run against the real database engine, then prove the seat-hold invariants under concurrency, deterministically.
 
@@ -127,30 +182,48 @@ Experiment: about 200 concurrent operations against a 50-seat section with overl
 
 **Goal.** A cloud environment that is created, used for an experiment and destroyed, entirely from code, with no long-lived cloud credentials in GitHub. (Unchanged.)
 
-**Account.** A new AWS account, opened for this milestone, on the Free plan's credits. Per aws.amazon.com/free on 2026-10-18, that is $100 plus up to $100 more for exploring services, valid for 6 months. On the Free plan the account closes at 6 months or when the credits run out, unless it is upgraded to Paid. Schedule L3 and L6 inside that window, or upgrade deliberately.
+**Account.** ~~A new AWS account, opened for this milestone, on the Free plan's credits. Per aws.amazon.com/free on 2026-10-18, that is $100 plus up to $100 more for exploring services, valid for 6 months. On the Free plan the account closes at 6 months or when the credits run out, unless it is upgraded to Paid. Schedule L3 and L6 inside that window, or upgrade deliberately.~~
+
+_(Revised 2026-10-19.)_ A new AWS account, opened when L3 starts (not before: a Free plan's six-month clock starts at sign-up).
+- **Plan:** the Free plan is offered only to **new** AWS customers. The FAQ excludes anyone with an existing, or reportedly a previous, AWS account. Check which plans the sign-up flow offers. If it's the Free plan, take it, after confirming in the console that ECS on Fargate and the IAM OIDC provider are available on it. Otherwise use the Paid plan.
+- **On the Paid plan** there is no hard spending cap. The three-layer teardown in [`docs/infra/teardown-design.md`](docs/infra/teardown-design.md) is the cost control and must pass its tests T1–T6 before the first full `apply`.
+- Don't join AWS Organizations or Control Tower: joining upgrades a Free plan account to Paid.
 
 Architecture (2026-10-18; confirm each resource against the AWS provider docs when implementing):
-- **Network.** A VPC across two AZs. Public subnets hold the ALB and the ECS tasks; private subnets hold RDS and the cache. **No NAT Gateway**: tasks get public IPs, and their security group admits only the ALB. Record this trade-off in `docs/infra/cost.md`.
+- **Network.** A VPC across two AZs. Public subnets hold the ALB and the ECS tasks; private subnets hold RDS and the cache. **No NAT Gateway**: tasks get public IPs, and their security group admits only the ALB. Record this trade-off in `docs/infra/cost.md`. _(2026-10-19: **private lab.** The ALB's security group admits only the operator's `/32`. There's no public URL until the exposure gate below is closed. An ALB's `*.elb.amazonaws.com` name can't carry an ACM certificate, so the lab runs plain HTTP. Browser login won't work over plain HTTP, because the auth cookies use `SameSite=None` and that requires `Secure`. Test with API calls and `curl` instead.)_
 - **Containers.** An ECR repository. An ECS cluster on Fargate. The backend service runs at `desired_count = 2` during experiments, behind an ALB whose target group health-checks `/actuator/health`. The task role is separate from the task execution role.
 - **Database.** RDS for PostgreSQL 16, `db.t4g.micro`, Single-AZ, 20 GB gp3, 7-day automated backups (PITR). Stop it between experiments. AWS restarts a stopped instance after 7 days, so destroy it for longer gaps.
 - **Redis.** ElastiCache for Valkey `cache.t4g.micro`, **or** a Redis task in the same cluster for the cheapest runs. Confirm Redisson compatibility with Valkey before choosing it.
 - **Secrets.** Secrets Manager. The task definition references them through `secrets { valueFrom = <ARN> }` via the execution role. Never put plain values in Terraform state or workflow files.
 - **Logs.** CloudWatch Logs, with a retention period set.
-- **Budget.** An AWS Budgets alert at $20/month, applied before the first `apply`.
+- **Budget.** An AWS Budgets alert at $20/month, applied before the first `apply`. _(2026-10-19: also alert on actual spend above $5 and above $15. These are **notifications, not a cap**: Budgets data updates up to three times a day, and budget actions can't stop Fargate tasks or delete an ALB or ElastiCache. Cost control is the teardown system.)_
+- **Lab settings for clean teardown** _(added 2026-10-19)_:
+  - `skip_final_snapshot = true` and `deletion_protection = false` on RDS;
+  - `recovery_window_in_days = 0` on secrets;
+  - `force_delete = true` on ECR;
+  - every log group declared in Terraform with a retention period, including the ECS ones (no `awslogs-create-group`);
+  - AWS-managed KMS keys only;
+  - the PITR restore-drill instance deleted by the drill script itself, because it's outside Terraform state.
 - **CI access.** GitHub Actions uses an IAM OIDC identity provider plus a role whose trust policy pins `sub` to this repository and a protected environment. No access keys anywhere.
 - **State.** Remote Terraform state in an S3 bucket created once by hand and documented, with S3-native state locking (check the backend docs when implementing).
 
-Workflows (unchanged): `terraform fmt -check` and `validate` on every PR; `plan` on PR with the plan posted as a comment; `apply` only on `workflow_dispatch` with an environment approval; `destroy` on `workflow_dispatch` with the same approval.
+Workflows (unchanged): `terraform fmt -check` and `validate` on every PR; `plan` on PR with the plan posted as a comment; `apply` only on `workflow_dispatch` with an environment approval; `destroy` on `workflow_dispatch` ~~with the same approval~~. _(2026-10-19: **teardown must never wait for an approval.** A job that references an environment with required reviewers waits up to 30 days, scheduled runs included. Destroy therefore runs in its own `lab-teardown` environment: no reviewers, no wait timer, `main` only, OIDC `sub` pinned to `repo:firegiant9000/FairTix:environment:lab-teardown` and `job_workflow_ref` pinned to `lab-teardown.yml` on `main`. It runs hourly on `schedule` and on `workflow_dispatch`, in its **own** concurrency group, so an apply waiting for approval can't hold it up. The S3 state lock (`-lock-timeout`) keeps it from colliding with an apply. `lab-apply` is also `main`-only. An AWS-side reaper backs it up. Design, tests and recovery runbook: [`docs/infra/teardown-design.md`](docs/infra/teardown-design.md).)_
 
 Also in this milestone (unchanged except the target): harden the Dockerfile (non-root user, `HEALTHCHECK`, explicit JVM memory flags, remove the dead block), delete or mark unmaintained the Railway, Cloud Run and Netlify deploy paths, and run one PITR restore drill (RDS point-in-time restore to a new instance), recording row counts and elapsed time.
 
 **Acceptance.**
 - `apply` and `destroy` both succeed from CI through OIDC.
-- `/actuator/health` answers on the ALB DNS name, with 2 running tasks.
+- `/actuator/health` answers on the ALB DNS name, with 2 running tasks. _(2026-10-19: `aws elbv2 describe-target-health` shows 2 healthy targets, and `curl http://` from the operator's IP succeeds.)_
 - The budget alert exists before the first apply.
 - `docs/infra/cost.md` records the estimated and actual cost for one experiment window.
-- After `destroy`, a tag query for the project returns no resources.
-- The restore drill is recorded.
+- ~~After `destroy`, a tag query for the project returns no resources.~~ _(Replaced 2026-10-19: tag queries miss untagged and auto-created resources.)_ After every session, the state-free `verify` script (teardown design §6) finds nothing, and Cost Explorer at T + 24 h and T + 48 h shows nothing still accruing for ECS, ELB, RDS, ElastiCache or VPC.
+- Teardown tests are recorded in `docs/infra/teardown-tests.md` _(added 2026-10-19)_:
+  - T4: scheduled teardown of a canary stack, never waiting for approval;
+  - T5: the reaper acts with the workflow disabled;
+  - T5b: a reaper IAM simulation;
+  - T6: fault injection;
+  - T7: the first real session, including a reaper dry-run against the real stack.
+- The restore drill is recorded, and its restored instance is deleted and verified gone.
 
 **Verification.**
 ```sh
@@ -158,13 +231,20 @@ terraform -chdir=infra fmt -check -recursive
 terraform -chdir=infra validate
 gh run list --repo firegiant9000/FairTix --workflow <infra-apply workflow> --limit 3
 aws ecs describe-services --cluster <cluster> --services backend --query "services[0].runningCount"   # expect 2
-curl -fsS https://<alb-dns>/actuator/health
-aws resourcegroupstaggingapi get-resources --tag-filters Key=project,Values=fairtix-lab   # after destroy: empty
+curl -fsS http://<alb-dns>/actuator/health   # 2026-10-19: was https://, which can't work on the ALB name; run from the allowed /32
+aws elbv2 describe-target-health --target-group-arn <tg-arn>   # expect 2 healthy
+python -m teardown.verify   # 2026-10-19: replaces the tag query; after destroy, expect nothing found
 ```
 
-**Estimated cost** (AWS Price List, us-east-1, on-demand, checked 2026-10-18; re-check before the first apply). 2 Fargate tasks at 0.5 vCPU / 1 GB, `db.t4g.micro` with 20 GB gp3, Valkey `cache.t4g.micro`, an ALB in 2 AZs, 4 public IPv4 addresses and 3 secrets come to about **$0.12 per hour while up** (about $0.11 with ARM images), or about $92 a month if left running. The rule is create, experiment, destroy: at 40 environment-hours a month that is about $5. NAT Gateway and VPC endpoints are deliberately absent.
+**Estimated cost** (AWS Price List, us-east-1, on-demand, checked 2026-10-18; re-check before the first apply). 2 Fargate tasks at 0.5 vCPU / 1 GB, `db.t4g.micro` with 20 GB gp3, Valkey `cache.t4g.micro`, an ALB in 2 AZs, 4 public IPv4 addresses and 3 secrets come to about **$0.12 per hour while up** (about $0.11 with ARM images), or about ~~$92~~ $88 a month if left running _(2026-10-19: 0.12 × 730 h)_. The rule is create, experiment, destroy: at 40 environment-hours a month that is about $5. NAT Gateway and VPC endpoints are deliberately absent. _(2026-10-19 additions:_
+- _a forgotten environment costs about $20 a week, or about $88 a month;_
+- _scaling ECS to 0 and stopping RDS still leaves about $0.05/h (≈ $37 a month);_
+- _AWS restarts a stopped RDS instance after 7 days;_
+- _so the bound on a forgotten environment is the teardown system: at most a few hours of runtime past expiry.)_
 
-**Evidence produced.** The `infra/` Terraform module, the four workflow runs (plan, apply, destroy, restore drill), the cost document, and the empty tag query after destroy.
+**Evidence produced.** The `infra/` Terraform module, the four workflow runs (plan, apply, destroy, restore drill), the cost document, ~~and the empty tag query after destroy~~ the `verify` output after destroy, and the teardown test records (T4, T5, T5b, T6, T7). _(Revised 2026-10-19.)_
+
+**Effort.** About 40–62 hours, including the teardown system. _(Added 2026-10-19.)_
 
 **Resume potential.** "Provisioned a two-replica AWS environment (ECS Fargate behind an ALB, RDS PostgreSQL, ElastiCache, Secrets Manager, CloudWatch) with Terraform and OIDC-federated GitHub Actions; created and destroyed it on demand at about $[C] per experiment cycle."
 
@@ -192,7 +272,16 @@ aws resourcegroupstaggingapi get-resources --tag-filters Key=project,Values=fair
 - ~~Resume potential: "Provisioned a two-replica Azure Container Apps environment (Container Registry, PostgreSQL Flexible Server, Managed Redis, Key Vault, managed identity, Log Analytics) with Terraform and OIDC-federated GitHub Actions; created and destroyed it on demand at about $[C] per experiment cycle."~~
 - ~~Interview questions: Why OIDC federation instead of a service-principal secret, and what does the federated credential actually trust? How does a container app read a Key Vault secret without any credential in its configuration? Why Container Apps instead of AKS for this workload?~~
 
-#### L3b. Experiment guard (optional; added 2026-10-18; decide after L3 is accepted)
+#### L3b. Experiment guard (optional; added 2026-10-18; decide after L3 is accepted) — SUPERSEDED 2026-10-19: becomes the teardown reaper inside L3
+
+_**2026-10-19:** The guard below scales ECS to 0 and stops RDS. That leaves about $0.05/h accruing (≈ $37 a month): the ALB, its public IPv4 addresses, ElastiCache (which can't be stopped), RDS storage and secrets. It also has to re-stop RDS after AWS restarts it on day 7. So it doesn't "enforce the budget rule"._
+
+_It's replaced by **layer 3 of [`docs/infra/teardown-design.md`](docs/infra/teardown-design.md)**:_
+- _an EventBridge Scheduler → Python Lambda reaper that **deletes** the ECS services, the ALB, ElastiCache and RDS (no final snapshot) once the lab is 2 hours past expiry;_
+- _it shares its decision function (unit-tested) with the GitHub teardown workflow, and emails through SNS when it acts;_
+- _it's built inside L3, and is required on the Paid plan._
+
+_The Lambda/EventBridge/Python evidence this milestone was for is kept. The DynamoDB audit table is optional; SNS plus CloudWatch Logs is the default. The original text is kept below as history._
 
 **Goal.** Enforce L3's budget rule automatically, so a forgotten environment can't run for days.
 
@@ -203,7 +292,7 @@ An EventBridge Scheduler rule runs a Python Lambda every 30 minutes. The Lambda 
 - One real scheduled run in CloudWatch Logs shows the service scaled to 0 and a DynamoDB row written.
 - The IAM policy is scoped to the one cluster and the one DB instance ARN.
 
-**Estimated cost.** About $0 beyond L3. A few thousand invocations a month is inside Lambda's free tier and EventBridge's free scheduled invocations.
+**Estimated cost.** About $0 beyond L3. A few thousand invocations a month is inside Lambda's free tier and EventBridge's free scheduled invocations. _(2026-10-19: true for the guard's own running cost, but misleading. What the guard leaves running costs about $0.05/h; see the note above.)_
 
 **Timebox.** One week. If it grows past that, stop: it's a guard, not a product.
 
@@ -213,6 +302,34 @@ An EventBridge Scheduler rule runs a Python Lambda every 30 minutes. The Lambda 
 - Why `ignore_changes = [desired_count]`, and what drift would you see without it?
 - How is the guard idempotent, and why does that matter for a scheduled job?
 - What is the smallest IAM policy that lets it do its job?
+
+#### Exposure gate (added 2026-10-19; required before any public URL)
+
+A private lab (one `/32`, synthetic data, Stripe test mode, destroyed after each session) can run with the weaknesses below, as long as they are listed under "Known exposure" in `docs/infra/cost.md`. **A public URL needs every row closed, and each row closes with a linked test or config artifact.** These come from a 2026-10-18 code review, extended by the 2026-10-19 risk review of the teardown design. Rows marked *unverified* need checking first.
+
+The private lab's own guards aren't in this table, because they apply from the first session (teardown design §3):
+- the ALB ingress variable rejects anything but one `/32`;
+- the state bucket is encrypted and blocks public access.
+
+| Weakness | Risk once public | Fix |
+|---|---|---|
+| The rate limiter trusts `X-Forwarded-For` and fails open | Behind an ALB, clients can add their own XFF values, which bypasses login brute-force limits | Trust only the ALB hop (forwarded-header settings with known proxies), and fail closed |
+| CSRF disabled, with `SameSite=None` cookies | Cross-site request forgery against signed-in users | `SameSite=Lax` or `Strict`, or CSRF tokens |
+| Register/login DTOs aren't validated | Malformed input; account enumeration and abuse | Bean Validation on the DTOs, with tests |
+| Step-up auth is a no-op while reCAPTCHA is disabled (the default) | The fraud-engine claim is hollow in the deployed app | Configure reCAPTCHA, or document step-up as off |
+| HIGH CVEs in the image | Known-vulnerable dependencies on the internet | F0 |
+| No unique constraint on `tickets.seat_id` | Oversell under concurrency | L1-min |
+| Stripe refunds have no idempotency key, and webhooks aren't deduplicated | Double refunds on retry | Test-mode keys only until L4 |
+| Open registration plus outbound email *(unverified)* | Spam or relay abuse | Invite-only or disabled registration; no real SMTP credentials in the lab |
+| Actuator exposure; seeded admin credentials *(unverified)* | Information leak; default logins | Expose only `health`; confirm that no migration seeds a usable admin |
+| No HTTPS | Credentials in cleartext | Own domain + ACM certificate on the ALB (Route 53 or registrar DNS) |
+| No edge rate limiting; abuse cost *(added 2026-10-19)* | Floods drive ALB LCU and egress charges, which no budget alert stops in time | AWS WAF rate-based rule on the ALB, plus the per-hour cost in `cost.md` |
+| Security headers, CORS, JWT/signing secrets *(added 2026-10-19, unverified)* | Clickjacking, cross-origin reads, forgeable tokens if a default secret ships | Explicit header and CORS config; secrets only from Secrets Manager, rotated off any default |
+| Data in transit and at rest *(added 2026-10-19)* | Plaintext DB and cache traffic inside the VPC | RDS `rds.force_ssl`, ElastiCache in-transit and at-rest encryption, with Redisson on TLS |
+| `lab-apply` role is broad *(added 2026-10-19)* | A leaked workflow run can create anything in the account | A permission boundary limiting it to the L3 services and the `fairtix-lab-*` prefix |
+| No audit or error alarms *(added 2026-10-19)* | Abuse or a break-in goes unseen | CloudTrail (the free management-event trail) and an ALB 5xx alarm |
+
+**Effort.** About 15–25 hours. Not scheduled. A recorded walkthrough of the private lab is the default way to demo it.
 
 #### L4. Multi-instance correctness
 
