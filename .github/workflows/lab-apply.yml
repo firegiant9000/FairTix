@@ -22,8 +22,22 @@ permissions:
 
 jobs:
 
+  # Reads LAB_ENABLED outside any environment: the same value lab-teardown's job-level
+  # `if:` sees. Inside lab-apply, an environment-level LAB_ENABLED would override the
+  # repository one and could let apply through while teardown skips.
+  gate:
+    name: Read LAB_ENABLED
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      lab_enabled: ${{ vars.LAB_ENABLED }}
+    steps:
+      - run: echo "LAB_ENABLED read at repository scope"
+
   apply:
     name: Apply
+    needs: gate
     runs-on: ubuntu-latest
     # May require the owner's approval; main-only branch policy (FT-3 sets it up).
     environment: lab-apply
@@ -31,7 +45,7 @@ jobs:
 
     env:
       AWS_REGION: us-east-1
-      LAB_ENABLED: ${{ vars.LAB_ENABLED }}
+      LAB_ENABLED: ${{ needs.gate.outputs.lab_enabled }}
       TTL_HOURS: ${{ inputs.ttl_hours }}
 
     steps:
@@ -89,4 +103,9 @@ jobs:
             exit 1
           fi
           terraform -chdir=infra/lab init -input=false -lockfile=readonly -no-color
-          terraform -chdir=infra/lab apply -auto-approve -input=false -lock-timeout=15m -no-color
+          # The plan stays out of the public log (endpoints, the ALB's /32 ingress); only
+          # the summary and errors are printed.
+          status=0
+          terraform -chdir=infra/lab apply -auto-approve -input=false -lock-timeout=15m -no-color > "$RUNNER_TEMP/apply.log" 2>&1 || status=$?
+          grep -E -A4 '^(Apply complete|Error:)' "$RUNNER_TEMP/apply.log" || true
+          exit "$status"

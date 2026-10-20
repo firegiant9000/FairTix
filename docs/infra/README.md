@@ -25,7 +25,7 @@ The L3 lab's infrastructure docs.
 - **What it does:** the on/off switch for the lab (FT-7).
   - `lab-teardown.yml` runs its job only when it is `'true'`. Otherwise the hourly run shows the job as **skipped**, not failed, and opens no issue.
   - `teardown.preflight` (in `lab-apply.yml`) **fails** unless it is exactly `true`, so no apply can start while the lab is off.
-- **Where:** a **repository** variable (Settings → Secrets and variables → Actions → Variables), not an environment variable. The teardown job's `if:` is evaluated before the job enters its environment, so an environment variable would never be seen there.
+- **Where:** a **repository** variable (Settings → Secrets and variables → Actions → Variables), not an environment variable. The teardown job's `if:` is evaluated before the job enters its environment, so an environment variable would never be seen there. `lab-apply.yml` reads the variable in a `gate` job that has no environment, so an environment-level `LAB_ENABLED` on `lab-apply` can't let apply through while teardown skips.
 - **Who sets it, and when:** Arlo, once FT-3 has built the AWS side (bootstrap, roles, `infra/lab`). Until then, the scheduled teardown has nothing to act on: it **protects nothing** yet.
 - **Case:** GitHub compares strings in `if:` case-insensitively, so `TRUE` enables teardown, but the preflight accepts only lowercase `true`. Use `true`.
 

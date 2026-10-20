@@ -103,9 +103,13 @@ jobs:
             exit 1
           fi
           terraform -chdir=infra/lab init -input=false -lockfile=readonly -no-color
+          # The plan stays out of the public log (endpoints, the ALB's /32 ingress); only
+          # the summary and errors are printed.
           run_destroy() {
-            terraform -chdir=infra/lab destroy -auto-approve -input=false -lock-timeout=15m -no-color 2>&1 | tee "$RUNNER_TEMP/destroy.log"
-            return "${PIPESTATUS[0]}"
+            local status=0
+            terraform -chdir=infra/lab destroy -auto-approve -input=false -lock-timeout=15m -no-color > "$RUNNER_TEMP/destroy.log" 2>&1 || status=$?
+            grep -E -A4 '^(Destroy complete|Error:)' "$RUNNER_TEMP/destroy.log" || true
+            return "$status"
           }
           if run_destroy; then
             exit 0

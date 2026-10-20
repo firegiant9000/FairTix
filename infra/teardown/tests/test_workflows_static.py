@@ -105,6 +105,32 @@ def test_teardown_job_is_gated_on_lab_enabled(teardown_job):
     assert teardown_job["if"].replace(" ", "") == "vars.LAB_ENABLED=='true'"
 
 
+def test_apply_reads_lab_enabled_at_repository_scope(apply, apply_job):
+    # An environment-level LAB_ENABLED on lab-apply would override the repository one, so
+    # apply reads it from a job with no environment, the same scope teardown's `if:` sees.
+    gate = apply["jobs"]["gate"]
+    assert "environment" not in gate
+    assert gate["outputs"]["lab_enabled"] == "${{ vars.LAB_ENABLED }}"
+    assert apply_job["needs"] == "gate"
+    assert apply_job["env"]["LAB_ENABLED"] == "${{ needs.gate.outputs.lab_enabled }}"
+    for job in apply["jobs"].values():
+        for step in _steps(job):
+            assert "vars.LAB_ENABLED" not in step.get("run", "") + str(step.get("env", ""))
+
+
+@pytest.mark.parametrize("path,command", [(TEARDOWN_FILE, "destroy"), (APPLY_FILE, "apply")],
+                         ids=["destroy", "apply"])
+def test_terraform_plan_output_stays_out_of_the_public_log(path, command):
+    workflow = _load(path)
+    lines = [line for job in workflow["jobs"].values() for s in _steps(job)
+             for line in s.get("run", "").splitlines()
+             if re.search(rf"\bterraform\b.*\s{command}\s", line)]
+    assert lines
+    for line in lines:
+        assert '> "$RUNNER_TEMP/' in line and "2>&1" in line, line
+        assert "tee" not in line, line
+
+
 def test_teardown_triggers_are_schedule_and_dispatch_with_force(teardown):
     triggers = _triggers(teardown)
     assert set(triggers) == {"schedule", "workflow_dispatch"}
