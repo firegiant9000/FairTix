@@ -23,10 +23,14 @@ The tests never reach the network. Every AWS call goes through an injected clien
 | `census.py` | Lists lab resources from AWS APIs (no tags, no Terraform state). Any error raises `CensusError` |
 | `decide.py` | `python -m teardown.decide`: prints `noop` or `destroy` for layer 2. A census error prints `destroy` |
 | `verify.py` | `python -m teardown.verify`: exits 0 if nothing is found, 1 on leftovers, 2 on any error |
+| `preflight.py` | `python -m teardown.preflight [--github-only] [--ttl-hours N]`: `lab-apply`'s checks. Exits 0 only after writing the expiry; 1 on the first failed check. `--github-only` (T3) makes no AWS call. See [`docs/infra/README.md`](../../docs/infra/README.md) for `LAB_ENABLED` and `LAB_PREFLIGHT_TOKEN` |
+
+`tests/test_workflows_static.py` is T2: it parses `.github/workflows/lab-teardown.yml` and `lab-apply.yml` (PyYAML, test-only).
 
 ## Bootstrap naming contract (FT-3 must follow it)
 
 - Every bootstrap resource is named `fairtix-lab-bootstrap-*`. The reaper Lambda is exactly `fairtix-lab-bootstrap-reaper`. The expiry parameter is exactly `/fairtix-lab/expires_at`.
+- The reaper's EventBridge Scheduler schedule is exactly `fairtix-lab-bootstrap-reaper`, in the `default` group. `teardown.preflight` refuses to apply unless it's `ENABLED`.
 - No lab resource name may start with `fairtix-lab-bootstrap`.
 - Bootstrap owns no billable resource and no customer-managed KMS key.
 - The census lists only one bootstrap resource: the reaper's log group, `/aws/lambda/fairtix-lab-bootstrap-reaper`. It's excluded by **exact name**, so a look-alike is still counted. Adding a bootstrap log group means adding it to `BOOTSTRAP_LOG_GROUPS` in `census.py`.

@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest==9.1.1
+# Test-only: tests/test_workflows_static.py parses the lab workflows (T2).
+PyYAML==6.0.3

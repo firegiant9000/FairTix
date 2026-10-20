@@ -1,0 +1,92 @@
+# Creates the lab (docs/infra/teardown-design.md §3, "Apply workflow preflight").
+# Skeleton until FT-3: infra/lab doesn't exist yet, so the apply step fails with
+# "lab stack not present". The preflight fails unless LAB_ENABLED is 'true' (FT-7).
+name: Lab apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      ttl_hours:
+        description: Lab lifetime in hours before teardown fires (maximum 12)
+        type: number
+        default: 4
+
+concurrency:
+  group: fairtix-lab-apply
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+  actions: write # the preflight re-enables lab-teardown.yml
+
+jobs:
+
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    # May require the owner's approval; main-only branch policy (FT-3 sets it up).
+    environment: lab-apply
+    timeout-minutes: 60
+
+    env:
+      AWS_REGION: us-east-1
+      LAB_ENABLED: ${{ vars.LAB_ENABLED }}
+      TTL_HOURS: ${{ inputs.ttl_hours }}
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: infra/teardown/requirements.txt
+
+      - name: Install pinned dependencies
+        working-directory: infra
+        run: python -m pip install -r teardown/requirements.txt
+
+      # The GitHub checks run first and without AWS credentials, so a blocked apply
+      # makes no AWS call at all.
+      - name: Preflight (GitHub checks)
+        working-directory: infra
+        env:
+          LAB_PREFLIGHT_TOKEN: ${{ secrets.LAB_PREFLIGHT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: python -m teardown.preflight --github-only --ttl-hours "$TTL_HOURS"
+
+      - name: Assume the lab-apply role (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.LAB_APPLY_ROLE_ARN }}
+          aws-region: us-east-1
+          mask-aws-account-id: true
+
+      # All checks again, then the reaper schedule, then the expiry write. Success means
+      # the expiry is in SSM before Terraform creates anything.
+      - name: Preflight (full; writes the expiry)
+        working-directory: infra
+        env:
+          LAB_PREFLIGHT_TOKEN: ${{ secrets.LAB_PREFLIGHT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: python -m teardown.preflight --ttl-hours "$TTL_HOURS"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.6
+          terraform_wrapper: false
+
+      - name: Terraform apply
+        shell: bash
+        run: |
+          if [ ! -d infra/lab ]; then
+            echo "::error::lab stack not present (infra/lab arrives with FT-3)"
+            exit 1
+          fi
+          terraform -chdir=infra/lab init -input=false -lockfile=readonly -no-color
+          terraform -chdir=infra/lab apply -auto-approve -input=false -lock-timeout=15m -no-color
