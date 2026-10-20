@@ -1,3 +1,6 @@
+# Unmaintained; see L3. Legacy Cloud Run path from the course demo, kept for
+# reference only. The planned deployment is milestone L3 in STRATEGIC_ROADMAP.md
+# (see the banner in DEPLOY.md).
 steps:
   - name: gcr.io/cloud-builders/docker
     args:

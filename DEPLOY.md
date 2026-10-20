@@ -125,7 +125,7 @@ Then re-run `docker compose up --build` to re-apply the fixed migration.
 
 ## Deploying to Netlify + Railway (Recommended for Course Demo)
 
-> **Status 2026-09-29: OPTIONAL, legacy path, not maintained.** This path (and `cloudbuild.yaml` for Cloud Run) was written for the course demo. The planned deployment is the Terraform-defined ~~Azure Container Apps~~ AWS (ECS Fargate, changed 2026-10-18) environment in milestone L3 of [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md). Local Docker Compose above remains the supported way to run FairTix.
+> **Unmaintained; see L3.** This path and its files (`railway.json`, `netlify.toml`, `frontend/webpages/public/_redirects`, and `cloudbuild.yaml` for Cloud Run) were written for the course demo and are kept for reference only. They are not tested and may not work. The planned deployment is the Terraform-defined ~~Azure Container Apps~~ AWS (ECS Fargate, changed 2026-10-18) environment in milestone L3 of [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md). Local Docker Compose above remains the supported way to run FairTix. (Marked optional 2026-09-29; unmaintained 2026-10-20.)
 
 This is the fastest path to a publicly reachable deployment using free-tier platforms.
 
@@ -247,6 +247,8 @@ curl http://localhost:8080/actuator/health
 ```
 
 Docker Compose already defines healthchecks for `postgres` and `redis`. The `backend` service waits for both to pass before starting.
+
+The backend image defines its own `HEALTHCHECK` against `/actuator/health` (see `backend/Dockerfile`), so `docker ps` shows the backend as `healthy` or `unhealthy`. The image runs as the non-root user `fairtix` (uid 10001).
 
 ---
 
