@@ -73,7 +73,9 @@ import org.springframework.test.context.TestPropertySource;
 @TestPropertySource(properties = {
     "holds.max-active-per-holder=5",
     // Pinned to Hikari's (and production's) default so the worker count below is stable.
-    "spring.datasource.hikari.maximum-pool-size=10"
+    "spring.datasource.hikari.maximum-pool-size=10",
+    // Shorter than the 30 s default so pool starvation, if it comes back, fails fast.
+    "spring.datasource.hikari.connection-timeout=5000"
 })
 class SeatHoldContentionIT extends PostgresIT {
 
@@ -127,17 +129,15 @@ class SeatHoldContentionIT extends PostgresIT {
     int requestedSeats = requests.stream().mapToInt(List::size).sum();
 
     int hikariPoolSize = dataSource.unwrap(HikariDataSource.class).getMaximumPoolSize();
-    // createHold holds one pooled connection and needs a second for the
-    // REQUIRES_NEW audit write, so more than (pool - 1) concurrent callers starve
-    // the pool (Hikari's pool-starvation-free bound: pool >= threads * (2 - 1) + 1).
+    // Twice the pool: if createHold ever needs a second connection again (as the
+    // REQUIRES_NEW audit write did), more than (pool - 1) callers starve the pool.
     // See the class Javadoc.
-    int workers = hikariPoolSize - 1;
-    assertThat(workers).as("enough workers to contend").isGreaterThanOrEqualTo(8);
+    int workers = 2 * hikariPoolSize;
+    assertThat(workers).as("more workers than the starvation-free bound").isGreaterThan(hikariPoolSize - 1);
 
     // ---- race ----
     LockSampler sampler = new LockSampler(connectionDetails);
     Thread samplerThread = new Thread(sampler, "pg-lock-sampler");
-    samplerThread.start();
 
     CountDownLatch ready = new CountDownLatch(workers);
     CountDownLatch start = new CountDownLatch(1);
@@ -147,6 +147,7 @@ class SeatHoldContentionIT extends PostgresIT {
 
     ExecutorService pool = Executors.newFixedThreadPool(workers);
     long elapsedMillis;
+    samplerThread.start();
     try {
       List<Future<?>> futures = new ArrayList<>();
       for (int i = 0; i < USERS; i++) {
