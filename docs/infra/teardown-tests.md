@@ -6,10 +6,10 @@ The tests come from [`teardown-design.md`](teardown-design.md) §5. This file re
 |---|---|---|
 | T1 | Unit tests for `decide()` | Automated: `teardown-tests` in `infra.yml`, on every PR |
 | T2 | Static checks: `actionlint` and `teardown/tests/test_workflows_static.py` | Automated: the `actionlint` and `teardown-tests` jobs in `infra.yml`, on every PR |
-| T3 | Environment check (the preflight) | **Arlo's, pending.** Runbook below |
+| T3 | Environment check (the preflight) | **Passed 2026-10-20** (Arlo). Record below |
 | T4–T7 | Canary, reaper, IAM simulation, fault injection, first session | FT-3. These need the AWS account |
 
-## T3: the environment check (Arlo's, pending)
+## T3: the environment check (passed 2026-10-20)
 
 **Pass condition (TD §5):** the first run passes. The second, with a required reviewer on `lab-teardown`, **fails before any AWS call**. Then remove the reviewer.
 
@@ -33,8 +33,15 @@ Run it locally, from `infra/`, in the teardown venv (see `infra/teardown/README.
 
 | Date | Run | Command | Exit | Output (last line) | By |
 |---|---|---|---|---|---|
-| | 1 (no reviewer) | `--github-only` | | | |
-| | 2 (reviewer added) | `--github-only` | | | |
-| | 3 (reviewer removed) | `--github-only` | | | |
+| 2026-10-20 | 1 (no reviewer) | `--github-only` | 0 | `preflight: GitHub checks passed (--github-only: no AWS call made)` | Arlo |
+| 2026-10-20 | 2 (reviewer added) | `--github-only` | 1 | `preflight FAILED at lab-teardown environment: has required reviewers; teardown would wait for approval` | Arlo |
+| 2026-10-20 | 3 (reviewer removed) | `--github-only` | 0 | `preflight: GitHub checks passed (--github-only: no AWS call made)` | Arlo |
+
+**Result: T3 passes.**
+- Run 1 passed all four checks.
+- Run 2 stopped at check 2, the `lab-teardown` environment. `--github-only` never creates an AWS client, so it stopped before any AWS call.
+- Run 3 passed once the reviewer was removed.
+- The runs were local, from `caf48aa` (its `infra/` and `.github/` are identical to `main` at `8f22b8e`), with a fine-grained `LAB_PREFLIGHT_TOKEN` limited to this repository. The repository variable `LAB_ENABLED` stayed off throughout.
+- The workflow path, where the job's `GITHUB_TOKEN` does the re-enable and the run checks, is first exercised by the first real apply in FT-3.
 
 **Afterwards:** T3 also runs on every apply, because it *is* the preflight (TD §5, "Re-test"). The workflow runs `--github-only` before OIDC, then the full preflight after it.
