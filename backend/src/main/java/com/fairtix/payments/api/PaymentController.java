@@ -1,6 +1,8 @@
 package com.fairtix.payments.api;
 
+import com.fairtix.audit.application.AuditService;
 import com.fairtix.auth.domain.CustomUserPrincipal;
+import com.fairtix.inventory.application.SeatHoldService;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.orders.application.OrderService;
 import com.fairtix.orders.domain.Order;
@@ -53,6 +55,8 @@ public class PaymentController {
   private final StripePaymentService stripePaymentService;
   private final OrganizationRepository organizationRepository;
   private final OrgSalesCapService salesCapService;
+  private final SeatHoldService seatHoldService;
+  private final AuditService auditService;
 
   @Autowired(required = false)
   private PaymentSimulationService paymentSimulationService;
@@ -70,7 +74,11 @@ public class PaymentController {
       QueueService queueService,
       StripePaymentService stripePaymentService,
       OrganizationRepository organizationRepository,
-      OrgSalesCapService salesCapService) {
+      OrgSalesCapService salesCapService,
+      SeatHoldService seatHoldService,
+      AuditService auditService) {
+    this.seatHoldService = seatHoldService;
+    this.auditService = auditService;
     this.orderService = orderService;
     this.paymentRecordRepository = paymentRecordRepository;
     this.userRepository = userRepository;
@@ -124,6 +132,9 @@ public class PaymentController {
       throw new ResponseStatusException(HttpStatus.NOT_IMPLEMENTED,
           "Stripe is not enabled in this environment");
     }
+
+    // Keeps the CONFIRMED-hold sweep from freeing these seats while the customer pays.
+    seatHoldService.extendConfirmedHoldsForPayment(request.holdIds(), principal.getUserId());
 
     BigDecimal total = request.holdIds().stream()
         .map(id -> seatHoldRepository.findByIdAndOwnerId(id, principal.getUserId())
@@ -190,8 +201,19 @@ public class PaymentController {
         throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED,
             "Stripe payment has not succeeded");
       }
-      Order order = orderService.createOrderWithStripePayment(
-          principal.getUserId(), request.holdIds(), paymentIntentId);
+      Order order;
+      try {
+        order = orderService.createOrderWithStripePayment(
+            principal.getUserId(), request.holdIds(), paymentIntentId);
+      } catch (RuntimeException ex) {
+        // The charge succeeded but the order rolled back. This row is written in its
+        // own transaction after that rollback, so the captured charge stays on record
+        // for a refund (refund-on-failure is not automated yet).
+        auditService.log(principal.getUserId(), "STRIPE_ORDER_FAILED", "PAYMENT", null,
+            "Charge succeeded but order creation failed: stripe_intent=" + paymentIntentId
+                + ", holdIds=" + request.holdIds() + ", error=" + ex.getClass().getSimpleName());
+        throw ex;
+      }
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();
       // Record against the rolling sales cap. The cap was pre-checked at intent
       // creation, but recording happens here once the charge is verified so we

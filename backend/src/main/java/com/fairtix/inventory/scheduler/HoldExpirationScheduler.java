@@ -145,6 +145,9 @@ public class HoldExpirationScheduler {
         return;
       }
 
+      // Holds overdue by more than an hour past the grace (a backlog, e.g. on the
+      // first run after deploy) are expired without an email.
+      Instant emailCutoff = cutoff.minusSeconds(3600);
       List<Seat> seatsToRelease = new ArrayList<>();
       List<SeatHold> toEmail = new ArrayList<>();
       for (SeatHold hold : batch.getContent()) {
@@ -157,10 +160,18 @@ public class HoldExpirationScheduler {
         }
         hold.setStatus(HoldStatus.EXPIRED);
         String seatOutcome = " left " + seat.getStatus();
-        if (seat.getStatus() == SeatStatus.BOOKED) {
+        if (seat.getStatus() == SeatStatus.BOOKED
+            && seatHoldRepository.existsBySeat_IdAndStatusInAndIdNot(
+                seat.getId(), List.of(HoldStatus.ACTIVE, HoldStatus.CONFIRMED), hold.getId())) {
+          // A stale hold whose seat was freed (e.g. refunded) and booked again by
+          // someone else: the seat belongs to the newer hold.
+          seatOutcome = " left BOOKED for another hold";
+        } else if (seat.getStatus() == SeatStatus.BOOKED) {
           seat.setStatus(SeatStatus.AVAILABLE);
           seatsToRelease.add(seat);
-          toEmail.add(hold);
+          if (hold.getExpiresAt().isAfter(emailCutoff)) {
+            toEmail.add(hold);
+          }
           seatOutcome = " returned to AVAILABLE";
         }
         auditService.logInCurrentTransaction(hold.getOwnerId(), "EXPIRE", "HOLD", hold.getId(),

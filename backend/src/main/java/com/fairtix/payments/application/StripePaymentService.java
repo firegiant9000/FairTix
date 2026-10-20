@@ -235,7 +235,9 @@ public class StripePaymentService {
     PaymentRecord record = new PaymentRecord(
         orderId, userId, amount, currency, PaymentStatus.SUCCESS, paymentIntentId, null);
     PaymentRecord saved = paymentRecordRepository.save(record);
-    auditService.logInCurrentTransaction(userId, "PAYMENT_PROCESSED", "PAYMENT", saved.getId(),
+    // REQUIRES_NEW on purpose: a captured charge stays on record even if the
+    // order or box-office sale that recorded it rolls back afterwards.
+    auditService.log(userId, "PAYMENT_PROCESSED", "PAYMENT", saved.getId(),
         "stripe_intent=" + paymentIntentId);
     return saved;
   }

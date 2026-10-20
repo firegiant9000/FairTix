@@ -1,9 +1,11 @@
 package com.fairtix.inventory;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
+import com.fairtix.inventory.application.SeatHoldConflictException;
 import com.fairtix.inventory.application.SeatHoldService;
 import com.fairtix.inventory.domain.Seat;
 import com.fairtix.inventory.domain.SeatHold;
@@ -15,17 +17,20 @@ import com.fairtix.support.PostgresIT;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -46,7 +51,13 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  * <p>Red on commit {@code 6408921}: the sweep was an empty stub (before it, only
  * ACTIVE holds were swept), so an expired CONFIRMED hold kept its seat BOOKED
  * forever, and {@code createOrder} left its holds CONFIRMED. Four of the six tests
- * failed; the grace and race tests pass either way.
+ * there failed; the grace test passed either way, and the race then was not forced
+ * to overlap.
+ *
+ * <p>Review round 1 added: the payment-intent extension
+ * ({@link SeatHoldService#extendConfirmedHoldsForPayment}), the guard that keeps a
+ * stale hold from freeing a seat another hold has booked, and a race that a third
+ * connection's seat lock forces to overlap.
  *
  * <p>Scheduling is off in the {@code it} profile, so the tests call the sweep
  * directly. Not {@code @Transactional}: every write commits, and
@@ -61,6 +72,7 @@ class ConfirmedHoldExpiryIT extends PostgresIT {
   @Autowired private OrderService orderService;
   @Autowired private HoldExpirationScheduler scheduler;
   @Autowired private JdbcTemplate jdbcTemplate;
+  @Autowired private DataSource dataSource;
 
   private Event event;
   private Seat seat;
@@ -134,10 +146,70 @@ class ConfirmedHoldExpiryIT extends PostgresIT {
     assertThat(seatStatus()).isEqualTo("SOLD");
   }
 
+  @Test
+  void extendForPayment_pushesExpiryPastTheSweep() {
+    SeatHold hold = confirmedHold();
+    expireMinutesAgo(hold, 20);
+    long versionBefore = seatVersion();
+
+    seatHoldService.extendConfirmedHoldsForPayment(List.of(hold.getId()), buyer.getId());
+    scheduler.expireConfirmedHolds();
+
+    assertThat(holdStatus(hold)).isEqualTo("CONFIRMED");
+    assertThat(seatStatus()).isEqualTo("BOOKED");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT expires_at > now() + interval '9 minutes' FROM seat_holds WHERE id = ?",
+        Boolean.class, hold.getId())).isTrue();
+    assertThat(seatVersion()).isGreaterThan(versionBefore);
+  }
+
+  @Test
+  void extendForPayment_rejectsSweptHold() {
+    SeatHold hold = confirmedHold();
+    expireMinutesAgo(hold, 20);
+    scheduler.expireConfirmedHolds();
+
+    assertThatThrownBy(() ->
+        seatHoldService.extendConfirmedHoldsForPayment(List.of(hold.getId()), buyer.getId()))
+        .isInstanceOf(SeatHoldConflictException.class);
+  }
+
+  @Test
+  void extendForPayment_rejectsActiveHold() {
+    SeatHold hold = seatHoldService.createHold(event.getId(), List.of(seat.getId()), buyer.getId(), 10)
+        .get(0);
+
+    assertThatThrownBy(() ->
+        seatHoldService.extendConfirmedHoldsForPayment(List.of(hold.getId()), buyer.getId()))
+        .isInstanceOf(SeatHoldConflictException.class);
+  }
+
   /**
-   * Checkout and the sweep race for one expired CONFIRMED hold. Whichever commits
-   * first wins, and the state is one of the two consistent outcomes, never a
-   * ticket on a seat that is back on sale.
+   * A stale CONFIRMED hold whose seat was freed (here by direct SQL, standing in
+   * for a refund) and then booked by someone else must not free the newer booking.
+   */
+  @Test
+  void staleHoldDoesNotFreeSeatBookedByAnotherHold() {
+    SeatHold stale = confirmedHold();
+    jdbcTemplate.update("UPDATE seats SET status = 'AVAILABLE' WHERE id = ?", seat.getId());
+    User other = newUser("other@test.com");
+    SeatHold current = seatHoldService.createHold(event.getId(), List.of(seat.getId()), other.getId(), 10)
+        .get(0);
+    seatHoldService.confirmHold(current.getId(), other.getId());
+    expireMinutesAgo(stale, 20);
+
+    scheduler.expireConfirmedHolds();
+
+    assertThat(holdStatus(stale)).isEqualTo("EXPIRED");
+    assertThat(seatStatus()).isEqualTo("BOOKED");
+    assertThat(holdStatus(current)).isEqualTo("CONFIRMED");
+  }
+
+  /**
+   * Checkout and the sweep race for one expired CONFIRMED hold. A third
+   * connection holds the seat row lock until both are waiting on it, so the two
+   * really overlap. Whichever commits first wins, and the state is one of the two
+   * consistent outcomes, never a ticket on a seat that is back on sale.
    */
   @Test
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
@@ -145,32 +217,11 @@ class ConfirmedHoldExpiryIT extends PostgresIT {
     SeatHold hold = confirmedHold();
     expireMinutesAgo(hold, 20);
 
-    CountDownLatch start = new CountDownLatch(1);
-    Callable<Object> checkout = () -> {
-      start.await();
-      return orderService.createOrderWithPayment(buyer.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
-    };
-    Callable<Object> sweep = () -> {
-      start.await();
-      scheduler.expireConfirmedHolds();
-      return null;
-    };
-
-    ExecutorService pool = Executors.newFixedThreadPool(2);
-    List<Throwable> failures = new ArrayList<>();
-    try {
-      List<Future<Object>> futures = List.of(pool.submit(checkout), pool.submit(sweep));
-      start.countDown();
-      for (Future<Object> future : futures) {
-        try {
-          future.get(30, TimeUnit.SECONDS);
-        } catch (ExecutionException ex) {
-          failures.add(ex.getCause());
-        }
-      }
-    } finally {
-      pool.shutdownNow();
-    }
+    Callable<Object> checkout = () ->
+        orderService.createOrderWithPayment(buyer.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
+    // Checkout blocks on the ticket FK's KEY SHARE lock or its seat UPDATE, the
+    // sweep on its seat UPDATE.
+    List<Throwable> failures = raceUnderSeatLock(checkout, sweep());
 
     String holdStatus = holdStatus(hold);
     String seatStatus = seatStatus();
@@ -186,16 +237,110 @@ class ConfirmedHoldExpiryIT extends PostgresIT {
       assertThat(seatStatus).isEqualTo("AVAILABLE");
       assertThat(holdStatus).isEqualTo("EXPIRED");
     }
-    // The loser, if the two overlapped, fails on Seat.@Version or the V46 index;
-    // a checkout that ran after the sweep sees the hold no longer CONFIRMED.
+    // The loser fails on Seat.@Version or the V46 index; a checkout that reads
+    // after the sweep commits sees the hold or seat no longer CONFIRMED/BOOKED.
     assertThat(failures).hasSizeLessThanOrEqualTo(1);
     assertThat(failures).allSatisfy(t -> assertThat(t).isInstanceOfAny(
         ObjectOptimisticLockingFailureException.class,
         DataIntegrityViolationException.class,
+        SeatHoldConflictException.class,
         IllegalArgumentException.class));
   }
 
+  /**
+   * The extension reaches the hold row first: it holds that row lock while it
+   * waits for the seat, the sweep (which read the seat's old version) queues
+   * behind it, and after the extension commits the sweep fails on the bumped seat
+   * version and rolls back. The hold stays CONFIRMED with its new expiry.
+   */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void extendThenSweep_extensionWins() throws Exception {
+    SeatHold hold = confirmedHold();
+    expireMinutesAgo(hold, 20);
+
+    List<Throwable> failures = raceUnderSeatLock(extend(hold), sweep());
+
+    assertThat(holdStatus(hold)).isEqualTo("CONFIRMED");
+    assertThat(seatStatus()).isEqualTo("BOOKED");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT expires_at > now() + interval '9 minutes' FROM seat_holds WHERE id = ?",
+        Boolean.class, hold.getId())).isTrue();
+    assertThat(failures).singleElement().isInstanceOf(ObjectOptimisticLockingFailureException.class);
+  }
+
+  /**
+   * The sweep reaches the hold row first and commits; the extension's conditional
+   * update then matches nothing, and its seat lock finds a newer seat version than
+   * the copy it loaded with the hold, so it fails (a 409) and the hold stays
+   * EXPIRED. A {@code saveAll} of the loaded holds here would have written the
+   * hold back to CONFIRMED on an AVAILABLE seat.
+   */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void sweepThenExtend_sweepWins() throws Exception {
+    SeatHold hold = confirmedHold();
+    expireMinutesAgo(hold, 20);
+
+    List<Throwable> failures = raceUnderSeatLock(sweep(), extend(hold));
+
+    assertThat(holdStatus(hold)).isEqualTo("EXPIRED");
+    assertThat(seatStatus()).isEqualTo("AVAILABLE");
+    assertThat(failures).singleElement().satisfies(t -> assertThat(t).isInstanceOfAny(
+        SeatHoldConflictException.class, ObjectOptimisticLockingFailureException.class));
+  }
+
   // ---- helpers ----
+
+  private Callable<Object> sweep() {
+    return () -> {
+      scheduler.expireConfirmedHolds();
+      return null;
+    };
+  }
+
+  private Callable<Object> extend(SeatHold hold) {
+    return () -> {
+      seatHoldService.extendConfirmedHoldsForPayment(List.of(hold.getId()), buyer.getId());
+      return null;
+    };
+  }
+
+  /**
+   * Holds the seat row lock on a third connection, starts {@code first} and waits
+   * until it is blocked on a lock, then starts {@code second} and waits until it
+   * is blocked too, then releases the seat. The two really overlap, in a fixed
+   * order. Returns what they threw.
+   */
+  private List<Throwable> raceUnderSeatLock(Callable<Object> first, Callable<Object> second) throws Exception {
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    List<Throwable> failures = new ArrayList<>();
+    try (Connection lock = dataSource.getConnection()) {
+      lock.setAutoCommit(false);
+      try (PreparedStatement ps = lock.prepareStatement("SELECT id FROM seats WHERE id = ? FOR UPDATE")) {
+        ps.setObject(1, seat.getId());
+        ps.executeQuery().close();
+      }
+      List<Future<Object>> futures = new ArrayList<>();
+      futures.add(pool.submit(first));
+      boolean firstBlocked = waitForLockWaiters(1, Duration.ofSeconds(10));
+      futures.add(pool.submit(second));
+      boolean bothBlocked = waitForLockWaiters(2, Duration.ofSeconds(10));
+      lock.commit();
+      assertThat(firstBlocked).as("the first transaction waited on a lock").isTrue();
+      assertThat(bothBlocked).as("both transactions waited on a lock").isTrue();
+      for (Future<Object> future : futures) {
+        try {
+          future.get(30, TimeUnit.SECONDS);
+        } catch (ExecutionException ex) {
+          failures.add(ex.getCause());
+        }
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+    return failures;
+  }
 
   private SeatHold confirmedHold() {
     SeatHold hold = seatHoldService.createHold(event.getId(), List.of(seat.getId()), buyer.getId(), 10)
@@ -215,6 +360,24 @@ class ConfirmedHoldExpiryIT extends PostgresIT {
 
   private String seatStatus() {
     return jdbcTemplate.queryForObject("SELECT status FROM seats WHERE id = ?", String.class, seat.getId());
+  }
+
+  private long seatVersion() {
+    return jdbcTemplate.queryForObject("SELECT version FROM seats WHERE id = ?", Long.class, seat.getId());
+  }
+
+  private boolean waitForLockWaiters(int waiters, Duration timeout) throws InterruptedException {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() < deadline) {
+      Integer count = jdbcTemplate.queryForObject(
+          "SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
+              + " AND datname = current_database()", Integer.class);
+      if (count != null && count >= waiters) {
+        return true;
+      }
+      Thread.sleep(50);
+    }
+    return false;
   }
 
   private int activeTicketsForSeat() {
