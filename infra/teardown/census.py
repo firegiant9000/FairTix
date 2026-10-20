@@ -18,6 +18,9 @@ Bootstrap naming contract (FT-3 must follow it):
 - No lab resource name may start with `fairtix-lab-bootstrap`.
 - Bootstrap owns no billable resource and no customer-managed KMS key (state SSE uses an
   AWS-managed key), so any CMK the census finds is a leftover.
+- The lab uses no CMK and creates secrets with recovery_window_in_days = 0. Keys and
+  secrets pending deletion are counted, so either would keep the census non-empty
+  (decide says destroy, verify fails) for 7-30 days after a teardown.
 - The census lists none of the bootstrap kinds except the reaper's log group, which is
   excluded by its exact name below. A new bootstrap log group needs an entry in
   BOOTSTRAP_LOG_GROUPS; anything not listed there is counted.
@@ -77,10 +80,17 @@ def is_bootstrap(item: Item) -> bool:
 
 
 def _pages(client, operation: str, key: str, **kwargs) -> list:
-    """Every element of `key` across all pages. A missing key raises (KeyError)."""
+    """Every element of `key` across all pages. A missing key raises (KeyError).
+
+    botocore stops when the next-page token is missing, even if the page still says
+    Truncated (KMS), so a last page that claims more results raises.
+    """
     out: list = []
+    page: dict = {}
     for page in client.get_paginator(operation).paginate(**kwargs):
         out.extend(page[key])
+    if page.get("Truncated") is True or page.get("IsTruncated") is True:
+        raise CensusError(f"{operation}: listing truncated without a next-page token")
     return out
 
 
@@ -174,6 +184,16 @@ def list_nat_gateways(clients: Clients) -> list[Item]:
     ]
 
 
+def list_vpc_endpoints(clients: Clients) -> list[Item]:
+    # Interface and Gateway Load Balancer endpoints bill per hour; S3/DynamoDB Gateway
+    # endpoints are free. An endpoint with no type reported still counts.
+    return [
+        Item("vpc_endpoint", e["VpcEndpointId"], e.get("CreationTimestamp"))
+        for e in _pages(clients.ec2, "describe_vpc_endpoints", "VpcEndpoints")
+        if e.get("VpcEndpointType") != "Gateway" and str(e.get("State", "")).lower() != "deleted"
+    ]
+
+
 # --- Free --------------------------------------------------------------------------------------
 
 def list_enis(clients: Clients) -> list[Item]:
@@ -229,7 +249,7 @@ def list_kms_keys(clients: Clients) -> list[Item]:
 
 
 BILLABLE_LISTERS: tuple[Callable[[Clients], list[Item]], ...] = (
-    list_ecs, list_elbv2, list_rds, list_elasticache, list_eips, list_nat_gateways,
+    list_ecs, list_elbv2, list_rds, list_elasticache, list_eips, list_nat_gateways, list_vpc_endpoints,
 )
 FREE_LISTERS: tuple[Callable[[Clients], list[Item]], ...] = (
     list_enis, list_vpcs, list_security_groups, list_ecr, list_secrets, list_log_groups, list_kms_keys,

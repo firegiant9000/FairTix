@@ -184,6 +184,23 @@ def test_nat_any_state_but_deleted_counts_with_no_tag_filter(stubs):
     ]
 
 
+def test_vpc_endpoints_interface_and_gwlb_count_gateway_and_deleted_do_not(stubs):
+    stubs.add("ec2", "describe_vpc_endpoints", {"VpcEndpoints": [
+        {"VpcEndpointId": "vpce-ecr", "VpcEndpointType": "Interface", "State": "available",
+         "CreationTimestamp": T0},
+        {"VpcEndpointId": "vpce-gwlb", "VpcEndpointType": "GatewayLoadBalancer", "State": "pending"},
+        {"VpcEndpointId": "vpce-unknown"},
+        {"VpcEndpointId": "vpce-s3", "VpcEndpointType": "Gateway", "State": "available"},
+        {"VpcEndpointId": "vpce-gone", "VpcEndpointType": "Interface", "State": "deleted"},
+        {"VpcEndpointId": "vpce-gone2", "VpcEndpointType": "Interface", "State": "Deleted"},
+    ]}, {})
+    assert c.list_vpc_endpoints(stubs.as_clients()) == [
+        Item("vpc_endpoint", "vpce-ecr", T0),
+        Item("vpc_endpoint", "vpce-gwlb", None),
+        Item("vpc_endpoint", "vpce-unknown", None),
+    ]
+
+
 def test_enis_are_listed(stubs):
     stubs.add("ec2", "describe_network_interfaces", {"NetworkInterfaces": [{"NetworkInterfaceId": "eni-0abc"}]})
     assert c.list_enis(stubs.as_clients()) == [Item("eni", "eni-0abc", None)]
@@ -308,6 +325,13 @@ def test_kms_truncated_listing_that_then_fails_raises(stubs):
     stubs.add("kms", "list_keys", {"Keys": [{"KeyId": "k"}], "Truncated": True, "NextMarker": "m"})
     stubs.error("kms", "list_keys", "KMSInternalException", 500)
     with pytest.raises(CensusError, match="KMSInternalException"):
+        build_census_only(stubs, c.list_kms_keys)
+
+
+def test_kms_truncated_page_without_a_marker_raises(stubs):
+    # botocore stops paginating when the token is missing, even if Truncated is true.
+    stubs.add("kms", "list_keys", {"Keys": [{"KeyId": "k"}], "Truncated": True})
+    with pytest.raises(CensusError, match="truncated"):
         build_census_only(stubs, c.list_kms_keys)
 
 

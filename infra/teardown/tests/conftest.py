@@ -92,6 +92,7 @@ EMPTY_BILLABLE = [
     ("elasticache", "describe_serverless_cache_snapshots", {"ServerlessCacheSnapshots": []}),
     ("ec2", "describe_addresses", {"Addresses": []}),
     ("ec2", "describe_nat_gateways", {"NatGateways": []}),
+    ("ec2", "describe_vpc_endpoints", {"VpcEndpoints": []}),
 ]
 EMPTY_FREE = [
     ("ec2", "describe_network_interfaces", {"NetworkInterfaces": []}),

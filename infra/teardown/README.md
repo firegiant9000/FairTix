@@ -30,4 +30,8 @@ The tests never reach the network. Every AWS call goes through an injected clien
 - No lab resource name may start with `fairtix-lab-bootstrap`.
 - Bootstrap owns no billable resource and no customer-managed KMS key.
 - The census lists only one bootstrap resource: the reaper's log group, `/aws/lambda/fairtix-lab-bootstrap-reaper`. It's excluded by **exact name**, so a look-alike is still counted. Adding a bootstrap log group means adding it to `BOOTSTRAP_LOG_GROUPS` in `census.py`.
-- The lab should use AWS-managed KMS keys. `teardown.verify` counts customer-managed keys in every state, including `PendingDeletion`, and AWS keeps those for at least 7 days.
+- The lab uses **AWS-managed KMS keys only**, and creates its Secrets Manager secrets with **`recovery_window_in_days = 0`**.
+  - The census counts customer-managed keys in every state, including `PendingDeletion`, and secrets pending deletion. That's the fail-closed choice.
+  - A key pending deletion stays for at least 7 days; a secret with the default recovery window stays for 30.
+  - During that time, `teardown.decide` keeps answering `destroy` and `teardown.verify` keeps failing, so the "empty lab" never goes quiet.
+- The lab uses no NAT gateway. Interface VPC endpoints are billable; the census counts them, and the reaper (FT-3) should delete them.

@@ -123,6 +123,25 @@ def test_td139_old_free_item_does_not_pull_the_clamp_into_the_past():
     assert decide(NOW, iso_z(NOW + 3 * H), census) == NOOP
 
 
+@pytest.mark.parametrize("kind", ["rds_snapshot", "rds_automated_backup", "elasticache_snapshot"])
+def test_td139_old_retained_backup_does_not_pull_the_clamp_into_the_past(kind):
+    census = Census(billable=(
+        Item(kind, "fairtix-lab-old", NOW - 30 * 24 * H),
+        Item("ecs_service", "fairtix-lab/api", NOW - H),
+    ))
+    assert census.oldest_created == NOW - H
+    assert decide(NOW, iso_z(NOW + 3 * H), census) == NOOP
+
+
+def test_retained_backups_alone_still_clamp_from_their_own_time():
+    census = Census(billable=(
+        Item("rds_snapshot", "fairtix-lab-old", NOW - 30 * 24 * H),
+        Item("eip", "eipalloc-0abc", None),
+    ))
+    assert census.oldest_created == NOW - 30 * 24 * H
+    assert decide(NOW, iso_z(NOW + 3 * H), census) == DESTROY
+
+
 def test_td141_free_leftovers_only_far_future_is_clamped_from_oldest_free_item():
     census = Census(free=(
         Item("log_group", "/ecs/fairtix-lab", NOW - 13 * H),

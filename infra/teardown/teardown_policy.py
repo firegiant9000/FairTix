@@ -31,7 +31,13 @@ BILLABLE_KINDS = frozenset({
     "elasticache_snapshot",
     "eip",
     "nat_gateway",
+    "vpc_endpoint",  # interface endpoints bill per hour per AZ; the no-NAT lab is likely to use them
 })
+
+# Billable kinds that can outlive the stack (snapshots, retained backups). Their age says
+# nothing about when the current stack started, so they only set the clamp when no other
+# billable item has a timestamp.
+RETAINED_KINDS = frozenset({"rds_snapshot", "rds_automated_backup", "elasticache_snapshot"})
 
 # TD §4: free = VPC, security groups, ECR, secrets, log groups. ENIs and KMS keys are
 # also here: layers 1-2 remove them, the reaper doesn't.
@@ -74,9 +80,18 @@ class Census:
 
     @property
     def oldest_created(self) -> datetime | None:
-        """Oldest creation time among billable items; from free items only if billable is empty."""
-        pool = self.billable if self.billable else self.free
-        times = [i.created for i in pool if i.created is not None]
+        """Oldest creation time among billable items; from free items only if billable is empty.
+
+        Within billable, retained snapshots and backups count only if nothing else has a time,
+        so an old snapshot can't pull the clamp into the past while a new stack is up.
+        """
+        if self.billable:
+            live = [i.created for i in self.billable if i.created is not None and i.kind not in RETAINED_KINDS]
+            if live:
+                return min(live)
+            retained = [i.created for i in self.billable if i.created is not None]
+            return min(retained) if retained else None
+        times = [i.created for i in self.free if i.created is not None]
         return min(times) if times else None
 
 
