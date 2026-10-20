@@ -108,7 +108,7 @@ jobs:
           run_destroy() {
             local status=0
             terraform -chdir=infra/lab destroy -auto-approve -input=false -lock-timeout=15m -no-color > "$RUNNER_TEMP/destroy.log" 2>&1 || status=$?
-            grep -E -A4 '^(Destroy complete|Error:)' "$RUNNER_TEMP/destroy.log" || true
+            grep -E -A4 'Destroy complete|Error:' "$RUNNER_TEMP/destroy.log" || true
             return "$status"
           }
           if run_destroy; then

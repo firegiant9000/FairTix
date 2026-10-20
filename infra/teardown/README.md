@@ -38,5 +38,7 @@ The tests never reach the network. Every AWS call goes through an injected clien
   - The census counts customer-managed keys in every state, including `PendingDeletion`, and secrets pending deletion. That's the fail-closed choice.
   - A key pending deletion stays for at least 7 days; a secret with the default recovery window stays for 30.
   - During that time, `teardown.decide` keeps answering `destroy` and `teardown.verify` keeps failing, so the "empty lab" never goes quiet.
-- The ALB ingress variable (a single `/32`, the operator's IP) is `sensitive = true` and comes from a secret. The workflows keep Terraform's plan out of the public Actions log and print only the summary and errors.
+- The ALB ingress variable (a single `/32`, the operator's IP) is `sensitive = true` and comes from a secret. The workflows keep Terraform's plan out of the public Actions log and print only the summary and errors (4 lines of context each). Two trade-offs:
+  - an error message can still echo a value, so keep secrets out of resource names and error-prone attributes;
+  - there's no live progress during a long destroy, and the full log stays on the runner and is lost with it.
 - The lab uses no NAT gateway. Interface VPC endpoints are billable; the census counts them, and the reaper (FT-3) should delete them.

@@ -122,13 +122,18 @@ def test_apply_reads_lab_enabled_at_repository_scope(apply, apply_job):
                          ids=["destroy", "apply"])
 def test_terraform_plan_output_stays_out_of_the_public_log(path, command):
     workflow = _load(path)
-    lines = [line for job in workflow["jobs"].values() for s in _steps(job)
-             for line in s.get("run", "").splitlines()
-             if re.search(rf"\bterraform\b.*\s{command}\s", line)]
-    assert lines
-    for line in lines:
-        assert '> "$RUNNER_TEMP/' in line and "2>&1" in line, line
-        assert "tee" not in line, line
+    runs = [s["run"] for job in workflow["jobs"].values() for s in _steps(job)
+            if re.search(rf"\bterraform\b.*\s{command}\s", s.get("run", ""))]
+    assert runs
+    for run in runs:
+        lines = run.splitlines()
+        tf = next(i for i, line in enumerate(lines) if re.search(rf"\bterraform\b.*\s{command}\s", line))
+        assert '> "$RUNNER_TEMP/' in lines[tf] and "2>&1" in lines[tf], lines[tf]
+        assert "tee" not in lines[tf], lines[tf]
+        # The summary and the errors still reach the log, after the command.
+        summary = [i for i, line in enumerate(lines)
+                   if "grep" in line and "Error:" in line and f"{command.capitalize()} complete" in line]
+        assert summary and summary[0] > tf
 
 
 def test_teardown_triggers_are_schedule_and_dispatch_with_force(teardown):
