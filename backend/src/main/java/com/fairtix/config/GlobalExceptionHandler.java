@@ -26,6 +26,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -251,6 +252,14 @@ public class GlobalExceptionHandler {
   public ResponseEntity<Map<String, Object>> handleCardDeclined(
       PaymentDeclinedException ex, HttpServletRequest req) {
     return error(HttpStatus.UNPROCESSABLE_ENTITY, "CARD_DECLINED", ex.getMessage(), req);
+  }
+
+  @ExceptionHandler(OptimisticLockingFailureException.class)
+  public ResponseEntity<Map<String, Object>> handleOptimisticLock(
+      OptimisticLockingFailureException ex, HttpServletRequest req) {
+    log.warn("Optimistic lock conflict on {}: {}", req.getRequestURI(), ex.getMessage());
+    return error(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
+        "The resource was modified by another request; reload and try again", req);
   }
 
   @ExceptionHandler(DataIntegrityViolationException.class)

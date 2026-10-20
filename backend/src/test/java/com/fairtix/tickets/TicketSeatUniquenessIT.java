@@ -208,8 +208,8 @@ class TicketSeatUniquenessIT extends PostgresIT {
     //   violates uk_tickets_seat_active (DataIntegrityViolationException, 409);
     // - overlapped, before V46 (a240f06): the duplicate ticket inserted and only
     //   Seat.@Version rolled it back (ObjectOptimisticLockingFailureException).
-    //   GlobalExceptionHandler has no handler for that, so over HTTP it is a 500.
-    //   Known gap, not fixed here; see docs/experiments/l1-contention-correctness.md.
+    //   Over HTTP that was a 500 until GlobalExceptionHandler mapped it to 409
+    //   CONCURRENT_MODIFICATION (GlobalExceptionHandlerOptimisticLockTest).
     assertThat(failures).singleElement().isInstanceOfAny(
         DataIntegrityViolationException.class,
         ObjectOptimisticLockingFailureException.class,

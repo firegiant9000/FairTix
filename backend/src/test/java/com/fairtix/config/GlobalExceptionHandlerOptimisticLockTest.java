@@ -18,6 +18,10 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * A {@code Seat.@Version} conflict (for example two checkouts, or a checkout and
  * the hold sweep, updating the same seat) reaches clients as 409, not 500.
+ *
+ * <p>Red on commit {@code ca2c83b}: with no handler for
+ * {@code OptimisticLockingFailureException}, the catch-all returned 500
+ * {@code INTERNAL_ERROR}.
  */
 class GlobalExceptionHandlerOptimisticLockTest {
 
