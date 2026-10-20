@@ -127,17 +127,21 @@ documented in [docs/api-contract.md](docs/api-contract.md).
 ## Tests and CI
 
 ```bash
-cd backend && mvn verify                    # ~410 JUnit tests across 62 classes (no mvnw yet)
+cd backend && ./mvnw verify                  # unit tests on H2, then the *IT suite on PostgreSQL 16 (Docker required)
 cd frontend/webpages && npm test -- --coverage
 ```
 
-Backend tests cover seat-hold logic (single-threaded, on H2), queue admission,
-risk scoring, step-up gating, refunds, and webhook handling. There is no
-multi-threaded contention test yet and the suite does not run on PostgreSQL;
-both are the first laboratory milestone in the roadmap. The CI workflow
+Backend unit tests (`*Test`, surefire) cover seat-hold logic (single-threaded,
+on H2), queue admission, risk scoring, step-up gating, refunds, and webhook
+handling. A smaller `*IT` suite (failsafe) runs on PostgreSQL 16 via
+Testcontainers: it applies every Flyway migration to an empty database, checks
+the schema with Hibernate `validate`, and runs the purchase flow. Redis is still
+mocked in both suites. There is no multi-threaded contention test yet; it is
+part of the first laboratory milestone in the roadmap. The CI workflow
 ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull
-request to `main`: `mvn clean verify` with a Redis service container, the
-frontend suite with coverage, OWASP Dependency-Check, and a Trivy image scan.
+request and on push to `main`: `./mvnw clean verify` with a Redis service
+container, the frontend suite with coverage, OWASP Dependency-Check, and a
+Trivy image scan.
 
 ## Security notes
 

@@ -8,15 +8,15 @@ Team: group
 # Stack
 
 Languages: Java 21 (backend), JavaScript (frontend)
-Frameworks: Spring Boot 4.0.5, React 18.2 (Create React App)
+Frameworks: Spring Boot 4.0.8, React 18.2 (Create React App)
 Data layer: PostgreSQL 16 via JPA/Hibernate + Flyway migrations (seat holds live here, as rows under pessimistic row locks); Redis 7 via Redisson for the waiting-room queue, rate limiting and login throttling
 Auth: JWT (JJWT 0.13.0) via HttpOnly cookies; /auth/me for user hydration
 Deployment: Docker Compose (local/dev); GitHub Actions CI with Trivy + OWASP checks
 
 # Commands
 
-Build (backend):   cd backend && mvn clean package
-Test (backend):    cd backend && mvn clean verify
+Build (backend):   cd backend && ./mvnw clean package
+Test (backend):    cd backend && ./mvnw clean verify   (runs the Postgres container suite; Docker required)
 Test (frontend):   cd frontend/webpages && npm test
 Lint/format:       n/a (no formatter configured)
 Run locally:       docker compose up --build
@@ -38,6 +38,13 @@ Config:             backend/src/main/resources/application.properties
 - Auth is transitioning from sessionStorage + Bearer token to HttpOnly cookies + /auth/me. New code must follow the cookie-based approach.
 - Database schema is managed entirely via Flyway versioned migrations. Never modify the DB schema directly — always add a new migration file.
 - Audit logging tracks all user actions with request ID correlation. New features that mutate state should emit audit events.
+
+# Testing
+
+- `*Test` classes run in surefire (Maven `test`) on H2 with Hibernate `create-drop`; Flyway is off there.
+- `*IT` classes run in failsafe (Maven `verify`) on PostgreSQL 16 via Testcontainers. They extend `com.fairtix.support.PostgresIT`, which applies every Flyway migration to an empty database and runs Hibernate `validate`. Redis is still the `TestRedisConfig` mock in both suites.
+- ITs share one container, so each IT rolls back (`@Transactional`) or deletes what it commits.
+- `StripeRefundIntegrationIT` is excluded from failsafe (it needs `STRIPE_TEST_SECRET_KEY`); run it with `./mvnw verify -Dit.test=StripeRefundIntegrationIT`.
 
 # Implementation rules
 
