@@ -45,8 +45,12 @@ public final class TestDatabase {
           statement.execute("TRUNCATE TABLE " + String.join(", ", tables) + " RESTART IDENTITY CASCADE");
         }
         connection.commit();
-      } catch (SQLException ex) {
-        connection.rollback();
+      } catch (SQLException | RuntimeException ex) {
+        try {
+          connection.rollback();
+        } catch (SQLException rollbackEx) {
+          ex.addSuppressed(rollbackEx);
+        }
         throw ex;
       } finally {
         connection.setAutoCommit(autoCommit);

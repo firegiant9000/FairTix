@@ -52,9 +52,9 @@ class AnalyticsControllerTest {
 
   /**
    * The test database is shared across test classes within a JVM. Some suites
-   * (notably QueueAdmissionEmailIntegrationTest) are intentionally
-   * non-@Transactional so the scheduler's commit is visible, and auth tests commit
-   * users, so committed rows are left behind. Analytics asserts totals, so empty
+   * (for example QueueAdmissionEmailIntegrationTest and EventCancellationIntegrationTest)
+   * are intentionally non-@Transactional so after-commit work runs, and auth tests
+   * commit users, so committed rows are left behind. Analytics asserts totals, so empty
    * every table before the test transaction opens (TRUNCATE inside it would hold
    * ACCESS EXCLUSIVE locks that REQUIRES_NEW audit writes then wait on).
    */

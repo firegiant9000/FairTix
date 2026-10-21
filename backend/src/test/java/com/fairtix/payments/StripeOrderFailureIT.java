@@ -87,8 +87,8 @@ class StripeOrderFailureIT extends PostgresIT {
             .content("""
                 { "holdIds": ["%s"], "paymentIntentId": "%s" }
                 """.formatted(hold.getId(), INTENT)))
-        // PaymentController rethrows the cause; GlobalExceptionHandler maps
-        // IllegalStateException to 409.
+        // PaymentController rethrows the IllegalStateException unchanged after the
+        // audit write; GlobalExceptionHandler maps it to 409.
         .andExpect(status().isConflict());
 
     // The order transaction rolled back completely.
