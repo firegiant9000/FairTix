@@ -121,16 +121,21 @@ public class AuthService {
   /**
    * Audits a failed login against the account when the email matched one, else
    * with no user. Details carry counts only, never the submitted email or
-   * password. {@code log} is REQUIRES_NEW, so the row survives the 401.
+   * password. {@code log} is REQUIRES_NEW, so the row survives the 401; a failed
+   * audit write is logged and never turns the 401 into a 500.
    */
   private void auditFailedLogin(User user, long failures) {
     UUID userId = user != null ? user.getId() : null;
     int max = loginAttemptService.getMaxAttempts();
-    auditService.log(userId, "LOGIN_FAILED", "USER", userId,
-        "failed_attempts=" + failures + " max=" + max);
-    if (failures == max) {
-      auditService.log(userId, "ACCOUNT_LOCKED", "USER", userId,
-          "failed_attempts=" + failures);
+    try {
+      auditService.log(userId, "LOGIN_FAILED", "USER", userId,
+          "failed_attempts=" + failures + " max=" + max);
+      if (failures == max) {
+        auditService.log(userId, "ACCOUNT_LOCKED", "USER", userId,
+            "failed_attempts=" + failures);
+      }
+    } catch (RuntimeException e) {
+      log.warn("Failed-login audit write failed: {}", e.getClass().getSimpleName());
     }
   }
 

@@ -26,7 +26,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * {@code LOGIN_FAILED} audit row (REQUIRES_NEW), and anyone can trigger it
  * without signing in, so it must not need a second connection while holding one.
  *
- * <p>Red on commit {@code RED_COMMIT}: {@code AuthController.login} was
+ * <p>Red on commit {@code 89da4c9}: {@code AuthController.login} was
  * {@code @Transactional}, so each failed login held its connection while the
  * audit write waited for another. With more concurrent failures than the pool
  * (4 in tests), every request stalled until the Hikari timeout and returned 500.

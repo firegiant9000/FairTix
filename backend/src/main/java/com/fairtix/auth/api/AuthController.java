@@ -106,7 +106,9 @@ public class AuthController {
     @ApiResponse(responseCode = "401", description = "Invalid credentials")
     @SecurityRequirements
     @PostMapping("/login")
-    @Transactional
+    // Deliberately not @Transactional: a failed login writes a REQUIRES_NEW audit
+    // row, and holding an outer connection meanwhile lets unauthenticated callers
+    // starve the pool. generateRefreshToken has its own transaction.
     public AuthResponse login(@Valid @RequestBody LoginRequest request, HttpServletResponse response) {
         String jwt = service.login(request);
         var claims = jwtService.extractAllClaims(jwt);

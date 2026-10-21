@@ -122,7 +122,7 @@ class AuthRequestValidationTest {
    * Register never checked the format before this slice, so a stored email may
    * fail {@code @Email}. Login and forgot-password check presence and length only,
    * or those accounts would be locked out with no recovery. Red on commit
-   * {@code RED_COMMIT_2}: both returned 400.
+   * {@code 89da4c9}: both returned 400.
    */
   @Test
   void login_unformattedEmail_isNotRejectedByFormat() throws Exception {

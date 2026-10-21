@@ -165,8 +165,8 @@ Trivy image scan.
   default), it fails closed: `/auth/step-up/verify` returns 503 and users the
   fraud gate challenges can't check out
   (see [docs/recaptcha-setup.md](docs/recaptcha-setup.md)).
-- Auth request bodies are validated (email format, 254-character email,
-  72-character password); malformed JSON and other client errors return 4xx
+- Auth request bodies are validated (254-character email, 72-character
+  password, email format on registration); malformed JSON and other client errors return 4xx
   JSON, not 500. Failed logins and lockouts are audited (`LOGIN_FAILED`,
   `ACCOUNT_LOCKED`) without the submitted email or password.
 - Rate limits key signed-in users by account and everyone else by client IP;
