@@ -87,11 +87,15 @@ def test_dependency_scan_refuses_an_empty_jar_set(ci):
     dc = _dc_step_index(job)
     copy = next(i for i, s in enumerate(steps) if "dependency:copy-dependencies" in s.get("run", ""))
     guards = [
-        i for i, s in enumerate(steps)
-        if "target/dependency" in s.get("run", "") and re.search(r"test\s+\"\$n\"\s+-ge\s+\d+", s.get("run", ""))
+        (i, s, m) for i, s in enumerate(steps)
+        if "target/dependency" in s.get("run", "")
+        and (m := re.search(r"test\s+\"\$n\"\s+-ge\s+(\d+)", s.get("run", "")))
     ]
     assert guards, "no step fails when target/dependency holds too few JARs"
-    assert copy < guards[0] < dc
+    i, step, match = guards[0]
+    assert copy < i < dc
+    assert int(match.group(1)) >= 100, "the JAR floor must stay near the real count (~140)"
+    assert "if" not in step and "continue-on-error" not in step, "the guard must always run and fail"
 
 
 def test_dependency_scan_token_is_read_only_and_not_persisted(ci):
