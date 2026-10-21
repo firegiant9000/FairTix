@@ -144,7 +144,7 @@ class LoginAttemptTest {
   }
 
   // -------------------------------------------------------------------------
-  // Audit events (red on commit RED_COMMIT: no LOGIN_FAILED or ACCOUNT_LOCKED
+  // Audit events (red on commit 415adf4: no LOGIN_FAILED or ACCOUNT_LOCKED
   // event existed). Audit writes are REQUIRES_NEW, so they commit even though
   // this test class rolls back; each test filters by its own user or start time.
   // -------------------------------------------------------------------------
@@ -180,6 +180,9 @@ class LoginAttemptTest {
         .toList();
     assertThat(failures).isNotEmpty();
     assertNoCredentials(failures, "nobody-audit@test.com", "Wrong-P4ss!");
+    // The behaviour sweep reads active users from audit_logs and must not see the null.
+    assertThat(auditLogRepository.findDistinctUserIdsByCreatedAtAfter(start.minusMillis(1)))
+        .doesNotContainNull();
   }
 
   @Test

@@ -15,6 +15,7 @@ import com.fairtix.users.infrastructure.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.UUID;
 import java.util.regex.Pattern;
 
 @Service
@@ -102,7 +103,8 @@ public class AuthService {
 
     if (user == null || user.isDeleted()
         || !passwordEncoder.matches(request.password(), user.getPassword())) {
-      loginAttemptService.recordFailure(email);
+      long failures = loginAttemptService.recordFailure(email);
+      auditFailedLogin(user, failures);
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
     }
 
@@ -114,6 +116,22 @@ public class AuthService {
         user.getId(),
         user.getEmail(),
         user.getRole().name());
+  }
+
+  /**
+   * Audits a failed login against the account when the email matched one, else
+   * with no user. Details carry counts only, never the submitted email or
+   * password. {@code log} is REQUIRES_NEW, so the row survives the 401.
+   */
+  private void auditFailedLogin(User user, long failures) {
+    UUID userId = user != null ? user.getId() : null;
+    int max = loginAttemptService.getMaxAttempts();
+    auditService.log(userId, "LOGIN_FAILED", "USER", userId,
+        "failed_attempts=" + failures + " max=" + max);
+    if (failures == max) {
+      auditService.log(userId, "ACCOUNT_LOCKED", "USER", userId,
+          "failed_attempts=" + failures);
+    }
   }
 
   private void validatePasswordStrength(String password) {

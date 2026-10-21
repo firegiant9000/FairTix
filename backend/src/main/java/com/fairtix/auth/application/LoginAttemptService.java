@@ -34,7 +34,8 @@ public class LoginAttemptService {
     return counter.get();
   }
 
-  public void recordFailure(String email) {
+  /** Returns the failure count including this one. */
+  public long recordFailure(String email) {
     RAtomicLong counter = redissonClient.getAtomicLong(KEY_PREFIX + email.toLowerCase());
     long current = counter.incrementAndGet();
     if (current == 1 || current >= maxAttempts) {
@@ -42,6 +43,7 @@ public class LoginAttemptService {
       // so the lockout duration is a full window from the moment of lockout
       counter.expire(lockoutDuration);
     }
+    return current;
   }
 
   public void resetAttempts(String email) {

@@ -38,7 +38,7 @@ import org.springframework.web.bind.annotation.RestController;
  * Client mistakes reach the client as 4xx with the usual JSON body, and are
  * logged at warn, never error (Review Focus 5).
  *
- * <p>Red on commit {@code RED_COMMIT}: none of these exceptions had a handler, so
+ * <p>Red on commit {@code 415adf4}: none of these exceptions had a handler, so
  * the {@code Exception} catch-all returned 500 {@code INTERNAL_ERROR} and logged
  * each one at error.
  */

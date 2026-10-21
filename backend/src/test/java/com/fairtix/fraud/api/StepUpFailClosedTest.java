@@ -3,6 +3,7 @@ package com.fairtix.fraud.api;
 import com.fairtix.audit.domain.AuditLog;
 import com.fairtix.audit.infrastructure.AuditLogRepository;
 import com.fairtix.auth.WithMockPrincipal;
+import com.fairtix.auth.application.RecaptchaService;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.application.StepUpGateService;
 import com.fairtix.fraud.domain.RiskTier;
@@ -12,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
@@ -21,6 +23,9 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -28,10 +33,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Step-up fails closed while reCAPTCHA is off (D4, RM:319). The test profile runs
- * with {@code auth.recaptcha.enabled=false}, the shipped default.
+ * Step-up fails closed while reCAPTCHA is off (D4, RM:319), and still verifies
+ * when it is on.
  *
- * <p>Red on commit {@code RED_COMMIT}: {@code RecaptchaService.assertValidToken}
+ * <p>Red on commit {@code 415adf4}: {@code RecaptchaService.assertValidToken}
  * returned early when disabled, so any signed-in user could {@code POST
  * /auth/step-up/verify {}} and be marked verified for 15 minutes.
  */
@@ -43,6 +48,8 @@ class StepUpFailClosedTest {
   @Autowired private AuditLogRepository auditLogRepository;
 
   @MockitoBean private RiskScoringService riskScoringService;
+  // The real service, disabled as shipped (auth.recaptcha.enabled=false), unless a test stubs it.
+  @MockitoSpyBean private RecaptchaService recaptchaService;
 
   private MockMvc mockMvc;
   private UUID userId;
@@ -81,6 +88,22 @@ class StepUpFailClosedTest {
         .andExpect(jsonPath("$.code").value("STEP_UP_UNAVAILABLE"));
 
     assertThat(stepUpGateService.isVerified(userId)).isFalse();
+  }
+
+  @Test
+  void verify_withRecaptchaOnAndValidToken_marksVerified() throws Exception {
+    doReturn(true).when(recaptchaService).isEnabled();
+    doNothing().when(recaptchaService).assertValidToken("valid");
+
+    mockMvc.perform(post("/auth/step-up/verify")
+            .with(WithMockPrincipal.user(userId, "stepup@test.com"))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{ \"captchaToken\": \"valid\" }"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("verified"));
+
+    verify(recaptchaService).assertValidToken("valid");
+    assertThat(stepUpGateService.isVerified(userId)).isTrue();
   }
 
   @Test

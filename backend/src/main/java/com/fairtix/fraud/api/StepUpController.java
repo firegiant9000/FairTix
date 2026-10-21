@@ -4,6 +4,8 @@ import com.fairtix.audit.application.AuditService;
 import com.fairtix.auth.application.RecaptchaService;
 import com.fairtix.auth.domain.CustomUserPrincipal;
 import com.fairtix.fraud.application.StepUpGateService;
+import com.fairtix.fraud.application.StepUpUnavailableException;
+import jakarta.validation.Valid;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RedissonClient;
 import org.springframework.http.HttpStatus;
@@ -46,7 +48,7 @@ public class StepUpController {
     @PostMapping("/verify")
     public ResponseEntity<Map<String, String>> verify(
             @AuthenticationPrincipal CustomUserPrincipal principal,
-            @RequestBody Map<String, String> body) {
+            @Valid @RequestBody StepUpVerifyRequest body) {
 
         UUID userId = principal.getUserId();
         RAtomicLong counter = redissonClient.getAtomicLong(ATTEMPTS_PREFIX + userId);
@@ -61,7 +63,15 @@ public class StepUpController {
                     .body(Map.of("error", "Too many verification attempts. Please wait 10 minutes before trying again."));
         }
 
-        String captchaToken = body.get("captchaToken");
+        // Fail closed (D4): with reCAPTCHA off, assertValidToken accepts anything,
+        // so there is nothing to verify against.
+        if (!recaptchaService.isEnabled()) {
+            auditService.log(userId, "STEP_UP_VERIFY_UNAVAILABLE", "USER", userId,
+                    "reCAPTCHA is not configured");
+            throw new StepUpUnavailableException();
+        }
+
+        String captchaToken = body.captchaToken();
         try {
             recaptchaService.assertValidToken(captchaToken);
             stepUpGateService.markVerified(userId);

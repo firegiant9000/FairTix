@@ -12,7 +12,8 @@ public class AuditLog {
   @GeneratedValue(strategy = GenerationType.AUTO)
   private UUID id;
 
-  @Column(nullable = false)
+  /** Null when no account is known, e.g. a failed login for an unregistered email (V47). */
+  @Column
   private UUID userId;
 
   @Column(nullable = false, length = 50)

@@ -36,6 +36,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
 
 /**
  * Handles user authentication — registration, login, session queries, and logout.
@@ -83,11 +84,12 @@ public class AuthController {
     @Operation(summary = "Register a new user",
             description = "Creates a user account, sets an HTTP-only auth cookie, and returns user info.")
     @ApiResponse(responseCode = "200", description = "Registration successful")
+    @ApiResponse(responseCode = "400", description = "Invalid email or password")
     @ApiResponse(responseCode = "409", description = "Email already in use")
     @SecurityRequirements
     @PostMapping("/register")
     @Transactional
-    public AuthResponse register(@RequestBody RegisterRequest request, HttpServletResponse response) {
+    public AuthResponse register(@Valid @RequestBody RegisterRequest request, HttpServletResponse response) {
         String jwt = service.register(request);
         var claims = jwtService.extractAllClaims(jwt);
         UUID userId = UUID.fromString(claims.get("userId", String.class));
@@ -105,7 +107,7 @@ public class AuthController {
     @SecurityRequirements
     @PostMapping("/login")
     @Transactional
-    public AuthResponse login(@RequestBody LoginRequest request, HttpServletResponse response) {
+    public AuthResponse login(@Valid @RequestBody LoginRequest request, HttpServletResponse response) {
         String jwt = service.login(request);
         var claims = jwtService.extractAllClaims(jwt);
         UUID userId = UUID.fromString(claims.get("userId", String.class));
@@ -119,7 +121,7 @@ public class AuthController {
     @Operation(summary = "Get current user",
             description = "Returns the authenticated user's info based on the auth cookie or bearer token.")
     @ApiResponse(responseCode = "200", description = "Authenticated")
-    @ApiResponse(responseCode = "403", description = "Not authenticated")
+    @ApiResponse(responseCode = "401", description = "Not authenticated")
     @PreAuthorize("isAuthenticated()")
     @GetMapping("/me")
     public AuthResponse me(@AuthenticationPrincipal CustomUserPrincipal principal) {
@@ -208,7 +210,7 @@ public class AuthController {
     @SecurityRequirements
     @PostMapping("/forgot-password")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void forgotPassword(@RequestBody ForgotPasswordRequest request) {
+    public void forgotPassword(@Valid @RequestBody ForgotPasswordRequest request) {
         try {
             passwordResetService.requestReset(request.email());
         } catch (Exception e) {
@@ -228,7 +230,7 @@ public class AuthController {
     @SecurityRequirements
     @PostMapping("/reset-password")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void resetPassword(@RequestBody ResetPasswordRequest request) {
+    public void resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
         passwordResetService.resetPassword(request.token(), request.newPassword());
     }
 

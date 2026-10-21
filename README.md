@@ -161,6 +161,14 @@ Trivy image scan.
   rejects everything.
 - Rate limits, login-attempt tracking, reCAPTCHA and step-up challenges are
   the abuse controls. None of this has been penetration tested.
+- Step-up verification is a reCAPTCHA check. With reCAPTCHA off (the
+  default), it fails closed: `/auth/step-up/verify` returns 503 and users the
+  fraud gate challenges can't check out
+  (see [docs/recaptcha-setup.md](docs/recaptcha-setup.md)).
+- Auth request bodies are validated (email format, 254-character email,
+  72-character password); malformed JSON and other client errors return 4xx
+  JSON, not 500. Failed logins and lockouts are audited (`LOGIN_FAILED`,
+  `ACCOUNT_LOCKED`) without the submitted email or password.
 - Rate limits key signed-in users by account and everyone else by client IP;
   the credential endpoints are always keyed by client IP.
   `X-Forwarded-For` is honoured only when the connection comes from a trusted

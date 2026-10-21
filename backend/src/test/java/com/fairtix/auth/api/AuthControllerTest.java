@@ -229,7 +229,7 @@ class AuthControllerTest {
 
   /**
    * An anonymous caller is unauthenticated, not forbidden. Red on commit
-   * {@code RED_COMMIT}: {@code @PreAuthorize} denied the anonymous principal and
+   * {@code 415adf4}: {@code @PreAuthorize} denied the anonymous principal and
    * the advice mapped every {@code AccessDeniedException} to 403.
    */
   @Test

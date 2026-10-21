@@ -21,7 +21,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Bean Validation on the auth request bodies (RM:318): malformed credentials are
  * a 400 {@code VALIDATION_ERROR} before they reach the lockout counter or BCrypt.
  *
- * <p>Red on commit {@code RED_COMMIT}: with no constraints and no {@code @Valid},
+ * <p>Red on commit {@code 415adf4}: with no constraints and no {@code @Valid},
  * a null login email threw an NPE in {@code LoginAttemptService} (500), an invalid
  * email registered, and over-long passwords reached BCrypt.
  */
