@@ -1,6 +1,7 @@
 package com.fairtix.config;
 
 import static org.hamcrest.Matchers.containsStringIgnoringCase;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -19,7 +20,7 @@ import org.springframework.web.context.WebApplicationContext;
  * test context uses {@code AllowedOrigins}' default list, which includes the CRA dev
  * origin {@code http://localhost:3000}.
  *
- * <p>Intended-red commit: {@code TBD}.
+ * <p>Intended-red commit: {@code 3f2146f}.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 class CorsConfigTest {
@@ -69,13 +70,27 @@ class CorsConfigTest {
         .andExpect(header().doesNotExist("Access-Control-Allow-Credentials"));
   }
 
-  /** {@code allowedHeaders("*")} with credentials echoed any requested header back. */
+  /**
+   * {@code allowedHeaders("*")} with credentials echoed any requested header back.
+   * Spring answers a partly allowed list with the allowed subset, and the browser then
+   * fails the preflight itself, so the guarantee is what the response leaves out.
+   */
   @Test
-  void preflight_withUnlistedHeader_isRejected() throws Exception {
+  void preflight_withUnlistedHeader_isNotAllowedThatHeader() throws Exception {
     mockMvc.perform(options("/api/orders")
             .header("Origin", SPA)
             .header("Access-Control-Request-Method", "POST")
             .header("Access-Control-Request-Headers", "content-type,x-anything"))
+        .andExpect(header().string("Access-Control-Allow-Headers",
+            not(containsStringIgnoringCase("x-anything"))));
+  }
+
+  @Test
+  void preflight_withOnlyUnlistedHeaders_isRejected() throws Exception {
+    mockMvc.perform(options("/api/orders")
+            .header("Origin", SPA)
+            .header("Access-Control-Request-Method", "POST")
+            .header("Access-Control-Request-Headers", "x-anything"))
         .andExpect(status().isForbidden())
         .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
   }

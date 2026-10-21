@@ -55,7 +55,9 @@ public class SecurityConfig {
           CorsConfiguration config = new CorsConfiguration();
           config.setAllowedOrigins(allowedOrigins.list());
           config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-          config.setAllowedHeaders(List.of("*"));
+          // What the SPA sends (client.js, holdsApi.js) plus Bearer for API clients;
+          // "*" with credentials echoed back any header a page asked for.
+          config.setAllowedHeaders(List.of("Content-Type", "Authorization", "X-Organization-Id"));
           config.setAllowCredentials(true);
           return config;
         }))

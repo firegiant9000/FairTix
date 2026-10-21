@@ -71,7 +71,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
             if (credentialEndpoint) {
                 // Fail closed: this limit is the brute-force defence.
                 log.warn("Rate limiter unavailable, rejecting credential request: {}", e.getClass().getSimpleName());
-                reject(response, HttpStatus.SERVICE_UNAVAILABLE, "30",
+                reject(request, response, HttpStatus.SERVICE_UNAVAILABLE, "30",
                     "RATE_LIMIT_UNAVAILABLE", "Temporarily unavailable. Please try again shortly.");
                 return;
             }
@@ -82,7 +82,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
 
         if (!allowed) {
-            reject(response, HttpStatus.TOO_MANY_REQUESTS, "60",
+            reject(request, response, HttpStatus.TOO_MANY_REQUESTS, "60",
                 "RATE_LIMITED", "Too many requests. Please try again later.");
             return;
         }
@@ -98,8 +98,16 @@ public class RateLimitFilter extends OncePerRequestFilter {
             || path.startsWith("/actuator/health/");
     }
 
-    private void reject(HttpServletResponse response, HttpStatus status, String retryAfterSeconds,
-            String code, String message) throws IOException {
+    private void reject(HttpServletRequest request, HttpServletResponse response, HttpStatus status,
+            String retryAfterSeconds, String code, String message) throws IOException {
+        // This filter runs before Spring Security's CorsFilter, so the rejection carries
+        // its own CORS headers; without them the SPA sees a network error, not the 429.
+        String origin = request.getHeader("Origin");
+        response.addHeader("Vary", "Origin");
+        if (allowedOrigins.contains(origin)) {
+            response.setHeader("Access-Control-Allow-Origin", origin);
+            response.setHeader("Access-Control-Allow-Credentials", "true");
+        }
         response.setStatus(status.value());
         response.setHeader("Retry-After", retryAfterSeconds);
         response.setContentType("application/json");

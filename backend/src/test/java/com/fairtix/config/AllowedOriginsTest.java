@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Parsing {@code app.cors.allowed-origins} (exposure gate (a), RM:327).
  *
- * <p>Intended-red commit: {@code TBD}.
+ * <p>Intended-red commit: {@code 3f2146f}.
  */
 class AllowedOriginsTest {
 
