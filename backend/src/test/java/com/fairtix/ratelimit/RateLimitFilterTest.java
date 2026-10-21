@@ -10,16 +10,20 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.redisson.api.RRateLimiter;
 import org.redisson.api.RedissonClient;
+import org.redisson.client.RedisException;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -109,6 +113,65 @@ class RateLimitFilterTest {
         filter.doFilter(request, new MockHttpServletResponse(), chain);
 
         assertEquals("rate_limit:ip:" + REMOTE + ":/auth/login", limiterKey());
+    }
+
+    /** Brute-force protection must not disappear when Redis does (RM:316, decision D2). */
+    @Test
+    void redisError_onAuthTier_failsClosedWith503() throws Exception {
+        when(redisson.getRateLimiter(anyString())).thenThrow(new RedisException("connection refused"));
+        MockHttpServletRequest request = request("POST", "/auth/login");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, chain);
+
+        assertEquals(503, response.getStatus());
+        assertEquals("30", response.getHeader("Retry-After"));
+        assertTrue(response.getContentAsString().contains("\"code\":\"RATE_LIMIT_UNAVAILABLE\""));
+        verify(chain, never()).doFilter(any(), any());
+    }
+
+    @Test
+    void redisError_offAuthTier_failsOpen() throws Exception {
+        when(redisson.getRateLimiter(anyString())).thenThrow(new RedisException("connection refused"));
+        MockHttpServletRequest request = request("GET", "/api/events");
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        verify(chain).doFilter(eq(request), any());
+    }
+
+    @Test
+    void rateLimited_returns429WithRetryAfter() throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request("POST", "/auth/login"), response, chain);
+
+        assertEquals(429, response.getStatus());
+        assertEquals("60", response.getHeader("Retry-After"));
+        verify(chain, never()).doFilter(any(), any());
+    }
+
+    /** A CORS preflight carries no credentials and must not use up the caller's quota. */
+    @Test
+    void corsPreflight_isNotCounted() throws Exception {
+        MockHttpServletRequest request = request("OPTIONS", "/auth/login");
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        verifyNoInteractions(redisson);
+        verify(chain).doFilter(eq(request), any());
+    }
+
+    /** Health must answer (503 from the indicators) when Redis is down, not hang in the limiter. */
+    @Test
+    void actuatorHealth_isNotCounted() throws Exception {
+        MockHttpServletRequest request = request("GET", "/actuator/health");
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        verifyNoInteractions(redisson);
+        verify(chain).doFilter(eq(request), any());
     }
 
     private MockHttpServletRequest request(String method, String uri) {

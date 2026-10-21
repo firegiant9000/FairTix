@@ -49,6 +49,19 @@ class RedisBackedFeaturesIT extends PostgresIT {
     assertThat(redissonClient.<String>getBucket("probe").get()).isEqualTo("x");
   }
 
+  /**
+   * Redisson's defaults (3 s timeout, 3 retries 1.5 s apart) stall a request for
+   * seconds before RateLimitFilter can fail open or closed. Bound them.
+   */
+  @Test
+  void redissonCallsAreBounded() {
+    var server = redissonClient.getConfig().useSingleServer();
+    assertThat(server.getTimeout()).as("timeout ms").isEqualTo(1000);
+    assertThat(server.getRetryAttempts()).as("retry attempts").isEqualTo(1);
+    assertThat(server.getRetryInterval()).as("retry interval ms").isEqualTo(500);
+    assertThat(server.getConnectTimeout()).as("connect timeout ms").isEqualTo(2000);
+  }
+
   @Test
   void rateLimiter_rejectsAfterTheAuthLimit() {
     // ratelimit.auth defaults to 10 per minute.
