@@ -23,6 +23,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -111,10 +112,12 @@ public class StripeWebhookController {
                   || r.getStatus() == RefundStatus.PENDING_MANUAL)
               .findFirst()
               .ifPresent(refundRequest -> {
-                refundRequest.complete();
-                refundRepository.save(refundRequest);
-                auditService.log(SYSTEM_ACTOR, "REFUND_COMPLETED", "REFUND", refundRequest.getId(),
-                    "Completed via Stripe charge.refunded for paymentIntent=" + piId);
+                // Conditional update, not save(): finalise may hold this row and be
+                // writing stripe_refund_id, which a full-row save would wipe.
+                if (refundRepository.completeIfActive(refundRequest.getId(), Instant.now()) == 1) {
+                  auditService.log(SYSTEM_ACTOR, "REFUND_COMPLETED", "REFUND", refundRequest.getId(),
+                      "Completed via Stripe charge.refunded for paymentIntent=" + piId);
+                }
               })
       );
     });

@@ -4,6 +4,7 @@ import com.fairtix.audit.application.AuditService;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
+import com.stripe.exception.IdempotencyException;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Account;
 import com.stripe.model.AccountLink;
@@ -119,6 +120,10 @@ public class StripeConnectService {
           .build();
       AccountLink link = AccountLink.create(linkParams);
       return link.getUrl();
+    } catch (IdempotencyException e) {
+      // Contact email or slug changed within Stripe's key window.
+      throw new PaymentRetryConflictException(
+          "Stripe rejected a retry with changed parameters: " + e.getMessage(), e);
     } catch (StripeException e) {
       throw new RuntimeException(
           "Failed to create Stripe Connect onboarding link: " + e.getMessage(), e);

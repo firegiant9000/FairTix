@@ -5,6 +5,7 @@ import com.fairtix.refunds.domain.RefundStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -24,6 +25,20 @@ public interface RefundRepository extends JpaRepository<RefundRequest, UUID> {
   Page<RefundRequest> findAllByStatusOrderByCreatedAtDesc(RefundStatus status, Pageable pageable);
 
   List<RefundRequest> findAllByOrderId(UUID orderId);
+
+  /**
+   * Marks an active refund {@code COMPLETED} without rewriting the rest of the row.
+   * A full-entity save from the webhook would overwrite {@code stripe_refund_id}
+   * written concurrently by {@code RefundService.finalise}. Returns 0 if the refund
+   * was no longer active once its row lock was granted.
+   */
+  @Modifying
+  @Query("UPDATE RefundRequest r SET r.status = com.fairtix.refunds.domain.RefundStatus.COMPLETED, "
+      + "r.completedAt = :now, r.updatedAt = :now "
+      + "WHERE r.id = :id AND r.status IN (com.fairtix.refunds.domain.RefundStatus.APPROVED, "
+      + "com.fairtix.refunds.domain.RefundStatus.REQUESTED, "
+      + "com.fairtix.refunds.domain.RefundStatus.PENDING_MANUAL)")
+  int completeIfActive(@Param("id") UUID id, @Param("now") Instant now);
 
   /** Approved refunds on this event's orders whose money hasn't moved yet. */
   @Query("SELECT DISTINCT r.id FROM RefundRequest r, Ticket t "

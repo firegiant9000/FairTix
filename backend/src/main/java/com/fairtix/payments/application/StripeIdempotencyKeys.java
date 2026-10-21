@@ -27,19 +27,19 @@ public final class StripeIdempotencyKeys {
   }
 
   /**
-   * The same user paying for the same holds at the same amount gets the same
-   * intent back; a different hold set or amount is a different payment.
+   * The same user paying for the same holds at the same amount, routed the same
+   * way, gets the same intent back. A different hold set, amount, or Connect
+   * routing (account, fee, descriptor) is a different payment, so it gets a new
+   * key instead of Stripe's "same key, different parameters" error.
    */
-  public static String onlineIntent(UUID userId, Collection<UUID> holdIds, long amountCents) {
-    String holds = holdIds.stream().map(UUID::toString).sorted().distinct()
-        .collect(Collectors.joining(","));
-    return "fairtix-pi-" + sha256Hex(userId + "|" + holds + "|" + amountCents);
-  }
-
-  // Red-commit stub (review round 1, #4): ignores the Connect parameters.
   public static String onlineIntent(UUID userId, Collection<UUID> holdIds, long amountCents,
       StripePaymentService.ConnectContext connect) {
-    return onlineIntent(userId, holdIds, amountCents);
+    String holds = holdIds.stream().map(UUID::toString).sorted().distinct()
+        .collect(Collectors.joining(","));
+    String routing = connect == null ? "direct"
+        : connect.organizationId() + "|" + connect.connectedAccountId() + "|"
+            + connect.applicationFeeAmountCents() + "|" + connect.statementDescriptorSuffix();
+    return "fairtix-pi-" + sha256Hex(userId + "|" + holds + "|" + amountCents + "|" + routing);
   }
 
   /** One key per pending box-office sale row. */

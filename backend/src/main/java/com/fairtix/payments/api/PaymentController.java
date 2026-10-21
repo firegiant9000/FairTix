@@ -151,7 +151,8 @@ public class PaymentController {
       salesCapService.checkCanCharge(UUID.fromString(connect.organizationId()), amountCents);
     }
     String clientSecret = stripePaymentService.createPaymentIntent(amountCents, "usd", connect,
-        StripeIdempotencyKeys.onlineIntent(principal.getUserId(), request.holdIds(), amountCents));
+        StripeIdempotencyKeys.onlineIntent(principal.getUserId(), request.holdIds(), amountCents,
+            connect));
     return new PaymentIntentResponse(clientSecret);
   }
 

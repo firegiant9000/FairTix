@@ -52,7 +52,7 @@ import org.springframework.web.context.WebApplicationContext;
  * refund id, the webhook is sent and waits on that lock, then the third connection
  * commits.
  *
- * <p>Red on commit {@code RED_HASH}.
+ * <p>Red on commit {@code bf0dd29}.
  */
 @TestPropertySource(properties = {
     "stripe.enabled=true",

@@ -50,7 +50,8 @@ public class RefundExecutionService {
     }
     try {
       return execute(refund.getId(), userId);
-    } catch (RefundProviderException ex) {
+    } catch (RefundProviderException | RefundFinaliseException ex) {
+      // Already audited; the request itself succeeded and an admin can retry.
       return refund;
     }
   }
@@ -76,9 +77,15 @@ public class RefundExecutionService {
     for (UUID refundId : refundRepository.findExecutableIdsForEvent(eventId)) {
       try {
         execute(refundId, actorId);
-      } catch (RuntimeException ex) {
+      } catch (RefundProviderException | RefundFinaliseException ex) {
         log.error("Cancellation refund {} for event {} not executed: {}",
             refundId, eventId, ex.getMessage());
+      } catch (RuntimeException ex) {
+        // Failed before Stripe (e.g. the 180-day window): audit it so it can be found.
+        log.error("Cancellation refund {} for event {} not executed: {}",
+            refundId, eventId, ex.getMessage());
+        auditQuietly(() -> refundService.recordFailure(refundId, actorId, "REFUND_EXECUTION_FAILED",
+            "Cancellation refund for event " + eventId + " not executed: " + ex.getMessage()));
       }
     }
   }
@@ -93,15 +100,38 @@ public class RefundExecutionService {
       } catch (RuntimeException ex) {
         log.error("Stripe refund failed for refund {} (order {}): {}",
             refundId, plan.orderId(), ex.getMessage());
-        refundService.recordStripeFailure(refundId, actorId, ex.getMessage());
+        auditQuietly(() -> refundService.recordFailure(refundId, actorId, "REFUND_STRIPE_FAILED",
+            "Stripe refund call failed: " + ex.getMessage()));
         throw new RefundProviderException("The payment provider could not process this refund. "
             + "It stays approved and can be retried.", ex);
       }
     }
-    FinaliseResult result = refundService.finalise(refundId, stripeRefundId, actorId);
+    String movedRefundId = stripeRefundId;
+    FinaliseResult result;
+    try {
+      result = refundService.finalise(refundId, stripeRefundId, actorId);
+    } catch (RuntimeException ex) {
+      // The money may already have moved: record which Stripe refund, so the
+      // request can be found and retried even after the webhook completes it.
+      log.error("Refund {} finalise failed after stripeRefundId={}: {}",
+          refundId, stripeRefundId, ex.getMessage());
+      auditQuietly(() -> refundService.recordFailure(refundId, actorId, "REFUND_FINALISE_FAILED",
+          "stripeRefundId=" + movedRefundId + " finalise failed: " + ex.getMessage()));
+      throw new RefundFinaliseException("Refund bookkeeping failed after the provider call: "
+          + ex.getMessage() + ". It can be retried.", ex);
+    }
     if (result.applied()) {
       refundService.sendOutcomeEmail(result.refund());
     }
     return result.refund();
+  }
+
+  /** A failed audit write must never hide the original failure. */
+  private static void auditQuietly(Runnable audit) {
+    try {
+      audit.run();
+    } catch (RuntimeException auditFailure) {
+      log.error("Could not record refund failure audit: {}", auditFailure.getMessage());
+    }
   }
 }

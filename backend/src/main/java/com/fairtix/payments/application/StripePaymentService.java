@@ -232,9 +232,9 @@ public class StripePaymentService {
       if (existing != null) {
         log.info("createRefund: reusing Stripe refund {} for refund request {}",
             existing.getId(), refundId);
-        return existing;
+        return requireLive(existing);
       }
-      return Refund.create(builder.build(), keyed(StripeIdempotencyKeys.refund(refundId)));
+      return requireLive(Refund.create(builder.build(), keyed(StripeIdempotencyKeys.refund(refundId))));
     } catch (IdempotencyException e) {
       throw retryConflict(e);
     } catch (StripeException e) {
@@ -255,6 +255,19 @@ public class StripePaymentService {
         .filter(r -> r.getMetadata() != null && wanted.equals(r.getMetadata().get(REFUND_ID_METADATA)))
         .findFirst()
         .orElse(null);
+  }
+
+  /**
+   * A failed or canceled Stripe refund returned no money; treat it as a failure,
+   * not as the refund (a replayed key would return the same dead object).
+   */
+  private static Refund requireLive(Refund refund) {
+    String status = refund.getStatus();
+    if ("failed".equals(status) || "canceled".equals(status)) {
+      throw new IllegalStateException(
+          "Stripe refund " + refund.getId() + " is " + status + "; it needs manual follow-up");
+    }
+    return refund;
   }
 
   private static RequestOptions keyed(String idempotencyKey) {

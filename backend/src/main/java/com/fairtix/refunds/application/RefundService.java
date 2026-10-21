@@ -322,13 +322,14 @@ public class RefundService {
   }
 
   /**
-   * Records a failed Stripe refund call. Its own short transaction, so the row is
-   * written on the caller's connection rather than a second pooled one.
+   * Records a failed refund execution step ({@code REFUND_STRIPE_FAILED},
+   * {@code REFUND_FINALISE_FAILED}, {@code REFUND_EXECUTION_FAILED}). Its own short
+   * transaction, so the row is written on the caller's connection rather than a
+   * second pooled one.
    */
   @Transactional
-  public void recordStripeFailure(UUID refundId, UUID actorId, String message) {
-    auditService.logInCurrentTransaction(actorId, "REFUND_STRIPE_FAILED", "REFUND", refundId,
-        "Stripe refund call failed: " + message);
+  public void recordFailure(UUID refundId, UUID actorId, String action, String details) {
+    auditService.logInCurrentTransaction(actorId, action, "REFUND", refundId, details);
   }
 
   /** The customer email for a refund that {@link #finalise} just applied. */
