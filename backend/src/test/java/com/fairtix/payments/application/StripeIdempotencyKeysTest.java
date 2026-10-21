@@ -12,6 +12,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * logical operation must always produce the same key, so a retry after a
  * commit failure reaches Stripe as a replay rather than a second charge or
  * refund.
+ *
+ * <p>Red on commit {@code 1178a4b}: no Stripe create carried a key.
  */
 class StripeIdempotencyKeysTest {
 

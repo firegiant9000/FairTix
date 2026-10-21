@@ -132,7 +132,9 @@ class StripePaymentServiceTest {
     }
   }
 
-  // --- Exposure gate (b): idempotency keys (RM:344) ---
+  // --- Exposure gate (b): idempotency keys (RM:344). Red on commit 1178a4b:
+  // no key was sent, requestId went into keyed params, and Stripe's idempotency
+  // error surfaced as a generic RuntimeException (500). ---
 
   @Test
   void createRefund_sendsRefundKey_noRequestIdMetadata() throws Exception {

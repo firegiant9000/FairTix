@@ -27,7 +27,7 @@ class StripeConnectServiceTest {
   /**
    * A failed AccountLink.create used to roll back the new account id, so the
    * retry created a second connected account. The account create is now keyed
-   * by organization (exposure gate (b)).
+   * by organization (exposure gate (b)). Red on commit {@code 1178a4b}.
    */
   @Test
   void createOnboardingLink_sendsAccountKey() throws Exception {
