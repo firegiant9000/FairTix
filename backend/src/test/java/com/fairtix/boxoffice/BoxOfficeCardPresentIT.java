@@ -41,7 +41,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * the pending sale commit, with no transaction (and no seat lock) open, under a key
  * derived from the sale row.
  *
- * <p>Red on commit {@code RED_HASH}: the intent was created inside the
+ * <p>Red on commit {@code 5da020d}: the intent was created inside the
  * {@code @Transactional} method while the {@code PESSIMISTIC_WRITE} seat locks were
  * held, with no idempotency key, and before the sale row existed.
  * {@code stripeFailure_releasesSeatsAndSale} is a guard for the compensating path.
