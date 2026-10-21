@@ -75,7 +75,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
                 // Invalid/expired token — fall through to IP-based limiting
             }
         }
-        return "ip:" + resolveIp(request);
+        // getRemoteAddr() is already the client address: ForwardedHeadersConfig's
+        // RemoteIpValve resolves X-Forwarded-For against the trusted proxies first.
+        return "ip:" + request.getRemoteAddr();
     }
 
     // Same order as JwtAuthenticationFilter: the auth cookie (what the browser
@@ -93,14 +95,5 @@ public class RateLimitFilter extends OncePerRequestFilter {
             return authHeader.substring(7);
         }
         return null;
-    }
-
-    private String resolveIp(HttpServletRequest request) {
-        String ip = request.getHeader("X-Forwarded-For");
-        if (ip != null && !ip.isEmpty()) {
-            // Take the first IP if multiple are present (client IP)
-            return ip.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
     }
 }
