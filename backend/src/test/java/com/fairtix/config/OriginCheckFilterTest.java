@@ -191,7 +191,14 @@ class OriginCheckFilterTest {
     assertThat(OriginCheckFilter.normalize("")).isNull();
   }
 
-  // ---- Review round 1 on #264 ----
+  // ---- Review round 1 on #264 (intended red: 2f82fb5) ----
+
+  /** Userinfo tricks still resolve to the real host, never the part before the @. */
+  @Test
+  void normalize_userinfoDoesNotSpoofTheHost() {
+    assertThat(OriginCheckFilter.normalize("http://localhost:3000@evil.example/x"))
+        .isEqualTo("http://evil.example");
+  }
 
   /** Browsers leave characters like | { } ^ unescaped in a Referer, which java.net.URI rejects. */
   @Test

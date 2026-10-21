@@ -89,8 +89,22 @@ public class OriginCheckFilter extends OncePerRequestFilter {
     if (url == null || url.isBlank()) {
       return null;
     }
+    // Only scheme://authority matters. Browsers leave characters such as | { } ^
+    // unescaped in a Referer's path and query, which java.net.URI would reject.
+    String value = url.trim();
+    int authorityStart = value.indexOf("://");
+    if (authorityStart > 0) {
+      int end = value.length();
+      for (char c : new char[] {'/', '?', '#'}) {
+        int i = value.indexOf(c, authorityStart + 3);
+        if (i >= 0 && i < end) {
+          end = i;
+        }
+      }
+      value = value.substring(0, end);
+    }
     try {
-      URI uri = new URI(url.trim());
+      URI uri = new URI(value);
       String scheme = uri.getScheme();
       String host = uri.getHost();
       if (scheme == null || host == null) {

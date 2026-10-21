@@ -70,7 +70,7 @@ class SecurityHeadersTest {
    * Review round 1: the print views are HTML opened in a tab, laid out by an inline
    * {@code <style>}; {@code default-src 'none'} stripped it (and the settlement's
    * signature lines). They keep everything else locked down. The header is written
-   * on the 401 too, so no org fixture is needed.
+   * on the 401 too, so no org fixture is needed. Intended red: {@code 2f82fb5}.
    */
   @ParameterizedTest
   @ValueSource(strings = {

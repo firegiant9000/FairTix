@@ -21,7 +21,10 @@ import org.springframework.security.web.header.writers.DelegatingRequestMatcherH
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy;
 import org.springframework.security.web.header.writers.StaticHeadersWriter;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.AndRequestMatcher;
+import org.springframework.security.web.util.matcher.NegatedRequestMatcher;
 import org.springframework.security.web.util.matcher.OrRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.filter.CorsFilter;
 
@@ -30,6 +33,20 @@ import org.springframework.web.filter.CorsFilter;
 public class SecurityConfig {
 
   private static final String API_CSP = "default-src 'none'; frame-ancestors 'none'";
+  private static final String PRINT_VIEW_CSP =
+      "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'";
+
+  private static final RequestMatcher API_PATHS = new OrRequestMatcher(
+      PathPatternRequestMatcher.withDefaults().matcher("/api/**"),
+      PathPatternRequestMatcher.withDefaults().matcher("/auth/**"));
+
+  /** HTML opened in a browser tab for print-to-PDF (ReportsController, WillCallController). */
+  private static final RequestMatcher PRINT_VIEWS = new OrRequestMatcher(
+      PathPatternRequestMatcher.withDefaults()
+          .matcher(HttpMethod.GET, "/api/organizations/*/reports/events/*/settlement.html"),
+      PathPatternRequestMatcher.withDefaults()
+          .matcher(HttpMethod.GET, "/api/organizations/*/reports/events/*/dos.html"),
+      PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/organizer/will-call/print"));
 
   private final JwtAuthenticationFilter jwtFilter;
   private final StepUpFilter stepUpFilter;
@@ -80,12 +97,13 @@ public class SecurityConfig {
                 .maxAgeInSeconds(31_536_000)
                 .includeSubDomains(true))
             // JSON only, so nothing may load or frame it; swagger-ui needs scripts and
-            // is left out.
+            // is left out. The print views are HTML styled by an inline <style>.
             .addHeaderWriter(new DelegatingRequestMatcherHeaderWriter(
-                new OrRequestMatcher(
-                    PathPatternRequestMatcher.withDefaults().matcher("/api/**"),
-                    PathPatternRequestMatcher.withDefaults().matcher("/auth/**")),
-                new StaticHeadersWriter("Content-Security-Policy", API_CSP))))
+                new AndRequestMatcher(API_PATHS, new NegatedRequestMatcher(PRINT_VIEWS)),
+                new StaticHeadersWriter("Content-Security-Policy", API_CSP)))
+            .addHeaderWriter(new DelegatingRequestMatcherHeaderWriter(
+                PRINT_VIEWS,
+                new StaticHeadersWriter("Content-Security-Policy", PRINT_VIEW_CSP))))
         .authorizeHttpRequests(auth -> auth
             .requestMatchers("/actuator/health", "/actuator/info").permitAll()
             .requestMatchers("/_health/deep").hasRole("ADMIN")
