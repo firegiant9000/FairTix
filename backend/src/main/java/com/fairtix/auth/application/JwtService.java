@@ -41,6 +41,9 @@ public class JwtService {
     this.refreshTokenRepository = refreshTokenRepository;
   }
 
+  void validateSecret() {
+  }
+
   private SecretKey getSigningKey() {
     return Keys.hmacShaKeyFor(SECRET.getBytes());
   }
