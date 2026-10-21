@@ -178,6 +178,60 @@ class RateLimitFilterTest {
         verify(chain).doFilter(eq(request), any());
     }
 
+    // ---- Review round 1 on #263 ----
+
+    /**
+     * Registration needs no captcha and returns a cookie at once, so a per-account key
+     * on the credential endpoints lets one IP mint fresh login buckets.
+     */
+    @Test
+    void credentialEndpoint_withValidCookie_isKeyedByIp() throws Exception {
+        MockHttpServletRequest request = request("POST", "/auth/login");
+        request.setCookies(new Cookie("fairtix_token", "cookie-jwt"));
+        Claims claims = claimsFor("user-1");
+        when(jwtService.extractAllClaims("cookie-jwt")).thenReturn(claims);
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        assertEquals("rate_limit:ip:" + REMOTE + ":/auth/login", limiterKey());
+    }
+
+    /** Spring MVC routes on the decoded path, so the limiter must key on it too. */
+    @Test
+    void percentEncodedPath_sharesTheDecodedBucket() throws Exception {
+        filter.doFilter(request("POST", "/auth/l%6fgin"), new MockHttpServletResponse(), chain);
+
+        assertEquals("rate_limit:ip:" + REMOTE + ":/auth/login", limiterKey());
+    }
+
+    @Test
+    void percentEncodedCredentialPath_stillFailsClosed() throws Exception {
+        when(redisson.getRateLimiter(anyString())).thenThrow(new RedisException("connection refused"));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request("POST", "/%61uth/login"), response, chain);
+
+        assertEquals(503, response.getStatus());
+    }
+
+    /** Fail closed only where the limit is the brute-force defence; /auth/me hydrates every page. */
+    @Test
+    void redisError_onAuthMe_failsOpen() throws Exception {
+        when(redisson.getRateLimiter(anyString())).thenThrow(new RedisException("connection refused"));
+        MockHttpServletRequest request = request("GET", "/auth/me");
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        verify(chain).doFilter(eq(request), any());
+    }
+
+    @Test
+    void healthLookalikePath_isCounted() throws Exception {
+        filter.doFilter(request("GET", "/actuator/healthz"), new MockHttpServletResponse(), chain);
+
+        verify(redisson).getRateLimiter(anyString());
+    }
+
     private MockHttpServletRequest request(String method, String uri) {
         MockHttpServletRequest request = new MockHttpServletRequest(method, uri);
         request.setRemoteAddr(REMOTE);
