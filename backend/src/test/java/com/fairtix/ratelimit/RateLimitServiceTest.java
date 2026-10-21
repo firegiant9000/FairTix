@@ -88,6 +88,22 @@ public class RateLimitServiceTest {
         assertFalse(rateLimitService.isAllowed(ipKey, url));
     }
 
+    /**
+     * The keys expire, so a limiter that existed at isExists() can be gone by
+     * tryAcquire(), which then throws "RateLimiter is not initialized" (a 503 on the
+     * credential endpoints). trySetRate is set-if-absent: call it every time.
+     * Review round 2 on #263.
+     */
+    @Test
+    public void isAllowed_initialisesTheRateEvenWhenTheLimiterExists() {
+        when(rateLimiter.isExists()).thenReturn(true);
+        when(rateLimiter.tryAcquire(1)).thenReturn(true);
+
+        rateLimitService.isAllowed("ip:1.2.3.4", "/auth/login");
+
+        verify(rateLimiter).trySetRate(RateType.OVERALL, 10L, 1L, RateIntervalUnit.MINUTES);
+    }
+
     @Test
     public void testResolveLimitCoversAllEndpointCategories() {
         assertEquals(10, rateLimitService.resolveLimit("/api/auth/login"));

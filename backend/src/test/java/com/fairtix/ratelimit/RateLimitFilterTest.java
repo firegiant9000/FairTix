@@ -7,6 +7,8 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.redisson.api.RRateLimiter;
 import org.redisson.api.RedissonClient;
@@ -231,6 +233,45 @@ class RateLimitFilterTest {
         filter.doFilter(request("GET", "/actuator/healthz"), new MockHttpServletResponse(), chain);
 
         verify(redisson).getRateLimiter(anyString());
+    }
+
+    // ---- Review round 2 on #263 ----
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "/auth/login", "/auth/register", "/auth/verify", "/auth/resend-verification",
+        "/auth/forgot-password", "/auth/reset-password", "/auth/step-up/verify"})
+    void everyCredentialEndpoint_withValidCookie_isKeyedByIp(String path) throws Exception {
+        MockHttpServletRequest request = request("POST", path);
+        request.setCookies(new Cookie("fairtix_token", "cookie-jwt"));
+        Claims claims = claimsFor("user-1");
+        when(jwtService.extractAllClaims("cookie-jwt")).thenReturn(claims);
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        assertEquals("rate_limit:ip:" + REMOTE + ":" + path, limiterKey());
+    }
+
+    /**
+     * Refresh needs a high-entropy refresh cookie, so its limit isn't a brute-force
+     * defence; the SPA treats any refresh failure as a sign-out.
+     */
+    @Test
+    void redisError_onRefresh_failsOpen() throws Exception {
+        when(redisson.getRateLimiter(anyString())).thenThrow(new RedisException("connection refused"));
+        MockHttpServletRequest request = request("POST", "/auth/refresh");
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        verify(chain).doFilter(eq(request), any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/auth/login;jsessionid=x", "//auth/login"})
+    void pathVariants_shareTheLoginBucket(String uri) throws Exception {
+        filter.doFilter(request("POST", uri), new MockHttpServletResponse(), chain);
+
+        assertEquals("rate_limit:ip:" + REMOTE + ":/auth/login", limiterKey());
     }
 
     private MockHttpServletRequest request(String method, String uri) {
