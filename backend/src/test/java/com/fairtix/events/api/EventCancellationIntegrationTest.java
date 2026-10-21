@@ -56,6 +56,7 @@ class EventCancellationIntegrationTest {
     private EmailService emailService;
 
     private User testUser;
+    private UUID adminId;
     private Event testEvent;
     private Seat testSeat;
     private Ticket testTicket;
@@ -67,6 +68,13 @@ class EventCancellationIntegrationTest {
         testUser.setPassword("$2a$10$dummyhashfortest");
         testUser.setEmailVerified(true);
         testUser = userRepository.save(testUser);
+
+        // The caller becomes refund_requests.reviewed_by, which references users(id);
+        // EventController passes the authenticated user's id.
+        User admin = new User();
+        admin.setEmail(UUID.randomUUID() + "@cancellation-admin.test");
+        admin.setPassword("$2a$10$dummyhashfortest");
+        adminId = userRepository.save(admin).getId();
 
         testEvent = eventRepository.save(
                 new Event("Cancellation Test Concert", null, Instant.now().plusSeconds(86400), (UUID) null));
@@ -83,7 +91,7 @@ class EventCancellationIntegrationTest {
 
     @Test
     void cancelEvent_withTicketHolder_cancelsTicketAndSendsEmail() {
-        eventService.cancelEvent(testEvent.getId(), UUID.randomUUID(), "Venue unavailable");
+        eventService.cancelEvent(testEvent.getId(), adminId, "Venue unavailable");
 
         Ticket refreshed = ticketRepository.findById(testTicket.getId()).orElseThrow();
         // COMPLETED orders trigger processRefund → REFUNDED; no-order tickets become CANCELLED
@@ -102,7 +110,7 @@ class EventCancellationIntegrationTest {
         SeatHold activeHold = seatHoldRepository.save(
                 new SeatHold(holdSeat, testUser.getId(), Instant.now().plusSeconds(600)));
 
-        eventService.cancelEvent(testEvent.getId(), UUID.randomUUID(), "Venue unavailable");
+        eventService.cancelEvent(testEvent.getId(), adminId, "Venue unavailable");
 
         SeatHold refreshed = seatHoldRepository.findById(activeHold.getId()).orElseThrow();
         assertThat(refreshed.getStatus()).isEqualTo(HoldStatus.RELEASED);

@@ -4,6 +4,9 @@ import com.fairtix.audit.domain.AuditLog;
 import com.fairtix.audit.infrastructure.AuditLogRepository;
 import com.fairtix.fraud.domain.SuspiciousFlagType;
 import com.fairtix.fraud.infrastructure.SuspiciousFlagRepository;
+import com.fairtix.users.domain.User;
+import com.fairtix.users.infrastructure.UserRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -26,7 +29,19 @@ class BehaviorAnalysisServiceTest {
     @Autowired
     private SuspiciousFlagRepository flagRepository;
 
-    private final UUID userId = UUID.fromString("cc000000-0000-0000-0000-000000000001");
+    @Autowired
+    private UserRepository userRepository;
+
+    private UUID userId;
+
+    @BeforeEach
+    void setUp() {
+        // suspicious_flags.user_id references users(id).
+        User user = new User();
+        user.setEmail("behaviour@test.com");
+        user.setPassword("$2a$10$dummyhashfortest");
+        userId = userRepository.save(user).getId();
+    }
 
     private void createHoldAuditLogs(UUID uid, int count) {
         for (int i = 0; i < count; i++) {

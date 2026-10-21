@@ -3,6 +3,9 @@ package com.fairtix.fraud.application;
 import com.fairtix.fraud.domain.SuspiciousFlagSeverity;
 import com.fairtix.fraud.domain.SuspiciousFlagType;
 import com.fairtix.fraud.infrastructure.SuspiciousFlagRepository;
+import com.fairtix.users.domain.User;
+import com.fairtix.users.infrastructure.UserRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -22,7 +25,19 @@ class SuspiciousFlagServiceTest {
     @Autowired
     private SuspiciousFlagRepository flagRepository;
 
-    private final UUID userId = UUID.fromString("aa000000-0000-0000-0000-000000000001");
+    @Autowired
+    private UserRepository userRepository;
+
+    private UUID userId;
+
+    @BeforeEach
+    void setUp() {
+        // suspicious_flags.user_id references users(id).
+        User user = new User();
+        user.setEmail("flagged@test.com");
+        user.setPassword("$2a$10$dummyhashfortest");
+        userId = userRepository.save(user).getId();
+    }
 
     @Test
     void flagCreatedSuccessfully() {

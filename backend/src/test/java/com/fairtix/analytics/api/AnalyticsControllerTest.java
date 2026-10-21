@@ -2,12 +2,14 @@ package com.fairtix.analytics.api;
 
 import com.fairtix.events.application.EventService;
 import com.fairtix.inventory.application.SeatService;
+import com.fairtix.support.TestDatabase;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.transaction.BeforeTransaction;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,7 +39,7 @@ class AnalyticsControllerTest {
   private SeatService seatService;
 
   @Autowired
-  private JdbcTemplate jdbcTemplate;
+  private DataSource dataSource;
 
   private MockMvc mockMvc;
 
@@ -46,32 +48,19 @@ class AnalyticsControllerTest {
     mockMvc = MockMvcBuilders.webAppContextSetup(context)
         .apply(springSecurity())
         .build();
+  }
 
-    // H2 is shared across test classes within a JVM. Some upstream integration
-    // suites (notably QueueAdmissionEmailIntegrationTest) are intentionally
-    // non-@Transactional so the scheduler's commit is visible, which means
-    // they leave committed events/seats/orders behind. Wipe the analytics
-    // surface deterministically before each assertion. REFERENTIAL_INTEGRITY
-    // FALSE bypasses the FK web (orders → events, tickets → seats, etc.)
-    // without forcing us to enumerate the exact deletion order.
-    jdbcTemplate.execute("SET REFERENTIAL_INTEGRITY FALSE");
-    try {
-      jdbcTemplate.execute("DELETE FROM seat_holds");
-      jdbcTemplate.execute("DELETE FROM tickets");
-      jdbcTemplate.execute("DELETE FROM order_holds");
-      jdbcTemplate.execute("DELETE FROM orders");
-      jdbcTemplate.execute("DELETE FROM queue_entries");
-      jdbcTemplate.execute("DELETE FROM seats");
-      jdbcTemplate.execute("DELETE FROM event_performers");
-      jdbcTemplate.execute("DELETE FROM events");
-      // Auth tests commit users non-transactionally; analytics asserts user
-      // counts so we wipe them too. Dependents (audit_log, notification_prefs,
-      // organization_members, etc.) keep orphan user_id refs — those columns
-      // don't affect analytics totals and the FK check is back on after this.
-      jdbcTemplate.execute("DELETE FROM users");
-    } finally {
-      jdbcTemplate.execute("SET REFERENTIAL_INTEGRITY TRUE");
-    }
+  /**
+   * The test database is shared across test classes within a JVM. Some suites
+   * (notably QueueAdmissionEmailIntegrationTest) are intentionally
+   * non-@Transactional so the scheduler's commit is visible, and auth tests commit
+   * users, so committed rows are left behind. Analytics asserts totals, so empty
+   * every table before the test transaction opens (TRUNCATE inside it would hold
+   * ACCESS EXCLUSIVE locks that REQUIRES_NEW audit writes then wait on).
+   */
+  @BeforeTransaction
+  void emptyDatabase() {
+    TestDatabase.truncateAllTables(dataSource);
   }
 
   @Test

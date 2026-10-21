@@ -75,6 +75,19 @@ class RefundServiceTest {
         riskScoreRepository.save(new RiskScore(user.getId(), score, tier, 0, "test"));
     }
 
+    /** A further order's ticket needs its own seat: one active ticket per seat (V46). */
+    private Seat anotherSeat() {
+        return seatRepository.save(new Seat(event, "Floor", "A", "2", new BigDecimal("30.00")));
+    }
+
+    /** refund_requests.reviewed_by references users(id). */
+    private UUID newAdmin() {
+        User admin = new User();
+        admin.setEmail("refundadmin_" + UUID.randomUUID() + "@test.com");
+        admin.setPassword("$2a$10$dummyhashfortest");
+        return userRepository.save(admin).getId();
+    }
+
     @Test
     void criticalTierUser_isRoutedToManualReview_andAuditEventEmitted() {
         setRiskScore(80, RiskTier.CRITICAL);
@@ -116,7 +129,7 @@ class RefundServiceTest {
     void lowTierUser_overThreshold_remainsRequested() {
         order = orderRepository.save(
             new Order(user, List.of(), new BigDecimal("100.00"), "USD", OrderStatus.COMPLETED));
-        ticketRepository.save(new Ticket(order, user, seat, event, new BigDecimal("100.00")));
+        ticketRepository.save(new Ticket(order, user, anotherSeat(), event, new BigDecimal("100.00")));
 
         RefundRequest refund = refundService.requestRefund(user.getId(), order.getId(), "Test refund");
 
@@ -127,7 +140,7 @@ class RefundServiceTest {
     void requestRefund_withPendingOrder_throwsRefundNotEligible() {
         Order pendingOrder = orderRepository.save(
             new Order(user, List.of(), new BigDecimal("30.00"), "USD", OrderStatus.PENDING));
-        ticketRepository.save(new Ticket(pendingOrder, user, seat, event, new BigDecimal("30.00")));
+        ticketRepository.save(new Ticket(pendingOrder, user, anotherSeat(), event, new BigDecimal("30.00")));
 
         assertThatThrownBy(() -> refundService.requestRefund(user.getId(), pendingOrder.getId(), "Test"))
             .isInstanceOf(RefundNotEligibleException.class)
@@ -138,7 +151,7 @@ class RefundServiceTest {
     void requestRefund_whenPendingRefundExists_throwsRefundNotEligible() {
         Order highOrder = orderRepository.save(
             new Order(user, List.of(), new BigDecimal("75.00"), "USD", OrderStatus.COMPLETED));
-        ticketRepository.save(new Ticket(highOrder, user, seat, event, new BigDecimal("75.00")));
+        ticketRepository.save(new Ticket(highOrder, user, anotherSeat(), event, new BigDecimal("75.00")));
         refundService.requestRefund(user.getId(), highOrder.getId(), "First request");
 
         assertThatThrownBy(() -> refundService.requestRefund(user.getId(), highOrder.getId(), "Duplicate"))
@@ -161,18 +174,18 @@ class RefundServiceTest {
     void reviewRefund_approve_completesRefundAndReleasesSeats() {
         Order highOrder = orderRepository.save(
             new Order(user, List.of(), new BigDecimal("75.00"), "USD", OrderStatus.COMPLETED));
-        ticketRepository.save(new Ticket(highOrder, user, seat, event, new BigDecimal("75.00")));
-        seat.setStatus(SeatStatus.SOLD);
-        seatRepository.save(seat);
+        Seat highSeat = anotherSeat();
+        ticketRepository.save(new Ticket(highOrder, user, highSeat, event, new BigDecimal("75.00")));
+        highSeat.setStatus(SeatStatus.SOLD);
+        seatRepository.save(highSeat);
 
         RefundRequest refund = refundService.requestRefund(user.getId(), highOrder.getId(), "Please refund");
         assertThat(refund.getStatus()).isEqualTo(RefundStatus.REQUESTED);
 
-        UUID adminId = UUID.randomUUID();
-        RefundRequest result = refundService.reviewRefund(adminId, refund.getId(), true, "Approved");
+        RefundRequest result = refundService.reviewRefund(newAdmin(), refund.getId(), true, "Approved");
 
         assertThat(result.getStatus()).isEqualTo(RefundStatus.COMPLETED);
-        Seat reloaded = seatRepository.findById(seat.getId()).orElseThrow();
+        Seat reloaded = seatRepository.findById(highSeat.getId()).orElseThrow();
         assertThat(reloaded.getStatus()).isEqualTo(SeatStatus.AVAILABLE);
     }
 
@@ -180,11 +193,10 @@ class RefundServiceTest {
     void reviewRefund_reject_setsRejectedStatus() {
         Order highOrder = orderRepository.save(
             new Order(user, List.of(), new BigDecimal("75.00"), "USD", OrderStatus.COMPLETED));
-        ticketRepository.save(new Ticket(highOrder, user, seat, event, new BigDecimal("75.00")));
+        ticketRepository.save(new Ticket(highOrder, user, anotherSeat(), event, new BigDecimal("75.00")));
 
         RefundRequest refund = refundService.requestRefund(user.getId(), highOrder.getId(), "Please refund");
-        UUID adminId = UUID.randomUUID();
-        RefundRequest result = refundService.reviewRefund(adminId, refund.getId(), false, "Policy violation");
+        RefundRequest result = refundService.reviewRefund(newAdmin(), refund.getId(), false, "Policy violation");
 
         assertThat(result.getStatus()).isEqualTo(RefundStatus.REJECTED);
     }

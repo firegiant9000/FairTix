@@ -7,6 +7,12 @@ import com.fairtix.fraud.domain.SuspiciousFlagSeverity;
 import com.fairtix.fraud.domain.SuspiciousFlagType;
 import com.fairtix.fraud.infrastructure.RiskScoreRepository;
 import com.fairtix.fraud.infrastructure.SuspiciousFlagRepository;
+import com.fairtix.users.domain.User;
+import com.fairtix.users.infrastructure.UserRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+import org.junit.jupiter.api.BeforeEach;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -29,7 +35,29 @@ class RiskScoringServiceTest {
     @Autowired
     private RiskScoreRepository riskScoreRepository;
 
-    private final UUID userId = UUID.fromString("bb000000-0000-0000-0000-000000000001");
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @PersistenceContext
+    private EntityManager entityManager;
+
+    private UUID userId;
+
+    @BeforeEach
+    void setUp() {
+        // suspicious_flags.user_id and user_risk_scores.user_id reference users(id).
+        User user = new User();
+        user.setEmail("risky@test.com");
+        user.setPassword("$2a$10$dummyhashfortest");
+        userId = userRepository.saveAndFlush(user).getId();
+        // Older than fraud.score.new-account-hours (24), so the expected scores come from
+        // flags only, without the NEW_ACCOUNT points. Clear so the service reloads it.
+        jdbcTemplate.update("UPDATE users SET created_at = now() - interval '30 days' WHERE id = ?", userId);
+        entityManager.clear();
+    }
 
     @Test
     void noFlagsProducesZeroScoreAndLowTier() {

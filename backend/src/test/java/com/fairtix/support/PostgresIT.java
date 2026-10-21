@@ -1,18 +1,12 @@
 package com.fairtix.support;
 
 import com.fairtix.config.TestRedisConfig;
-import java.util.List;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -39,7 +33,8 @@ import org.testcontainers.utility.DockerImageName;
  * builds the Redisson client from {@code spring.data.redis.host}/{@code port}.
  *
  * <p>Isolation: every IT starts with the migrated schema, no rows and an empty Redis.
- * Seed rows from the migrations are removed right after Flyway runs, and after each
+ * Seed rows from the migrations are removed right after Flyway runs
+ * ({@link com.fairtix.config.TestFlywayConfig}), and after each
  * test every table is truncated and Redis is flushed. A {@code @Transactional} test's
  * rollback is not enough on its own, because {@code REQUIRES_NEW} writes (for example
  * {@code AuditService.log}) commit independently, and Redis writes are not
@@ -47,7 +42,6 @@ import org.testcontainers.utility.DockerImageName;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @ActiveProfiles("it")
-@Import(PostgresIT.EmptyDatabaseAfterMigration.class)
 public abstract class PostgresIT {
 
   /** Pinned, and the Debian (glibc) variant like docker-compose, so collation matches. */
@@ -80,7 +74,7 @@ public abstract class PostgresIT {
   @AfterEach
   void truncateIfNoTestTransaction() {
     if (!TestTransaction.isActive()) {
-      truncateAllTables(dataSource);
+      TestDatabase.truncateAllTables(dataSource);
       redissonClient.getKeys().flushall();
     }
   }
@@ -88,31 +82,8 @@ public abstract class PostgresIT {
   /** Transactional tests: runs after the rollback, so the TRUNCATE neither blocks nor rolls back. */
   @AfterTransaction
   void truncateAfterRollback() {
-    truncateAllTables(dataSource);
+    TestDatabase.truncateAllTables(dataSource);
     redissonClient.getKeys().flushall();
   }
 
-  static void truncateAllTables(DataSource dataSource) {
-    JdbcTemplate jdbc = new JdbcTemplate(dataSource);
-    List<String> tables = jdbc.queryForList(
-        "SELECT format('%I.%I', schemaname, tablename) FROM pg_tables"
-            + " WHERE schemaname = 'public' AND tablename <> 'flyway_schema_history'",
-        String.class);
-    if (!tables.isEmpty()) {
-      jdbc.execute("TRUNCATE TABLE " + String.join(", ", tables) + " RESTART IDENTITY CASCADE");
-    }
-  }
-
-  /** Migrates as usual, then removes the migrations' seed rows. */
-  @TestConfiguration(proxyBeanMethods = false)
-  static class EmptyDatabaseAfterMigration {
-
-    @Bean
-    FlywayMigrationStrategy migrateThenTruncate() {
-      return flyway -> {
-        flyway.migrate();
-        truncateAllTables(flyway.getConfiguration().getDataSource());
-      };
-    }
-  }
 }

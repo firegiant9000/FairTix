@@ -5,6 +5,8 @@ import com.fairtix.events.dto.UpdateEventRequest;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.performers.domain.Performer;
 import com.fairtix.performers.infrastructure.PerformerRepository;
+import com.fairtix.users.domain.User;
+import com.fairtix.users.infrastructure.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +26,7 @@ class EventServiceTest {
   @Autowired private EventService eventService;
   @Autowired private EventRepository eventRepository;
   @Autowired private PerformerRepository performerRepository;
+  @Autowired private UserRepository userRepository;
 
   private UUID organizerId;
   private Event event;
@@ -32,7 +35,11 @@ class EventServiceTest {
 
   @BeforeEach
   void setUp() {
-    organizerId = UUID.randomUUID();
+    // events.organizer_id references users(id).
+    User organizer = new User();
+    organizer.setEmail("organizer@test.com");
+    organizer.setPassword("$2a$10$dummyhashfortest");
+    organizerId = userRepository.save(organizer).getId();
     event = eventRepository.save(
         new Event("Test Event", null, Instant.now().plusSeconds(86400), organizerId));
     performer1 = performerRepository.save(new Performer("Artist One", "Rock", null, null));
