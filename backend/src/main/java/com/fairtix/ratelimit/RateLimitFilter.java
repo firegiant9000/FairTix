@@ -16,6 +16,7 @@ import org.springframework.web.util.UrlPathHelper;
 import org.springframework.http.HttpStatus;
 import io.jsonwebtoken.Claims;
 import com.fairtix.auth.application.JwtService;
+import com.fairtix.config.AllowedOrigins;
 
 import java.io.IOException;
 
@@ -34,10 +35,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
     private final RateLimitService rateLimitService;
+    private final AllowedOrigins allowedOrigins;
 
-    public RateLimitFilter(RateLimitService rateLimitService, JwtService jwtService) {
+    public RateLimitFilter(RateLimitService rateLimitService, JwtService jwtService,
+            AllowedOrigins allowedOrigins) {
         this.rateLimitService = rateLimitService;
         this.jwtService = jwtService;
+        this.allowedOrigins = allowedOrigins;
     }
 
     @Override
