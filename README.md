@@ -180,8 +180,8 @@ Trivy image scan.
 - Ten `@Scheduled` jobs run on every replica; there is no leader election.
 - Stripe calls carry no idempotency keys and run inside database transactions.
 - With Redis down, the rate limiter fails closed (503) on the credential
-  endpoints (login, registration, refresh, verification, password reset,
-  step-up) and open everywhere else.
+  endpoints (login, registration, verification, password reset, step-up) and
+  open everywhere else.
 - No end-to-end browser tests, no load test, no metrics or tracing.
 
 ## Team and contributions

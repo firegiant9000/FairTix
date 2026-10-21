@@ -17,7 +17,6 @@ public class RateLimitService {
     private static final Set<String> CREDENTIAL_ENDPOINTS = Set.of(
         "/auth/login",
         "/auth/register",
-        "/auth/refresh",
         "/auth/verify",
         "/auth/resend-verification",
         "/auth/forgot-password",
@@ -57,10 +56,9 @@ public class RateLimitService {
 
         RRateLimiter limiter = redissonClient.getRateLimiter(redisKey);
 
-        if (!limiter.isExists()) {
-            int limit = resolveLimit(url);
-            limiter.trySetRate(RateType.OVERALL, limit, 1, RateIntervalUnit.MINUTES);
-        }
+        // Set-if-absent on every call, not behind isExists(): the keys expire, so a
+        // limiter seen by isExists() could be gone by tryAcquire(), which then throws.
+        limiter.trySetRate(RateType.OVERALL, resolveLimit(url), 1, RateIntervalUnit.MINUTES);
         boolean allowed = limiter.tryAcquire(1);
         limiter.expire(KEY_TTL);
         return allowed;
@@ -92,7 +90,9 @@ public class RateLimitService {
     /**
      * The endpoints that take or mint a credential, whose limit is the brute-force
      * defence: the filter keys them by IP only and fails closed on them. Not /auth/me
-     * or /auth/logout, which every signed-in page needs.
+     * or /auth/logout, which every signed-in page needs, and not /auth/refresh: it
+     * takes a high-entropy refresh cookie, and the SPA signs the user out on any
+     * refresh failure.
      */
     public boolean isCredentialEndpoint(String url) {
         return CREDENTIAL_ENDPOINTS.contains(url);
