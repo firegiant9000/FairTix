@@ -53,14 +53,17 @@ import org.springframework.test.context.TestPropertySource;
  * after every winner confirms and checks out, at most one active ticket per seat.
  * No retries.
  *
- * <p>Concurrency is bounded at (Hikari pool size - 1) worker threads, released
- * together by one latch, with the 200 tasks queued behind them. {@code createHold}
- * holds one pooled connection and opens a second for the {@code REQUIRES_NEW}
- * {@code AuditService.log}; with 200 threads on the default pool of 10, every
- * connection ended up waiting for a second one, and 197 of 200 calls failed with
- * {@code CannotCreateTransactionException} after Hikari's 30 s timeout (still with
- * zero oversells). That pool starvation is recorded as a finding for L1-rest, not
- * fixed here; see {@code docs/experiments/l1-contention-correctness.md}.
+ * <p>Concurrency is 2 x (Hikari pool size) worker threads, released together by
+ * one latch, with the 200 tasks queued behind them. This is the pool-starvation
+ * proof: {@code createHold} used to hold one pooled connection and open a second
+ * for the {@code REQUIRES_NEW} {@code AuditService.log}, so more than (pool - 1)
+ * concurrent callers could each hold one connection while waiting for another.
+ * Red on commit {@code a9fbbf6}: 20 workers on a pool of 10, 40 of 200 calls failed
+ * with {@code CannotCreateTransactionException} after the 5 s connection timeout
+ * (L1-min measured 197 of 200 with 200 threads and the 30 s default). The hold and
+ * checkout paths now audit through {@code AuditService.logInCurrentTransaction},
+ * on the caller's connection; see
+ * {@code docs/experiments/l1-contention-correctness.md}.
  *
  * <p>A background thread samples {@code pg_locks} and {@code pg_stat_activity}
  * every 50 ms on its own unpooled connection and records the maxima. This is a
@@ -73,7 +76,9 @@ import org.springframework.test.context.TestPropertySource;
 @TestPropertySource(properties = {
     "holds.max-active-per-holder=5",
     // Pinned to Hikari's (and production's) default so the worker count below is stable.
-    "spring.datasource.hikari.maximum-pool-size=10"
+    "spring.datasource.hikari.maximum-pool-size=10",
+    // Shorter than the 30 s default so pool starvation, if it comes back, fails fast.
+    "spring.datasource.hikari.connection-timeout=5000"
 })
 class SeatHoldContentionIT extends PostgresIT {
 
@@ -127,17 +132,15 @@ class SeatHoldContentionIT extends PostgresIT {
     int requestedSeats = requests.stream().mapToInt(List::size).sum();
 
     int hikariPoolSize = dataSource.unwrap(HikariDataSource.class).getMaximumPoolSize();
-    // createHold holds one pooled connection and needs a second for the
-    // REQUIRES_NEW audit write, so more than (pool - 1) concurrent callers starve
-    // the pool (Hikari's pool-starvation-free bound: pool >= threads * (2 - 1) + 1).
+    // Twice the pool: if createHold ever needs a second connection again (as the
+    // REQUIRES_NEW audit write did), more than (pool - 1) callers starve the pool.
     // See the class Javadoc.
-    int workers = hikariPoolSize - 1;
-    assertThat(workers).as("enough workers to contend").isGreaterThanOrEqualTo(8);
+    int workers = 2 * hikariPoolSize;
+    assertThat(workers).as("more workers than the starvation-free bound").isGreaterThan(hikariPoolSize - 1);
 
     // ---- race ----
     LockSampler sampler = new LockSampler(connectionDetails);
     Thread samplerThread = new Thread(sampler, "pg-lock-sampler");
-    samplerThread.start();
 
     CountDownLatch ready = new CountDownLatch(workers);
     CountDownLatch start = new CountDownLatch(1);
@@ -147,6 +150,7 @@ class SeatHoldContentionIT extends PostgresIT {
 
     ExecutorService pool = Executors.newFixedThreadPool(workers);
     long elapsedMillis;
+    samplerThread.start();
     try {
       List<Future<?>> futures = new ArrayList<>();
       for (int i = 0; i < USERS; i++) {

@@ -22,8 +22,29 @@ public class AuditService {
     this.repository = repository;
   }
 
+  /**
+   * Writes the audit row in its own transaction, so it commits even if the
+   * caller rolls back. Called from inside a transaction, this needs a second
+   * pooled connection while the caller's is still held; on hot paths prefer
+   * {@link #logInCurrentTransaction}.
+   */
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void log(UUID userId, String action, String resourceType, UUID resourceId, String details) {
+    save(userId, action, resourceType, resourceId, details);
+  }
+
+  /**
+   * Writes the audit row in the caller's transaction, on the caller's
+   * connection: it commits or rolls back with the audited change, and an audit
+   * failure rolls the change back. Throws if there is no transaction.
+   */
+  @Transactional(propagation = Propagation.MANDATORY)
+  public void logInCurrentTransaction(UUID userId, String action, String resourceType,
+      UUID resourceId, String details) {
+    save(userId, action, resourceType, resourceId, details);
+  }
+
+  private void save(UUID userId, String action, String resourceType, UUID resourceId, String details) {
     String requestId = MDC.get("requestId");
     log.info("AUDIT: user={} action={} type={} resource={} details={}",
         userId, action, resourceType, resourceId, details);

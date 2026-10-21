@@ -47,9 +47,9 @@ public class PaymentSimulationService {
     PaymentRecord saved = paymentRecordRepository.save(record);
 
     if (outcome == PaymentStatus.SUCCESS) {
-      auditService.log(userId, "PAYMENT_PROCESSED", "PAYMENT", saved.getId(), null);
+      auditService.logInCurrentTransaction(userId, "PAYMENT_PROCESSED", "PAYMENT", saved.getId(), null);
     } else {
-      auditService.log(userId, "PAYMENT_FAILED", "PAYMENT", saved.getId(), "outcome=" + outcome);
+      auditService.logInCurrentTransaction(userId, "PAYMENT_FAILED", "PAYMENT", saved.getId(), "outcome=" + outcome);
     }
 
     return saved;

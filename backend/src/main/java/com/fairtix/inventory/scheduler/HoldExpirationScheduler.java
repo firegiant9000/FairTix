@@ -1,5 +1,6 @@
 package com.fairtix.inventory.scheduler;
 
+import com.fairtix.audit.application.AuditService;
 import com.fairtix.inventory.domain.HoldStatus;
 import com.fairtix.inventory.domain.Seat;
 import com.fairtix.inventory.domain.SeatHold;
@@ -15,6 +16,7 @@ import jakarta.transaction.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -30,7 +32,8 @@ import java.util.UUID;
 
 /**
  * Periodically scans for active holds whose expiry has passed and marks them
- * EXPIRED, returning the corresponding seats to AVAILABLE.
+ * EXPIRED, returning the corresponding seats to AVAILABLE. Confirmed holds are
+ * swept separately, after a grace period; see {@link #expireConfirmedHolds()}.
  *
  * <p><b>Paging strategy:</b> each scheduler run processes at most
  * {@value #PAGE_SIZE} holds in a single transaction. Any remainder is handled
@@ -54,17 +57,23 @@ public class HoldExpirationScheduler {
   private final UserRepository userRepository;
   private final NotificationGate notificationGate;
   private final EmailTemplateService emailTemplateService;
+  private final AuditService auditService;
+
+  @Value("${holds.confirmed-grace-minutes:15}")
+  private int confirmedGraceMinutes;
 
   public HoldExpirationScheduler(SeatHoldRepository seatHoldRepository,
       SeatRepository seatRepository,
       UserRepository userRepository,
       NotificationGate notificationGate,
-      EmailTemplateService emailTemplateService) {
+      EmailTemplateService emailTemplateService,
+      AuditService auditService) {
     this.seatHoldRepository = seatHoldRepository;
     this.seatRepository = seatRepository;
     this.userRepository = userRepository;
     this.notificationGate = notificationGate;
     this.emailTemplateService = emailTemplateService;
+    this.auditService = auditService;
   }
 
   @Scheduled(fixedDelayString = "${holds.cleanup.interval-ms:30000}")
@@ -97,6 +106,81 @@ public class HoldExpirationScheduler {
       seatRepository.saveAll(seatsToRelease);
 
       List<SeatHold> toEmail = List.copyOf(expiredHolds);
+      TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        @Override
+        public void afterCommit() {
+          for (SeatHold hold : toEmail) {
+            sendHoldExpiryEmail(hold);
+          }
+        }
+      });
+    } finally {
+      MDC.remove("requestId");
+    }
+  }
+
+  /**
+   * Sweeps CONFIRMED holds whose expiry passed more than
+   * {@code holds.confirmed-grace-minutes} ago. A confirmed hold keeps its
+   * original {@code expiresAt}, and nothing checks it before a Stripe charge, so
+   * the grace covers a payment still in flight. Runs in its own transaction, so a
+   * conflict here never blocks the ACTIVE sweep.
+   *
+   * <p>Per hold: a BOOKED seat returns to AVAILABLE and the hold becomes EXPIRED;
+   * a SOLD seat (the hold was consumed by a checkout that left it CONFIRMED) is
+   * left alone and the hold becomes RELEASED. A checkout racing this sweep on the
+   * same seat loses or wins on {@code Seat.@Version}; if the sweep loses, the
+   * whole page rolls back and is retried on the next tick.
+   */
+  @Scheduled(fixedDelayString = "${holds.cleanup.interval-ms:30000}")
+  @Transactional
+  public void expireConfirmedHolds() {
+    MDC.put("requestId", "sched-expireConfirmedHolds-" + UUID.randomUUID());
+    try {
+      Instant cutoff = Instant.now().minusSeconds(confirmedGraceMinutes * 60L);
+      Page<SeatHold> batch = seatHoldRepository.findAllByStatusAndExpiresAtBefore(
+          HoldStatus.CONFIRMED, cutoff, PageRequest.of(0, PAGE_SIZE));
+
+      if (batch.isEmpty()) {
+        return;
+      }
+
+      // Holds overdue by more than an hour past the grace (a backlog, e.g. on the
+      // first run after deploy) are expired without an email.
+      Instant emailCutoff = cutoff.minusSeconds(3600);
+      List<Seat> seatsToRelease = new ArrayList<>();
+      List<SeatHold> toEmail = new ArrayList<>();
+      for (SeatHold hold : batch.getContent()) {
+        Seat seat = hold.getSeat();
+        if (seat.getStatus() == SeatStatus.SOLD) {
+          hold.setStatus(HoldStatus.RELEASED);
+          auditService.logInCurrentTransaction(hold.getOwnerId(), "EXPIRE", "HOLD", hold.getId(),
+              "Expired CONFIRMED hold released; seat " + seat.getId() + " already SOLD");
+          continue;
+        }
+        hold.setStatus(HoldStatus.EXPIRED);
+        String seatOutcome = " left " + seat.getStatus();
+        if (seat.getStatus() == SeatStatus.BOOKED
+            && seatHoldRepository.existsBySeat_IdAndStatusInAndIdNot(
+                seat.getId(), List.of(HoldStatus.ACTIVE, HoldStatus.CONFIRMED), hold.getId())) {
+          // A stale hold whose seat was freed (e.g. refunded) and booked again by
+          // someone else: the seat belongs to the newer hold.
+          seatOutcome = " left BOOKED for another hold";
+        } else if (seat.getStatus() == SeatStatus.BOOKED) {
+          seat.setStatus(SeatStatus.AVAILABLE);
+          seatsToRelease.add(seat);
+          if (hold.getExpiresAt().isAfter(emailCutoff)) {
+            toEmail.add(hold);
+          }
+          seatOutcome = " returned to AVAILABLE";
+        }
+        auditService.logInCurrentTransaction(hold.getOwnerId(), "EXPIRE", "HOLD", hold.getId(),
+            "Expired CONFIRMED hold; seat " + seat.getId() + seatOutcome);
+      }
+
+      seatHoldRepository.saveAll(batch.getContent());
+      seatRepository.saveAll(seatsToRelease);
+
       TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
         @Override
         public void afterCommit() {

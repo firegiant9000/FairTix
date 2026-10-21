@@ -120,7 +120,11 @@ public class OrderService {
     Order order = new Order(user, holdIds, totalAmount, "USD");
     order = orderRepository.save(order);
     ticketService.issueTickets(order, holds);
-    auditService.log(userId, "CREATE", "ORDER", order.getId(),
+    for (SeatHold hold : holds) {
+      hold.setStatus(HoldStatus.RELEASED);
+      seatHoldRepository.save(hold);
+    }
+    auditService.logInCurrentTransaction(userId, "CREATE", "ORDER", order.getId(),
         "Order completed: " + holdIds.size() + " hold(s), total=" + totalAmount + " USD");
     sendOrderConfirmationEmail(user, order, holds);
     return order;
@@ -188,7 +192,7 @@ public class OrderService {
           queueService.completeQueueEntry(hold.getSeat().getEvent().getId(), userId);
         }
       }
-      auditService.log(userId, "CREATE", "ORDER", order.getId(),
+      auditService.logInCurrentTransaction(userId, "CREATE", "ORDER", order.getId(),
           "Order completed via payment: " + holdIds.size() + " hold(s), total=" + totalAmount
               + " USD, txn=" + payment.getTransactionId());
       sendOrderConfirmationEmail(user, order, holds);
@@ -201,7 +205,7 @@ public class OrderService {
         seat.setStatus(SeatStatus.BOOKED);
         seatRepository.save(seat);
       }
-      auditService.log(userId, "CANCEL", "ORDER", order.getId(),
+      auditService.logInCurrentTransaction(userId, "CANCEL", "ORDER", order.getId(),
           "Payment " + payment.getStatus() + ": " + payment.getFailureReason()
               + ", txn=" + payment.getTransactionId());
       throw new PaymentFailedException(
@@ -257,7 +261,7 @@ public class OrderService {
       }
     }
 
-    auditService.log(userId, "CREATE", "ORDER", order.getId(),
+    auditService.logInCurrentTransaction(userId, "CREATE", "ORDER", order.getId(),
         "Order completed via Stripe: " + holdIds.size() + " hold(s), total=" + totalAmount
             + " USD, txn=" + paymentIntentId);
     sendOrderConfirmationEmail(user, order, holds);

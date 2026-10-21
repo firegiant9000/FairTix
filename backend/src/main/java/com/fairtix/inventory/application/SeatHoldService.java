@@ -174,7 +174,7 @@ public class SeatHoldService {
     String seatIdsSummary = saved.stream()
         .map(h -> h.getSeat().getId()).map(UUID::toString)
         .collect(Collectors.joining(", "));
-    auditService.log(ownerId, "CREATE", "HOLD", saved.get(0).getId(),
+    auditService.logInCurrentTransaction(ownerId, "CREATE", "HOLD", saved.get(0).getId(),
         "Created " + saved.size() + " hold(s) for event " + eventId
             + "; seatIds=[" + seatIdsSummary + "]"
             + "; holdIds=[" + holdIdsSummary + "]"
@@ -221,7 +221,7 @@ public class SeatHoldService {
       seatRepository.save(seat);
     }
     SeatHold saved = seatHoldRepository.save(hold);
-    auditService.log(ownerId, "RELEASE", "HOLD", holdId,
+    auditService.logInCurrentTransaction(ownerId, "RELEASE", "HOLD", holdId,
         "Hold released, seat " + seat.getId() + " returned to AVAILABLE");
 
     // If the event uses a queue, reinstate the user's queue entry so they can re-select
@@ -268,9 +268,65 @@ public class SeatHoldService {
     seat.setStatus(SeatStatus.BOOKED);
     seatRepository.save(seat);
     SeatHold saved = seatHoldRepository.save(hold);
-    auditService.log(ownerId, "CONFIRM", "HOLD", holdId,
+    auditService.logInCurrentTransaction(ownerId, "CONFIRM", "HOLD", holdId,
         "Hold confirmed, seat " + seat.getId() + " status set to BOOKED");
     return saved;
+  }
+
+  /**
+   * Called before a Stripe PaymentIntent is created for these holds: each must be
+   * the caller's, CONFIRMED, with its seat still BOOKED, and its expiry is pushed
+   * out to at least now + {@code holds.duration-minutes}. A confirmed hold
+   * otherwise keeps its original expiry, so the CONFIRMED-hold sweep could free
+   * the seat while the customer is still paying.
+   *
+   * <p>Order matters, and the method writes through bulk queries only:
+   * <ol>
+   *   <li>The expiry is set by a conditional update that takes the hold-row locks
+   *       first, the same order as the sweep (hold rows, then seat), so the two
+   *       cannot deadlock. It never rewrites {@code status}, so a hold the sweep
+   *       just expired stays expired.</li>
+   *   <li>The seats are locked in sorted order, and the hold and seat states are
+   *       re-read from the database (the managed copies loaded above may be
+   *       stale). If a seat changed since it was loaded, Hibernate already fails
+   *       the lock query with an optimistic-lock conflict (a 409).</li>
+   *   <li>The seat versions are bumped, so a sweep that read a seat before this
+   *       commits fails on its seat update and rolls back its hold changes.</li>
+   * </ol>
+   *
+   * @throws SeatHoldNotFoundException if a hold is missing or not the caller's
+   * @throws SeatHoldConflictException if a hold is not CONFIRMED or its seat is
+   *                                   no longer BOOKED
+   */
+  @Transactional
+  public void extendConfirmedHoldsForPayment(List<UUID> holdIds, UUID ownerId) {
+    List<SeatHold> holds = holdIds.stream().distinct()
+        .map(id -> seatHoldRepository.findByIdAndOwnerId(id, ownerId)
+            .orElseThrow(() -> new SeatHoldNotFoundException("Hold not found: " + id)))
+        .toList();
+    for (SeatHold hold : holds) {
+      if (hold.getStatus() != HoldStatus.CONFIRMED) {
+        throw new SeatHoldConflictException(
+            "Hold " + hold.getId() + " is not confirmed (status: " + hold.getStatus() + ")");
+      }
+    }
+    List<UUID> ids = holds.stream().map(SeatHold::getId).toList();
+
+    Instant extendTo = Instant.now().plusSeconds(defaultDurationMinutes * 60L);
+    seatHoldRepository.extendExpiry(ids, HoldStatus.CONFIRMED, extendTo);
+
+    List<UUID> seatIds = holds.stream().map(h -> h.getSeat().getId()).distinct().sorted().toList();
+    seatRepository.findAndLockByIdIn(seatIds);
+    if (seatHoldRepository.countByIdInAndStatusAndSeatStatus(ids, HoldStatus.CONFIRMED, SeatStatus.BOOKED)
+        != ids.size()) {
+      throw new SeatHoldConflictException(
+          "A hold is no longer confirmed or its seat is no longer booked");
+    }
+    seatRepository.bumpVersionByIdIn(seatIds);
+
+    auditService.logInCurrentTransaction(ownerId, "EXTEND", "HOLD", ids.get(0),
+        "Extended " + ids.size() + " CONFIRMED hold(s) for payment to " + extendTo
+            + "; holdIds=[" + ids.stream().map(UUID::toString).collect(Collectors.joining(", ")) + "]");
   }
 
   /**
