@@ -98,6 +98,13 @@ def test_dependency_scan_refuses_an_empty_jar_set(ci):
     assert "if" not in step and "continue-on-error" not in step, "the guard must always run and fail"
 
 
+def test_dependency_scan_skips_central_and_is_time_boxed(ci):
+    # Central Search throttling took 38 of 39 minutes on the first real run.
+    job = _dc_job(ci)
+    assert "--disableCentral" in _steps(job)[_dc_step_index(job)]["with"]["args"].split()
+    assert 0 < job.get("timeout-minutes", 0) <= 30
+
+
 def test_dependency_scan_container_gets_its_own_java_home(ci):
     # setup-java's runner JAVA_HOME is forwarded into the container action and breaks it.
     job = _dc_job(ci)

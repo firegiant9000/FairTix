@@ -125,12 +125,14 @@ jobs:
   # fresh NVD data. Pinning the action SHA does not pin the image; pinning the image digest
   # would freeze the vulnerability data. Accepted residual (official OWASP Docker Hub org).
   #
-  # A Maven Central Search outage makes the CLI exit non-zero. If this job is red with no
-  # new finding in the report, re-run it; it is not the PR's fault.
+  # --disableCentral: Maven Central Search throttles the ~160 lookups (38 of 39 minutes on the
+  # first real run, PR #261), and Maven-built JARs carry their own pom metadata anyway. Without
+  # it, CPE matching can vary between runs; triage any new false positive into the suppressions.
   dependency-scan:
     name: Dependency Vulnerability Scan
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 20
     # The floating scanner image runs as root with the workspace mounted, so keep the token
     # read-only and out of .git/config.
     permissions:
@@ -173,6 +175,7 @@ jobs:
           out: "reports"
           args: >-
             --failOnCVSS 7
+            --disableCentral
             --suppression /github/workspace/backend/dependency-check-suppressions.xml
 
       - name: Upload Dependency-Check report
