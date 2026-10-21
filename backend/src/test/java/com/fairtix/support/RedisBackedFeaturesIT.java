@@ -80,6 +80,14 @@ class RedisBackedFeaturesIT extends PostgresIT {
     }
   }
 
+  /** Refresh is on the default tier, not the auth tier's 10/min (review round 3 on #263). */
+  @Test
+  void rateLimiter_allowsElevenRefreshesFromOneIp() {
+    for (int i = 0; i < 11; i++) {
+      assertThat(rateLimitService.isAllowed("ip:203.0.113.10", "/auth/refresh")).as("refresh %d", i + 1).isTrue();
+    }
+  }
+
   @Test
   void rateLimiter_rejectsAfterTheAuthLimit() {
     // ratelimit.auth defaults to 10 per minute.
