@@ -96,6 +96,21 @@ class RateLimitFilterTest {
         assertEquals("rate_limit:user:user-2:/api/orders", limiterKey());
     }
 
+    /**
+     * The filter must not parse X-Forwarded-For itself: a client can put anything in
+     * the leftmost entry. Trusted-proxy handling happens before the filter, in
+     * Tomcat's RemoteIpValve, which rewrites getRemoteAddr().
+     */
+    @Test
+    void xForwardedFor_isIgnored_keyIsRemoteAddr() throws Exception {
+        MockHttpServletRequest request = request("POST", "/auth/login");
+        request.addHeader("X-Forwarded-For", "1.2.3.4");
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        assertEquals("rate_limit:ip:" + REMOTE + ":/auth/login", limiterKey());
+    }
+
     private MockHttpServletRequest request(String method, String uri) {
         MockHttpServletRequest request = new MockHttpServletRequest(method, uri);
         request.setRemoteAddr(REMOTE);
