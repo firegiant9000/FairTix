@@ -6,15 +6,18 @@ import com.fairtix.payments.domain.PaymentStatus;
 import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import com.stripe.Stripe;
 import com.stripe.exception.CardException;
+import com.stripe.exception.IdempotencyException;
 import com.stripe.exception.StripeException;
 import com.stripe.model.PaymentIntent;
 import com.stripe.model.Refund;
+import com.stripe.model.RefundCollection;
+import com.stripe.net.RequestOptions;
 import com.stripe.param.PaymentIntentCreateParams;
 import com.stripe.param.RefundCreateParams;
+import com.stripe.param.RefundListParams;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -25,6 +28,9 @@ import java.util.UUID;
 public class StripePaymentService {
 
   private static final Logger log = LoggerFactory.getLogger(StripePaymentService.class);
+
+  /** Stripe refund metadata key carrying our refund request id. */
+  static final String REFUND_ID_METADATA = "fairtix_refund_id";
 
   @Value("${stripe.enabled:false}")
   private boolean stripeEnabled;
@@ -49,10 +55,6 @@ public class StripePaymentService {
     }
   }
 
-  public String createPaymentIntent(long amountCents, String currency) {
-    return createPaymentIntent(amountCents, currency, null);
-  }
-
   /**
    * Card-present PaymentIntent for Stripe Terminal (box-office).
    *
@@ -62,9 +64,11 @@ public class StripePaymentService {
    * frontend. Routed through Connect when {@code connect} is non-null so the
    * organizer's connected account is charged and the platform fee is taken off
    * the top — identical to the online path so settlement math is consistent.
+   *
+   * <p>{@code idempotencyKey} comes from {@link StripeIdempotencyKeys#boxOfficeIntent}.
    */
   public PaymentIntent createCardPresentPaymentIntent(long amountCents, String currency,
-      ConnectContext connect) {
+      ConnectContext connect, String idempotencyKey) {
     try {
       PaymentIntentCreateParams.Builder builder = PaymentIntentCreateParams.builder()
           .setAmount(amountCents)
@@ -86,11 +90,9 @@ public class StripePaymentService {
         builder.putMetadata("fairtix_org_id", connect.organizationId());
       }
       builder.putMetadata("fairtix_channel", "box_office");
-      String requestId = MDC.get("requestId");
-      if (requestId != null && !requestId.isBlank()) {
-        builder.putMetadata("requestId", requestId);
-      }
-      return PaymentIntent.create(builder.build());
+      return PaymentIntent.create(builder.build(), keyed(idempotencyKey));
+    } catch (IdempotencyException e) {
+      throw retryConflict(e);
     } catch (CardException e) {
       throw new PaymentDeclinedException(
           e.getUserMessage() != null ? e.getUserMessage() : e.getMessage());
@@ -131,8 +133,11 @@ public class StripePaymentService {
    * the platform takes {@code application_fee_amount} cents off the top.
    * Statement descriptor suffix surfaces the org name on the customer's
    * statement (FAIRTIX*ORGNAME).
+   *
+   * <p>{@code idempotencyKey} comes from {@link StripeIdempotencyKeys#onlineIntent}.
    */
-  public String createPaymentIntent(long amountCents, String currency, ConnectContext connect) {
+  public String createPaymentIntent(long amountCents, String currency, ConnectContext connect,
+      String idempotencyKey) {
     try {
       PaymentIntentCreateParams.Builder builder = PaymentIntentCreateParams.builder()
           .setAmount(amountCents)
@@ -151,12 +156,10 @@ public class StripePaymentService {
         }
         builder.putMetadata("fairtix_org_id", connect.organizationId());
       }
-      String requestId = MDC.get("requestId");
-      if (requestId != null && !requestId.isBlank()) {
-        builder.putMetadata("requestId", requestId);
-      }
-      PaymentIntent intent = PaymentIntent.create(builder.build());
+      PaymentIntent intent = PaymentIntent.create(builder.build(), keyed(idempotencyKey));
       return intent.getClientSecret();
+    } catch (IdempotencyException e) {
+      throw retryConflict(e);
     } catch (CardException e) {
       throw new PaymentDeclinedException(
           e.getUserMessage() != null ? e.getUserMessage() : e.getMessage());
@@ -193,7 +196,14 @@ public class StripePaymentService {
     }
   }
 
-  public Refund createRefund(String paymentIntentId, long amountCents, String reason) {
+  /**
+   * Refunds {@code amountCents} of the intent for one refund request. Keyed by
+   * {@link StripeIdempotencyKeys#refund}, and tagged with
+   * {@code fairtix_refund_id} so a retry after Stripe's 24-hour key window
+   * finds the existing refund instead of creating a second one.
+   */
+  public Refund createRefund(String paymentIntentId, long amountCents, String reason,
+      UUID refundId) {
     try {
       // If the original intent was routed via Connect (transfer_data.destination
       // + application_fee_amount), reverse the transfer and pro-rata refund the
@@ -216,29 +226,44 @@ public class StripePaymentService {
       if (reason != null && !reason.isBlank()) {
         builder.putMetadata("reason", reason);
       }
-      String requestId = MDC.get("requestId");
-      if (requestId != null && !requestId.isBlank()) {
-        builder.putMetadata("requestId", requestId);
+      builder.putMetadata(REFUND_ID_METADATA, refundId.toString());
+
+      Refund existing = findRefundFor(paymentIntentId, refundId);
+      if (existing != null) {
+        log.info("createRefund: reusing Stripe refund {} for refund request {}",
+            existing.getId(), refundId);
+        return existing;
       }
-      return Refund.create(builder.build());
+      return Refund.create(builder.build(), keyed(StripeIdempotencyKeys.refund(refundId)));
+    } catch (IdempotencyException e) {
+      throw retryConflict(e);
     } catch (StripeException e) {
       throw new RuntimeException("Failed to create Stripe refund: " + e.getMessage(), e);
     }
   }
 
-  // Red-commit stubs: ignore the key until the green commit.
-  public Refund createRefund(String paymentIntentId, long amountCents, String reason, UUID refundId) {
-    return createRefund(paymentIntentId, amountCents, reason);
+  private static Refund findRefundFor(String paymentIntentId, UUID refundId) throws StripeException {
+    RefundCollection page = Refund.list(RefundListParams.builder()
+        .setPaymentIntent(paymentIntentId)
+        .setLimit(100L)
+        .build());
+    if (page == null || page.getData() == null) {
+      return null;
+    }
+    String wanted = refundId.toString();
+    return page.getData().stream()
+        .filter(r -> r.getMetadata() != null && wanted.equals(r.getMetadata().get(REFUND_ID_METADATA)))
+        .findFirst()
+        .orElse(null);
   }
 
-  public String createPaymentIntent(long amountCents, String currency, ConnectContext connect,
-      String idempotencyKey) {
-    return createPaymentIntent(amountCents, currency, connect);
+  private static RequestOptions keyed(String idempotencyKey) {
+    return RequestOptions.builder().setIdempotencyKey(idempotencyKey).build();
   }
 
-  public PaymentIntent createCardPresentPaymentIntent(long amountCents, String currency,
-      ConnectContext connect, String idempotencyKey) {
-    return createCardPresentPaymentIntent(amountCents, currency, connect);
+  private static PaymentRetryConflictException retryConflict(IdempotencyException e) {
+    return new PaymentRetryConflictException(
+        "Stripe rejected a retry with changed parameters: " + e.getMessage(), e);
   }
 
   public boolean isStripeEnabled() {

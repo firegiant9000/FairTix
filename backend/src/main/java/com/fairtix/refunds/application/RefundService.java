@@ -221,7 +221,7 @@ public class RefundService {
             .setScale(0, java.math.RoundingMode.HALF_UP)
             .longValueExact();
         com.stripe.model.Refund stripeRefund = stripePaymentService.createRefund(
-            originalPayment.getTransactionId(), amountCents, refund.getReason());
+            originalPayment.getTransactionId(), amountCents, refund.getReason(), refund.getId());
         stripeRefundId = stripeRefund.getId();
         stripeRefundInitiated = true;
       } catch (RuntimeException ex) {

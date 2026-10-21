@@ -83,15 +83,11 @@ class StripePaymentControllerTest {
 
   @Test
   void createIntent_returnsClientSecret() throws Exception {
-    // The M2-07 Connect refactor added a third ConnectContext parameter on
-    // the PaymentIntent factory. PaymentController now calls the 3-arg
-    // overload directly with a (possibly null) ConnectContext, so the mock
-    // must cover that signature; the 2-arg overload still exists but is no
-    // longer on the controller's call path.
+    // ConnectContext may be null (no Connect org); the key is always the
+    // deterministic online-intent key (exposure gate (b)).
     doReturn("pi_test_secret_xyz").when(stripePaymentService)
-        .createPaymentIntent(anyLong(), anyString(), any(ConnectContext.class));
-    doReturn("pi_test_secret_xyz").when(stripePaymentService)
-        .createPaymentIntent(anyLong(), anyString(), org.mockito.ArgumentMatchers.isNull());
+        .createPaymentIntent(anyLong(), anyString(), any(),
+            org.mockito.ArgumentMatchers.startsWith("fairtix-pi-"));
 
     String body = """
         { "holdIds": ["%s"] }

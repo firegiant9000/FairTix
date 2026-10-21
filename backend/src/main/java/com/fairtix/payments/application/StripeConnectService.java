@@ -98,7 +98,11 @@ public class StripeConnectService {
             .setEmail(org.getContactEmail())
             .putAllMetadata(metadata)
             .build();
-        Account account = Account.create(params);
+        // Keyed per org: if AccountLink.create below fails, this transaction rolls
+        // back the stored id, and the retry must get the same account back.
+        Account account = Account.create(params, RequestOptions.builder()
+            .setIdempotencyKey(StripeIdempotencyKeys.connectAccount(org.getId()))
+            .build());
         accountId = account.getId();
         org.setStripeConnectAccountId(accountId);
         org.setStripeConnectCountry(resolvedCountry);

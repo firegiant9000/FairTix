@@ -17,6 +17,7 @@ import com.fairtix.auth.application.WeakPasswordException;
 import com.fairtix.payments.api.PaymentProcessingException;
 import com.fairtix.payments.application.PaymentDeclinedException;
 import com.fairtix.payments.application.PaymentFailedException;
+import com.fairtix.payments.application.PaymentRetryConflictException;
 import com.fairtix.fraud.application.StepUpUnavailableException;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.queue.application.QueueConflictException;
@@ -356,6 +357,14 @@ public class GlobalExceptionHandler {
   public ResponseEntity<Map<String, Object>> handlePaymentFailed(
       PaymentFailedException ex, HttpServletRequest req) {
     return error(HttpStatus.PAYMENT_REQUIRED, "PAYMENT_FAILED", ex.getMessage(), req);
+  }
+
+  @ExceptionHandler(PaymentRetryConflictException.class)
+  public ResponseEntity<Map<String, Object>> handlePaymentRetryConflict(
+      PaymentRetryConflictException ex, HttpServletRequest req) {
+    log.warn("Stripe idempotency conflict: {}", ex.getMessage());
+    return error(HttpStatus.CONFLICT, "PAYMENT_RETRY_CONFLICT",
+        "This payment changed since the last attempt. Start again.", req);
   }
 
   @ExceptionHandler(PaymentDeclinedException.class)

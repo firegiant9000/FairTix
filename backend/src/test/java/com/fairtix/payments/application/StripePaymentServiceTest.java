@@ -109,10 +109,11 @@ class StripePaymentServiceTest {
   @Test
   void createPaymentIntent_cardDeclined_throwsPaymentDeclined() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
-      mocked.when(() -> PaymentIntent.create(any(PaymentIntentCreateParams.class)))
-          .thenThrow(cardDeclined());
+      CardException declined = cardDeclined();
+      mocked.when(() -> PaymentIntent.create(any(PaymentIntentCreateParams.class), any(RequestOptions.class)))
+          .thenThrow(declined);
 
-      assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd"))
+      assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd", null, "fairtix-pi-t1"))
           .isInstanceOf(PaymentDeclinedException.class)
           .hasMessageContaining("Your card was declined");
     }
@@ -121,10 +122,10 @@ class StripePaymentServiceTest {
   @Test
   void createPaymentIntent_otherStripeError_wrapsAsRuntimeException() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
-      mocked.when(() -> PaymentIntent.create(any(PaymentIntentCreateParams.class)))
+      mocked.when(() -> PaymentIntent.create(any(PaymentIntentCreateParams.class), any(RequestOptions.class)))
           .thenThrow(new ApiConnectionException("connection reset"));
 
-      assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd"))
+      assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd", null, "fairtix-pi-t2"))
           .isExactlyInstanceOf(RuntimeException.class)
           .hasMessageStartingWith("Failed to create Stripe payment intent")
           .hasCauseInstanceOf(ApiConnectionException.class);
@@ -216,7 +217,8 @@ class StripePaymentServiceTest {
       ArgumentCaptor<RequestOptions> opts = ArgumentCaptor.forClass(RequestOptions.class);
       mocked.verify(() -> PaymentIntent.create(params.capture(), opts.capture()));
       assertThat(opts.getValue().getIdempotencyKey()).isEqualTo("fairtix-pi-k1");
-      assertThat(params.getValue().getMetadata()).doesNotContainKey("requestId");
+      Map<String, String> metadata = params.getValue().getMetadata();
+      assertThat(metadata == null ? Map.<String, String>of() : metadata).doesNotContainKey("requestId");
     } finally {
       MDC.remove("requestId");
     }

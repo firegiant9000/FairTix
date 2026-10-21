@@ -254,7 +254,7 @@ public class BoxOfficeService {
         org.getId().toString(), org.getStripeConnectAccountId(), feeCents, org.getName());
 
     com.stripe.model.PaymentIntent intent =
-        stripePaymentService.createCardPresentPaymentIntent(amountCents, "usd", connect);
+        stripePaymentService.createCardPresentPaymentIntent(amountCents, "usd", connect, null);
 
     // Pre-create a PENDING sale row so we can correlate when the reader confirms.
     sales.save(new BoxOfficeSale(
