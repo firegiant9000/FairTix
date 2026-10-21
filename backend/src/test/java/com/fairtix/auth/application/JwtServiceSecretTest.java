@@ -15,7 +15,7 @@ import org.springframework.test.util.ReflectionTestUtils;
  * D5). JJWT only rejected a short key on first use, and the {@code .env.example}
  * placeholder booted.
  *
- * <p>Intended-red commit: {@code TBD}.
+ * <p>Intended-red commit: {@code c13056d}.
  */
 class JwtServiceSecretTest {
 

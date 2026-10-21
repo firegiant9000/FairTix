@@ -5,6 +5,7 @@ import com.fairtix.auth.infrastructure.RefreshTokenRepository;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -34,6 +35,12 @@ public class JwtService {
 
   private static final long ACCESS_EXPIRATION_MS = 1000 * 60 * 15; // 15 minutes
 
+  /** HS256's minimum key size (RFC 7518 §3.2), which JJWT also enforces. */
+  private static final int MIN_SECRET_BYTES = 32;
+
+  /** The value shipped in {@code .env.example}; a copied file must not boot. */
+  private static final String ENV_EXAMPLE_PLACEHOLDER = "replace_with_a_secret_at_least_64_characters_long";
+
   private final RefreshTokenRepository refreshTokenRepository;
   private final SecureRandom secureRandom = new SecureRandom();
 
@@ -41,11 +48,24 @@ public class JwtService {
     this.refreshTokenRepository = refreshTokenRepository;
   }
 
+  /**
+   * Fails startup on a weak secret, rather than on the first login (JJWT checks the
+   * key length lazily). The messages never include the secret.
+   */
+  @PostConstruct
   void validateSecret() {
+    if (SECRET == null || SECRET.getBytes(StandardCharsets.UTF_8).length < MIN_SECRET_BYTES) {
+      throw new IllegalStateException(
+          "JWT_SECRET must be at least " + MIN_SECRET_BYTES + " bytes (UTF-8) for HMAC-SHA signing");
+    }
+    if (ENV_EXAMPLE_PLACEHOLDER.equals(SECRET.trim())) {
+      throw new IllegalStateException(
+          "JWT_SECRET is still the .env.example placeholder; generate a random secret");
+    }
   }
 
   private SecretKey getSigningKey() {
-    return Keys.hmacShaKeyFor(SECRET.getBytes());
+    return Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
   }
 
   public String generateToken(UUID userId, String email, String role) {
