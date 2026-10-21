@@ -134,6 +134,9 @@ def test_terraform_plan_output_stays_out_of_the_public_log(path, command):
         summary = [i for i, line in enumerate(lines)
                    if "grep" in line and "Error:" in line and f"{command.capitalize()} complete" in line]
         assert summary and summary[0] > tf
+        # Unanchored: Terraform diagnostics can carry a "│ " box prefix, so
+        # '^Error:' would miss them.
+        assert "^" not in lines[summary[0]], lines[summary[0]]
 
 
 def test_teardown_triggers_are_schedule_and_dispatch_with_force(teardown):
