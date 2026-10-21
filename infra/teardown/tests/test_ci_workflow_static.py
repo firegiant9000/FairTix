@@ -98,6 +98,12 @@ def test_dependency_scan_refuses_an_empty_jar_set(ci):
     assert "if" not in step and "continue-on-error" not in step, "the guard must always run and fail"
 
 
+def test_dependency_scan_container_gets_its_own_java_home(ci):
+    # setup-java's runner JAVA_HOME is forwarded into the container action and breaks it.
+    job = _dc_job(ci)
+    assert _steps(job)[_dc_step_index(job)].get("env", {}).get("JAVA_HOME") == "/opt/jdk"
+
+
 def test_dependency_scan_token_is_read_only_and_not_persisted(ci):
     job = _dc_job(ci)
     assert job.get("permissions") == {"contents": "read"}

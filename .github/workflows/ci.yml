@@ -162,6 +162,10 @@ jobs:
 
       - name: Run OWASP Dependency Check
         uses: dependency-check/Dependency-Check_Action@1e54355a8b4c8abaa8cc7d0b70aa655a3bb15a6c # main @ 2025-12-10 (no release after 1.1.0)
+        # setup-java exports the runner's JAVA_HOME, which GitHub forwards into this container
+        # action, where that path doesn't exist. Restore the image's own value (ENV JAVA_HOME).
+        env:
+          JAVA_HOME: /opt/jdk
         with:
           project: "fairtix"
           path: "./backend/target/dependency"
