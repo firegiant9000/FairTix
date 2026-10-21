@@ -110,12 +110,34 @@ class AuthRequestValidationTest {
   }
 
   @Test
-  void forgotPassword_invalidEmail_returns400() throws Exception {
+  void forgotPassword_blankEmail_returns400() throws Exception {
     mockMvc.perform(post("/auth/forgot-password")
             .contentType(MediaType.APPLICATION_JSON)
-            .content("{ \"email\": \"not-an-email\" }"))
+            .content("{ \"email\": \" \" }"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+  }
+
+  /**
+   * Register never checked the format before this slice, so a stored email may
+   * fail {@code @Email}. Login and forgot-password check presence and length only,
+   * or those accounts would be locked out with no recovery. Red on commit
+   * {@code RED_COMMIT_2}: both returned 400.
+   */
+  @Test
+  void login_unformattedEmail_isNotRejectedByFormat() throws Exception {
+    mockMvc.perform(post("/auth/login")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{ \"email\": \"legacy-account\", \"password\": \"Wrong-P4ss!\" }"))
+        .andExpect(status().isUnauthorized());
+  }
+
+  @Test
+  void forgotPassword_unformattedEmail_returns204() throws Exception {
+    mockMvc.perform(post("/auth/forgot-password")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{ \"email\": \"legacy-account\" }"))
+        .andExpect(status().isNoContent());
   }
 
   @Test
