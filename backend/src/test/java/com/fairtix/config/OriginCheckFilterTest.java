@@ -16,6 +16,8 @@ import jakarta.servlet.http.Cookie;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -205,6 +207,17 @@ class OriginCheckFilterTest {
   void normalize_toleratesUnescapedPathAndQuery() {
     assertThat(OriginCheckFilter.normalize("http://localhost:3000/a|b{c}?q=^x#f"))
         .isEqualTo("http://localhost:3000");
+  }
+
+  /** Authority-cut edge cases that must stay unparseable rather than yield a host. */
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "http://localhost:3000\\@evil.example",
+      "https:///evil.example",
+      "//localhost:3000@evil.example",
+      "https://evil.example\t@localhost:3000"})
+  void normalize_rejectsMalformedAuthorities(String referer) {
+    assertThat(OriginCheckFilter.normalize(referer)).isNull();
   }
 
   @Test

@@ -83,9 +83,16 @@ class SecurityHeadersTest {
             "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"));
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {"settlement", "settlement.csv", "dos.csv"})
+  void otherReportFormats_keepTheStrictCsp(String file) throws Exception {
+    mockMvc.perform(get("/api/organizations/" + ORG + "/reports/events/" + EVENT + "/" + file))
+        .andExpect(header().string("Content-Security-Policy", API_CSP));
+  }
+
   @Test
-  void reportJson_keepsTheStrictCsp() throws Exception {
-    mockMvc.perform(get("/api/organizations/" + ORG + "/reports/events/" + EVENT + "/settlement"))
+  void nonGetToAPrintPath_keepsTheStrictCsp() throws Exception {
+    mockMvc.perform(post("/api/organizations/" + ORG + "/reports/events/" + EVENT + "/settlement.html"))
         .andExpect(header().string("Content-Security-Policy", API_CSP));
   }
 
