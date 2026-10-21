@@ -5,6 +5,7 @@ import static org.springframework.security.test.web.servlet.setup.SecurityMockMv
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -36,7 +37,9 @@ import org.springframework.web.context.WebApplicationContext;
  * CRA dev origin {@code http://localhost:3000}. MockMvc's own origin is
  * {@code http://localhost}.
  *
- * <p>Intended-red commit: {@code TBD}.
+ * <p>Intended-red commit: {@code e0ff17a}. There, the three foreign- and null-Origin
+ * tests also asserted the filter's JSON code; the CORS filter answers those first, so
+ * they now assert the 403 and that no cookie is set or cleared.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @Transactional
@@ -57,11 +60,16 @@ class OriginCheckFilterTest {
 
   // ---- Rejected ----
 
+  /**
+   * A foreign {@code Origin} is rejected by the CORS filter, which runs first, with
+   * its own plain-text 403; the origin check is the second line for this case.
+   */
   @Test
   void refresh_fromForeignOrigin_withCookie_isRejected() throws Exception {
     mockMvc.perform(post("/auth/refresh").cookie(refreshCookie("any")).header("Origin", EVIL))
         .andExpect(status().isForbidden())
-        .andExpect(jsonPath("$.code").value("CSRF_ORIGIN_REJECTED"));
+        .andExpect(header().doesNotExist("Access-Control-Allow-Origin"))
+        .andExpect(header().doesNotExist("Set-Cookie"));
   }
 
   @Test
@@ -84,15 +92,16 @@ class OriginCheckFilterTest {
   void refresh_withCookie_andNullOrigin_isRejected() throws Exception {
     mockMvc.perform(post("/auth/refresh").cookie(refreshCookie("any")).header("Origin", "null"))
         .andExpect(status().isForbidden())
-        .andExpect(jsonPath("$.code").value("CSRF_ORIGIN_REJECTED"));
+        .andExpect(header().doesNotExist("Set-Cookie"));
   }
 
+  /** A forged logout must not clear the victim's cookies. */
   @Test
   void logout_fromForeignOrigin_withAccessCookie_isRejected() throws Exception {
     mockMvc.perform(post("/auth/logout").cookie(new Cookie("fairtix_token", "any"))
             .header("Origin", EVIL))
         .andExpect(status().isForbidden())
-        .andExpect(jsonPath("$.code").value("CSRF_ORIGIN_REJECTED"));
+        .andExpect(header().doesNotExist("Set-Cookie"));
   }
 
   @Test
@@ -168,6 +177,16 @@ class OriginCheckFilterTest {
   void safeMethod_withCookie_andNoOrigin_isNotChecked() throws Exception {
     mockMvc.perform(get("/api/events").cookie(new Cookie("fairtix_token", "any")))
         .andExpect(status().isOk());
+  }
+
+  @Test
+  void normalize_keepsSchemeHostAndNonDefaultPortOnly() {
+    assertThat(OriginCheckFilter.normalize("https://App.example:443/path?q=1")).isEqualTo("https://App.example");
+    assertThat(OriginCheckFilter.normalize("http://localhost:3000/events")).isEqualTo("http://localhost:3000");
+    assertThat(OriginCheckFilter.normalize("HTTP://localhost:80")).isEqualTo("http://localhost");
+    assertThat(OriginCheckFilter.normalize("null")).isNull();
+    assertThat(OriginCheckFilter.normalize("not a url")).isNull();
+    assertThat(OriginCheckFilter.normalize("")).isNull();
   }
 
   private Cookie registerAndGetRefreshCookie(String email) throws Exception {

@@ -18,6 +18,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.filter.CorsFilter;
 
 @EnableMethodSecurity(jsr250Enabled = true)
 @Configuration
@@ -61,6 +62,8 @@ public class SecurityConfig {
           config.setAllowCredentials(true);
           return config;
         }))
+        // Token CSRF can't work cross-site (the SPA can't read the API's cookies);
+        // OriginCheckFilter, below, checks Origin/Referer on cookie requests instead.
         .csrf(csrf -> csrf.disable())
         .authorizeHttpRequests(auth -> auth
             .requestMatchers("/actuator/health", "/actuator/info").permitAll()
@@ -82,6 +85,7 @@ public class SecurityConfig {
                 response.getWriter().write(
                     "{\"status\":401,\"code\":\"UNAUTHORIZED\",\"message\":\"Authentication required\"}");
             }))
+        .addFilterAfter(new OriginCheckFilter(allowedOrigins), CorsFilter.class)
         .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
         .addFilterAfter(stepUpFilter, JwtAuthenticationFilter.class);
 
