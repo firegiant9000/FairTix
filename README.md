@@ -108,7 +108,8 @@ docker compose up --build
 ```
 
 Set `POSTGRES_PASSWORD` and `JWT_SECRET` in `.env` before the first start
-(`JWT_SECRET` must be at least 64 characters). Nothing else is required to
+(`JWT_SECRET` must be at least 32 bytes and not the `.env.example`
+placeholder; the backend refuses to start otherwise). Nothing else is required to
 see the app: Stripe and reCAPTCHA stay off until you set their keys.
 
 | Service | URL |
@@ -166,6 +167,16 @@ Trivy image scan.
   proxy: loopback and the private ranges by default, or the regex in
   `fairtix.proxy.internal-proxies` (set it to the load balancer's subnets in a
   deployment). Anything a client prepends to the header is ignored.
+- CSRF: the auth cookies are `SameSite=None` so the SPA can call the API
+  cross-site, and token CSRF can't work there. Instead, a POST, PUT, PATCH or
+  DELETE that carries an auth cookie must come from an origin in
+  `app.cors.allowed-origins` (or the API's own), per `Origin` or else `Referer`;
+  with neither header it gets 403 `CSRF_ORIGIN_REJECTED`. Bearer and webhook
+  calls carry no cookie and aren't checked.
+- CORS allows only the listed origins and the headers the SPA sends
+  (`Content-Type`, `X-Organization-Id`, plus `Authorization`). Responses carry
+  `Referrer-Policy: strict-origin-when-cross-origin`, HSTS on HTTPS, and a
+  `default-src 'none'` CSP on `/api/**` and `/auth/**`.
 
 ## Limitations
 
