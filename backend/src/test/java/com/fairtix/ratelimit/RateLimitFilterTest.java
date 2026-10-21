@@ -41,7 +41,8 @@ import static org.mockito.Mockito.when;
  * (X-Forwarded-For), {@code bc554c0} (fail closed on the auth tier, exemptions,
  * Retry-After), {@code dc4dd21} (review round 1: IP-only key and fail-closed on the
  * credential endpoints, decoded path), {@code 4f394c1} (review round 2: refresh
- * fails open).
+ * fails open), {@code baab98b} (review round 3, in RateLimitServiceTest and
+ * RedisBackedFeaturesIT: refresh tier, expiry retry).
  */
 class RateLimitFilterTest {
 

@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import org.redisson.api.RateIntervalUnit;
+import org.redisson.client.RedisException;
 
 import java.time.Duration;
 import java.util.Set;
@@ -26,6 +27,9 @@ public class RateLimitService {
     // Longer than the one-minute window, so an active bucket never resets early. The
     // key includes the path, which the caller chooses, so it must expire.
     private static final Duration KEY_TTL = Duration.ofMinutes(2);
+
+    // RedissonRateLimiter's tryAcquire script error when the rate hash is missing.
+    private static final String NOT_INITIALIZED = "RateLimiter is not initialized";
 
     private final RedissonClient redissonClient;
 
@@ -56,10 +60,21 @@ public class RateLimitService {
 
         RRateLimiter limiter = redissonClient.getRateLimiter(redisKey);
 
-        // Set-if-absent on every call, not behind isExists(): the keys expire, so a
-        // limiter seen by isExists() could be gone by tryAcquire(), which then throws.
-        limiter.trySetRate(RateType.OVERALL, resolveLimit(url), 1, RateIntervalUnit.MINUTES);
-        boolean allowed = limiter.tryAcquire(1);
+        // trySetRate is set-if-absent, so it runs on every call. The key can still
+        // expire in the round trip before tryAcquire, which then throws "not
+        // initialized": set the rate again and retry once.
+        int limit = resolveLimit(url);
+        limiter.trySetRate(RateType.OVERALL, limit, 1, RateIntervalUnit.MINUTES);
+        boolean allowed;
+        try {
+            allowed = limiter.tryAcquire(1);
+        } catch (RedisException e) {
+            if (e.getMessage() == null || !e.getMessage().contains(NOT_INITIALIZED)) {
+                throw e;
+            }
+            limiter.trySetRate(RateType.OVERALL, limit, 1, RateIntervalUnit.MINUTES);
+            allowed = limiter.tryAcquire(1);
+        }
         limiter.expire(KEY_TTL);
         return allowed;
     }
@@ -68,6 +83,12 @@ public class RateLimitService {
      * Returns the per-minute rate limit for the given URL.
      */
     int resolveLimit(String url) {
+        // Refresh takes a high-entropy cookie, and a failed refresh signs the SPA user
+        // out; after the access cookie expires it's keyed by IP, so 10/min would sign
+        // out users who share a NAT.
+        if (url.equals("/auth/refresh")) {
+            return defaultLimit;
+        }
         if (isAuthTier(url)) {
             return authLimit;
         }
