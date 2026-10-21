@@ -9,6 +9,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.web.servlet.MockMvc;
@@ -25,6 +27,8 @@ import org.springframework.web.context.WebApplicationContext;
 class SecurityHeadersTest {
 
   private static final String API_CSP = "default-src 'none'; frame-ancestors 'none'";
+  private static final String ORG = "00000000-0000-0000-0000-000000000001";
+  private static final String EVENT = "00000000-0000-0000-0000-000000000002";
 
   @Autowired private WebApplicationContext context;
 
@@ -60,6 +64,29 @@ class SecurityHeadersTest {
   void apiLookalikePath_hasNoCsp() throws Exception {
     mockMvc.perform(get("/apix"))
         .andExpect(header().doesNotExist("Content-Security-Policy"));
+  }
+
+  /**
+   * Review round 1: the print views are HTML opened in a tab, laid out by an inline
+   * {@code <style>}; {@code default-src 'none'} stripped it (and the settlement's
+   * signature lines). They keep everything else locked down. The header is written
+   * on the 401 too, so no org fixture is needed.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "/api/organizations/" + ORG + "/reports/events/" + EVENT + "/settlement.html",
+      "/api/organizations/" + ORG + "/reports/events/" + EVENT + "/dos.html",
+      "/api/organizer/will-call/print"})
+  void printViews_allowInlineStyleOnly(String path) throws Exception {
+    mockMvc.perform(get(path))
+        .andExpect(header().string("Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"));
+  }
+
+  @Test
+  void reportJson_keepsTheStrictCsp() throws Exception {
+    mockMvc.perform(get("/api/organizations/" + ORG + "/reports/events/" + EVENT + "/settlement"))
+        .andExpect(header().string("Content-Security-Policy", API_CSP));
   }
 
   /** Behind the ALB, isSecure() comes from X-Forwarded-Proto (#263's RemoteIpValve). */

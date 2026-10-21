@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -187,6 +189,46 @@ class OriginCheckFilterTest {
     assertThat(OriginCheckFilter.normalize("null")).isNull();
     assertThat(OriginCheckFilter.normalize("not a url")).isNull();
     assertThat(OriginCheckFilter.normalize("")).isNull();
+  }
+
+  // ---- Review round 1 on #264 ----
+
+  /** Browsers leave characters like | { } ^ unescaped in a Referer, which java.net.URI rejects. */
+  @Test
+  void normalize_toleratesUnescapedPathAndQuery() {
+    assertThat(OriginCheckFilter.normalize("http://localhost:3000/a|b{c}?q=^x#f"))
+        .isEqualTo("http://localhost:3000");
+  }
+
+  @Test
+  void put_withAccessCookie_andNoOrigin_isRejected() throws Exception {
+    mockMvc.perform(put("/api/holds/" + UUID.randomUUID()).cookie(new Cookie("fairtix_token", "any")))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("CSRF_ORIGIN_REJECTED"));
+  }
+
+  @Test
+  void patch_withAccessCookie_andNoOrigin_isRejected() throws Exception {
+    mockMvc.perform(patch("/api/holds/" + UUID.randomUUID()).cookie(new Cookie("fairtix_token", "any")))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("CSRF_ORIGIN_REJECTED"));
+  }
+
+  /** Behind the TLS-terminating proxy, the request is https on 443 (RemoteIpValve). */
+  @Test
+  void logout_fromApiOwnHttpsOrigin_succeeds() throws Exception {
+    mockMvc.perform(post("/auth/logout").cookie(new Cookie("fairtix_token", "any"))
+            .secure(true)
+            .with(request -> {
+              // RemoteIpValve sets both scheme and port from X-Forwarded-Proto;
+              // MockMvc's secure(true) alone leaves the scheme as http.
+              request.setScheme("https");
+              request.setServerName("api.fairtix.example");
+              request.setServerPort(443);
+              return request;
+            })
+            .header("Origin", "https://api.fairtix.example"))
+        .andExpect(status().isNoContent());
   }
 
   private Cookie registerAndGetRefreshCookie(String email) throws Exception {
