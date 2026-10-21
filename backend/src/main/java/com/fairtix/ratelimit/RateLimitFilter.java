@@ -2,6 +2,7 @@ package com.fairtix.ratelimit;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
@@ -27,6 +28,7 @@ import java.io.IOException;
 public class RateLimitFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(RateLimitFilter.class);
+    private static final String AUTH_COOKIE = "fairtix_token";
 
     private final JwtService jwtService;
     private final RateLimitService rateLimitService;
@@ -61,10 +63,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
     }
 
     private String resolveKey(HttpServletRequest request) {
-        String authHeader = request.getHeader("Authorization");
-        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+        String token = resolveToken(request);
+        if (token != null) {
             try {
-                Claims claims = jwtService.extractAllClaims(authHeader.substring(7));
+                Claims claims = jwtService.extractAllClaims(token);
                 String userId = claims.get("userId", String.class);
                 if (userId != null) {
                     return "user:" + userId;
@@ -74,6 +76,23 @@ public class RateLimitFilter extends OncePerRequestFilter {
             }
         }
         return "ip:" + resolveIp(request);
+    }
+
+    // Same order as JwtAuthenticationFilter: the auth cookie (what the browser
+    // client sends), then the Authorization header.
+    private String resolveToken(HttpServletRequest request) {
+        if (request.getCookies() != null) {
+            for (Cookie cookie : request.getCookies()) {
+                if (AUTH_COOKIE.equals(cookie.getName())) {
+                    return cookie.getValue();
+                }
+            }
+        }
+        String authHeader = request.getHeader("Authorization");
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            return authHeader.substring(7);
+        }
+        return null;
     }
 
     private String resolveIp(HttpServletRequest request) {
