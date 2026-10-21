@@ -341,8 +341,10 @@ public class RefundService {
   }
 
   /**
-   * Called by EventService when an event is cancelled.
-   * Auto-approves and processes refunds for all COMPLETED orders on this event.
+   * Called by EventService when an event is cancelled, inside its transaction.
+   * Approves a refund for every COMPLETED order on the event; no money moves here.
+   * The caller runs {@link RefundExecutionService#executeAllForEvent} after the
+   * cancellation commits.
    */
   @Transactional
   public void processCancellationRefunds(UUID eventId, UUID actorId) {
@@ -358,22 +360,15 @@ public class RefundService {
               .anyMatch(r -> r.getStatus() == RefundStatus.COMPLETED);
           if (alreadyRefunded) return;
 
-          try {
-            RefundRequest refund = new RefundRequest(
-                order.getId(), order.getUser().getId(),
-                order.getTotalAmount(), "Event cancelled");
+          // One active refund per order (V20/V28): approve an open request rather
+          // than insert a second one.
+          RefundRequest refund = refundRepository.findByOrderIdAndStatusIn(order.getId(),
+                  List.of(RefundStatus.REQUESTED, RefundStatus.PENDING_MANUAL, RefundStatus.APPROVED))
+              .orElseGet(() -> new RefundRequest(
+                  order.getId(), order.getUser().getId(), order.getTotalAmount(), "Event cancelled"));
+          if (refund.getStatus() != RefundStatus.APPROVED) {
             refund.approve(actorId, "Automatic refund due to event cancellation");
-            refund = refundRepository.save(refund);
-            // Still inside the event-cancel transaction; moved out in the next commit.
-            RefundPlan plan = prepare(refund.getId());
-            String stripeRefundId = plan.viaStripe()
-                ? stripePaymentService.createRefund(plan.paymentIntentId(), plan.amountCents(),
-                    plan.reason(), plan.refundId()).getId()
-                : null;
-            finalise(refund.getId(), stripeRefundId, actorId);
-          } catch (Exception ex) {
-            log.error("Failed to auto-process cancellation refund for order {}: {}",
-                order.getId(), ex.getMessage());
+            refundRepository.save(refund);
           }
         });
   }

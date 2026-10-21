@@ -25,6 +25,13 @@ public interface RefundRepository extends JpaRepository<RefundRequest, UUID> {
 
   List<RefundRequest> findAllByOrderId(UUID orderId);
 
+  /** Approved refunds on this event's orders whose money hasn't moved yet. */
+  @Query("SELECT DISTINCT r.id FROM RefundRequest r, Ticket t "
+      + "WHERE t.order.id = r.orderId AND t.event.id = :eventId "
+      + "AND r.status = com.fairtix.refunds.domain.RefundStatus.APPROVED "
+      + "AND r.stripeRefundId IS NULL")
+  List<UUID> findExecutableIdsForEvent(@Param("eventId") UUID eventId);
+
   @Query(value = "SELECT CAST(created_at AS DATE), COUNT(*) FROM refund_requests WHERE created_at >= :since GROUP BY CAST(created_at AS DATE) ORDER BY 1", nativeQuery = true)
   List<Object[]> requestedPerDay(@Param("since") Instant since);
 }

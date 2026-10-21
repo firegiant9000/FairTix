@@ -44,7 +44,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * Exposure gate (b): event cancellation refunds each order in its own transaction,
  * after the cancellation commits, so one Stripe failure can't undo the others.
  *
- * <p>Red on commit {@code RED_HASH}: every order's Stripe refund ran inside the one
+ * <p>Red on commit {@code cbf4604}: every order's Stripe refund ran inside the one
  * event-cancel transaction, so a commit failure at the end would have lost the DB
  * side of refunds Stripe had already paid, and the seat locks stayed open across N
  * Stripe round trips.

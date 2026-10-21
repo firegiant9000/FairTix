@@ -5,6 +5,7 @@ import com.fairtix.refunds.application.RefundService.FinaliseResult;
 import com.fairtix.refunds.application.RefundService.RefundPlan;
 import com.fairtix.refunds.domain.RefundRequest;
 import com.fairtix.refunds.domain.RefundStatus;
+import com.fairtix.refunds.infrastructure.RefundRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -28,11 +29,13 @@ public class RefundExecutionService {
 
   private final RefundService refundService;
   private final StripePaymentService stripePaymentService;
+  private final RefundRepository refundRepository;
 
   public RefundExecutionService(RefundService refundService,
-      StripePaymentService stripePaymentService) {
+      StripePaymentService stripePaymentService, RefundRepository refundRepository) {
     this.refundService = refundService;
     this.stripePaymentService = stripePaymentService;
+    this.refundRepository = refundRepository;
   }
 
   /**
@@ -63,8 +66,21 @@ public class RefundExecutionService {
     return execute(refundId, adminId);
   }
 
-  /** Red-commit stub: cancelEvent still refunds inside its own transaction. */
+  /**
+   * Runs every approved refund on a cancelled event, each in its own short
+   * transactions, after the cancellation has committed. A failure is logged and
+   * audited and leaves that refund {@code APPROVED} for {@link #retry}; the
+   * others still run.
+   */
   public void executeAllForEvent(UUID eventId, UUID actorId) {
+    for (UUID refundId : refundRepository.findExecutableIdsForEvent(eventId)) {
+      try {
+        execute(refundId, actorId);
+      } catch (RuntimeException ex) {
+        log.error("Cancellation refund {} for event {} not executed: {}",
+            refundId, eventId, ex.getMessage());
+      }
+    }
   }
 
   RefundRequest execute(UUID refundId, UUID actorId) {

@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.*;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.auth.domain.CustomUserPrincipal;
 import com.fairtix.events.application.EventService;
+import com.fairtix.refunds.application.RefundExecutionService;
 import com.fairtix.organizations.application.PublicEndpoint;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.domain.EventStatus;
@@ -46,11 +47,14 @@ public class EventController {
     private final EventService service;
     private final AuditService auditService;
     private final GeoSearchService geoSearchService;
+    private final RefundExecutionService refundExecutionService;
 
-    public EventController(EventService service, AuditService auditService, GeoSearchService geoSearchService) {
+    public EventController(EventService service, AuditService auditService, GeoSearchService geoSearchService,
+            RefundExecutionService refundExecutionService) {
         this.service = service;
         this.auditService = auditService;
         this.geoSearchService = geoSearchService;
+        this.refundExecutionService = refundExecutionService;
     }
 
     @Operation(summary = "Create an event", description = "Admin-only. Creates a new event owned by the caller.")
@@ -222,6 +226,9 @@ public class EventController {
         Event event = service.cancelEvent(id, principal.getUserId(), request.reason());
         auditService.log(principal.getUserId(), "CANCEL", "EVENT", id,
                 "Cancelled event: " + event.getTitle() + " — reason: " + request.reason());
+        // The cancellation has committed; each order's refund now runs in its own
+        // transactions, with the Stripe call outside any of them.
+        refundExecutionService.executeAllForEvent(id, principal.getUserId());
         return EventResponse.from(event);
     }
 
