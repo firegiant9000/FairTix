@@ -84,7 +84,7 @@ So, per Arlo's FT-2 ruling, the red test is the database invariant (a). The hone
 | 4 | 23 | 171 | 6 | 0 | 43 |
 | 5 | 21 | 175 | 4 | 0 | 43 |
 
-Deadlocks ranged from 4 to 9 (median 7) across 5 local runs on 2026-10-20. Over the same workload with sorted locking (`SeatHoldContentionIT`), there were 0. The seats held always equalled the seats claimed by winners, because a deadlock loser rolls back. Removing the sorted ordering costs failed requests, not oversells: PostgreSQL's detector breaks the cycle. The ordering exists for availability and latency (each deadlock costs a 1 s stall plus a retry), not for the double-sell invariant.
+Deadlocks ranged from 4 to 9 (median 7) across 5 local runs on 2026-10-20, with a Hikari pool of 10. After review the test runs one connection per worker (pool 20), so no worker waits on the pool behind a deadlocked transaction. The first run at pool 20 gave 11 deadlocks. Over the same workload with sorted locking (`SeatHoldContentionIT`), there were 0. The seats held always equalled the seats claimed by winners, because a deadlock loser rolls back. Removing the sorted ordering costs failed requests, not oversells: PostgreSQL's detector breaks the cycle. The ordering exists for availability and latency (each deadlock costs a 1 s stall plus a retry), not for the double-sell invariant.
 
 ## Findings (recorded in L1-min; both fixed in L1-rest)
 

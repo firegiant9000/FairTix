@@ -9,6 +9,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fairtix.auth.WithMockPrincipal;
 import com.fairtix.events.domain.Event;
@@ -86,9 +87,9 @@ class StripeOrderFailureIT extends PostgresIT {
             .content("""
                 { "holdIds": ["%s"], "paymentIntentId": "%s" }
                 """.formatted(hold.getId(), INTENT)))
-        // The status depends on GlobalExceptionHandler's mapping of the cause (409 for
-        // IllegalStateException); this test is about what is left behind.
-        .andExpect(result -> assertThat(result.getResponse().getStatus()).isGreaterThanOrEqualTo(400));
+        // PaymentController rethrows the cause; GlobalExceptionHandler maps
+        // IllegalStateException to 409.
+        .andExpect(status().isConflict());
 
     // The order transaction rolled back completely.
     assertThat(count("SELECT COUNT(*) FROM orders")).isZero();

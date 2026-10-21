@@ -58,8 +58,11 @@ import org.springframework.transaction.support.TransactionTemplate;
  * SQLState rather than the deprecated subclass name.
  */
 @TestPropertySource(properties = {
-    "spring.datasource.hikari.maximum-pool-size=10",
-    "spring.datasource.hikari.connection-timeout=5000"
+    // One connection per worker: a deadlocked transaction keeps its connection for at
+    // least deadlock_timeout (1 s), so a smaller pool turns slow runners' waits into
+    // connection timeouts that have nothing to do with lock order.
+    "spring.datasource.hikari.maximum-pool-size=" + SeatLockOrderingDeadlockIT.WORKERS,
+    "spring.datasource.hikari.connection-timeout=30000"
 })
 class SeatLockOrderingDeadlockIT extends PostgresIT {
 
@@ -68,6 +71,7 @@ class SeatLockOrderingDeadlockIT extends PostgresIT {
   static final int SEATS = 50;
   static final int MAX_SEATS_PER_REQUEST = 4;
   static final long SEED = 20261019L;
+  static final int WORKERS = 20;
 
   @Autowired private EventRepository eventRepository;
   @Autowired private SeatRepository seatRepository;
@@ -147,7 +151,7 @@ class SeatLockOrderingDeadlockIT extends PostgresIT {
       requests.add(List.copyOf(pool.subList(0, 1 + random.nextInt(MAX_SEATS_PER_REQUEST))));
     }
 
-    int workers = 20;
+    int workers = WORKERS;
     CountDownLatch ready = new CountDownLatch(workers);
     CountDownLatch start = new CountDownLatch(1);
     AtomicInteger successes = new AtomicInteger();
