@@ -5,6 +5,7 @@ import org.redisson.api.RAtomicLong;
 import org.redisson.api.RRateLimiter;
 import org.redisson.api.RSet;
 import org.redisson.api.RedissonClient;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -21,8 +22,13 @@ import static org.mockito.Mockito.when;
  *
  * Supports both rate limiter mocking and atomic long mocking
  * (used by LoginAttemptService).
+ *
+ * <p>Component-scanned into every Spring context test. The container suite
+ * ({@code PostgresIT}, profile {@code it}) sets {@code fairtix.test.redis=container}
+ * to switch it off and use a real Redis instead.
  */
 @Configuration
+@ConditionalOnProperty(name = "fairtix.test.redis", havingValue = "mock", matchIfMissing = true)
 public class TestRedisConfig {
 
   private final ConcurrentHashMap<String, AtomicLong> atomicLongs = new ConcurrentHashMap<>();
