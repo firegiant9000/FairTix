@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+  <!-- Every entry needs a justification. Non-false-positive entries carry an expiry. -->
+
+  <suppress>
+    <notes><![CDATA[
+      False positive. Spring Boot's netty integration module (spring-boot-netty, versioned
+      like Boot, e.g. 4.0.8) is matched to netty's CPE as if it were netty 4.0.8, which pulls in
+      CVEs from 2014-2019. Real netty is netty-*-4.2.x and is scanned separately; this
+      suppression deliberately matches only the spring-boot-netty jar, not other netty jars.
+    ]]></notes>
+    <filePath regex="true">.*spring-boot-netty-.*\.jar</filePath>
+    <cpe>cpe:/a:netty:netty</cpe>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      False positive. CVE-2018-1258 affects Spring Framework 5.0.5 only; it is matched to
+      the spring-security-* jars (core, web, ...) by version number. Scoped to this one CVE.
+    ]]></notes>
+    <filePath regex="true">.*spring-security-[a-z-]+-[0-9][^/]*\.jar</filePath>
+    <cve>CVE-2018-1258</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      False positive. CVE-2022-29631 is CRLF injection in Jodd HTTP (jodd-http <= 6.0.9). The
+      jodd-core and jodd-bean jars here (via Redisson) contain no jodd/http classes; they are
+      matched to the jodd product CPE, and which of the two gets the match varies between
+      runs. Scoped to this one CVE on those two jars.
+    ]]></notes>
+    <filePath regex="true">.*jodd-(core|bean)-[0-9][^/]*\.jar</filePath>
+    <cve>CVE-2022-29631</cve>
+  </suppress>
+
+  <suppress until="2027-01-20Z">
+    <notes><![CDATA[
+      CVE-2026-65898 (DOMPurify < 3.4.11 bundled in swagger-ui). Exploiting it needs an
+      attacker-registered uponSanitizeAttribute hook, which swagger-ui does not expose, so it is
+      not reachable. Fix by bumping springdoc (follow-up); expires so it gets re-triaged.
+    ]]></notes>
+    <filePath regex="true">.*swagger-ui-.*\.jar.*</filePath>
+    <cve>CVE-2026-65898</cve>
+  </suppress>
+</suppressions>

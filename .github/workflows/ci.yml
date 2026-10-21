@@ -116,20 +116,75 @@ jobs:
           path: frontend/webpages/coverage/
           if-no-files-found: warn
 
+  # Scans the runtime-scope JARs (not the source tree, which holds no JARs), failing on CVSS >= 7
+  # to match Trivy's CRITICAL,HIGH. Known false positives live in
+  # backend/dependency-check-suppressions.xml, each with a justification.
+  #
+  # The action's image tag floats on purpose: its Dockerfile is FROM
+  # owasp/dependency-check-action:latest and runs --noupdate, and that image is rebuilt daily with
+  # fresh NVD data. Pinning the action SHA does not pin the image; pinning the image digest
+  # would freeze the vulnerability data. Accepted residual (official OWASP Docker Hub org).
+  #
+  # --disableCentral: Maven Central Search throttles the ~160 lookups (38 of 39 minutes on the
+  # first real run, PR #261), and Maven-built JARs carry their own pom metadata anyway. Without
+  # it, CPE matching can vary between runs; triage any new false positive into the suppressions.
   dependency-scan:
     name: Dependency Vulnerability Scan
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 20
+    # The floating scanner image runs as root with the workspace mounted, so keep the token
+    # read-only and out of .git/config.
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Copy runtime dependencies
+        working-directory: backend
+        run: ./mvnw -B -q dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/dependency
+
+      # An empty directory makes Dependency-Check scan 0 dependencies and pass. About 140 today.
+      - name: Check runtime JARs were copied
+        working-directory: backend
+        run: |
+          n=$(find target/dependency -maxdepth 1 -name '*.jar' | wc -l)
+          echo "$n runtime JARs to scan"
+          test "$n" -ge 100
 
       - name: Run OWASP Dependency Check
-        uses: dependency-check/Dependency-Check_Action@main
+        uses: dependency-check/Dependency-Check_Action@1e54355a8b4c8abaa8cc7d0b70aa655a3bb15a6c # main @ 2025-12-10 (no release after 1.1.0)
+        # setup-java exports the runner's JAVA_HOME, which GitHub forwards into this container
+        # action, where that path doesn't exist. Restore the image's own value (ENV JAVA_HOME).
+        env:
+          JAVA_HOME: /opt/jdk
         with:
           project: "fairtix"
-          path: "./backend"
-          format: "HTML"
+          path: "./backend/target/dependency"
+          format: "ALL"
+          out: "reports"
+          args: >-
+            --failOnCVSS 7
+            --disableCentral
+            --suppression /github/workspace/backend/dependency-check-suppressions.xml
+
+      - name: Upload Dependency-Check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/
+          if-no-files-found: warn
 
   container-scan:
     runs-on: ubuntu-latest
@@ -142,7 +197,7 @@ jobs:
         run: docker build -t fairtix ./backend
 
       - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 (immutable release; post CVE-2026-33634)
         with:
           image-ref: fairtix
           format: table
