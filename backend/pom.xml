@@ -36,10 +36,11 @@
     <jackson-bom.version>3.1.7</jackson-bom.version>
     <!--
       JaCoCo coverage floor. Measured 2026-10-20 on 8f22b8e with `clean verify`, which
-      includes the failsafe PostgreSQL ITs: line 0.5702, branch 0.3852. Rule: measured
-      minus one point, rounded down to two decimals. JaCoCo counts IT coverage too, so
-      a `clean verify -DskipITs` run measures slightly lower (same commit: line 0.5678,
-      branch 0.3842) but still clears these floors. Raise the floors when coverage rises;
+      includes the failsafe PostgreSQL ITs: line 0.5700 (4080/7158), branch 0.3852
+      (802/2082), bundle totals as the check counts them. Rule: measured minus one point,
+      rounded down to two decimals. JaCoCo counts IT coverage too, so a
+      `clean verify -DskipITs` run measures slightly lower (same commit: about line 0.568,
+      branch 0.384) but still clears these floors. Raise the floors when coverage rises;
       never lower them without a reason in the PR. Override per-build with
       -Djacoco.line.minimum=0.30.
     -->
