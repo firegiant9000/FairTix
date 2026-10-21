@@ -20,12 +20,31 @@ public class RedisConfig {
     @Value("${spring.data.redis.password:}")
     private String redisPassword;
 
+    // Bounded so a hung Redis fails a request in about 2.5 s (two 1 s attempts, 0.5 s
+    // apart) instead of Redisson's default of about 16 s. RateLimitFilter then fails
+    // closed (auth) or open (everything else).
+    @Value("${fairtix.redis.timeout-ms:1000}")
+    private int timeoutMs;
+
+    @Value("${fairtix.redis.retry-attempts:1}")
+    private int retryAttempts;
+
+    @Value("${fairtix.redis.retry-interval-ms:500}")
+    private int retryIntervalMs;
+
+    @Value("${fairtix.redis.connect-timeout-ms:2000}")
+    private int connectTimeoutMs;
+
     @Bean
     @ConditionalOnMissingBean(RedissonClient.class)
     public RedissonClient redissonClient() {
         Config config = new Config();
         var server = config.useSingleServer()
-              .setAddress("redis://" + redisHost + ":" + redisPort);
+              .setAddress("redis://" + redisHost + ":" + redisPort)
+              .setTimeout(timeoutMs)
+              .setRetryAttempts(retryAttempts)
+              .setRetryInterval(retryIntervalMs)
+              .setConnectTimeout(connectTimeoutMs);
 
         if (redisPassword != null && !redisPassword.isBlank()) {
             server.setPassword(redisPassword);

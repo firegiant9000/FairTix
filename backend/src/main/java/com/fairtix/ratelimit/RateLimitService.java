@@ -51,7 +51,7 @@ public class RateLimitService {
      * Returns the per-minute rate limit for the given URL.
      */
     int resolveLimit(String url) {
-        if (url.startsWith("/api/auth") || url.startsWith("/auth")) {
+        if (isAuthTier(url)) {
             return authLimit;
         }
         if (url.startsWith("/api/payments")) {
@@ -64,5 +64,13 @@ public class RateLimitService {
             return seatsLimit;
         }
         return defaultLimit;
+    }
+
+    /**
+     * Login, registration, password reset, refresh and step-up: the endpoints whose
+     * limit is the brute-force defence, so the limiter fails closed on them.
+     */
+    public boolean isAuthTier(String url) {
+        return url.startsWith("/api/auth") || url.startsWith("/auth");
     }
 }

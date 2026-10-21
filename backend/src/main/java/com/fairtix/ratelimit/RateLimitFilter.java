@@ -43,23 +43,53 @@ public class RateLimitFilter extends OncePerRequestFilter {
         HttpServletResponse response,
         FilterChain filterChain) throws ServletException, IOException {
 
+        if (isExempt(request)) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
         String url = request.getRequestURI().replaceAll("/[0-9a-fA-F-]{36}", "/{id}");
         String key = resolveKey(request);
 
+        boolean allowed;
         try {
-            if (!rateLimitService.isAllowed(key, url)) {
-                response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
-                response.setContentType("application/json");
-                response.getWriter().write(
-                    "{\"status\":429,\"code\":\"RATE_LIMITED\",\"message\":\"Too many requests. Please try again later.\"}");
+            allowed = rateLimitService.isAllowed(key, url);
+        } catch (Exception e) {
+            if (rateLimitService.isAuthTier(url)) {
+                // Fail closed: the auth-tier limit is the brute-force defence.
+                log.warn("Rate limiter unavailable, rejecting auth request: {}", e.getMessage());
+                reject(response, HttpStatus.SERVICE_UNAVAILABLE, "30",
+                    "RATE_LIMIT_UNAVAILABLE", "Temporarily unavailable. Please try again shortly.");
                 return;
             }
-        } catch (Exception e) {
-            // Fail open — don't block users if Redis is down
+            // Fail open elsewhere, so a Redis outage doesn't take down browsing.
             log.warn("Rate limiter unavailable, allowing request: {}", e.getMessage());
+            allowed = true;
+        }
+
+        if (!allowed) {
+            reject(response, HttpStatus.TOO_MANY_REQUESTS, "60",
+                "RATE_LIMITED", "Too many requests. Please try again later.");
+            return;
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    // CORS preflights carry no credentials and would use up the caller's quota; health
+    // must report a Redis outage rather than hang in (or be blocked by) the limiter.
+    private boolean isExempt(HttpServletRequest request) {
+        return "OPTIONS".equals(request.getMethod())
+            || request.getRequestURI().startsWith("/actuator/health");
+    }
+
+    private void reject(HttpServletResponse response, HttpStatus status, String retryAfterSeconds,
+            String code, String message) throws IOException {
+        response.setStatus(status.value());
+        response.setHeader("Retry-After", retryAfterSeconds);
+        response.setContentType("application/json");
+        response.getWriter().write(
+            "{\"status\":" + status.value() + ",\"code\":\"" + code + "\",\"message\":\"" + message + "\"}");
     }
 
     private String resolveKey(HttpServletRequest request) {
