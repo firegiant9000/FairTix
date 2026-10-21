@@ -8,8 +8,25 @@ import org.springframework.stereotype.Service;
 
 import org.redisson.api.RateIntervalUnit;
 
+import java.time.Duration;
+import java.util.Set;
+
 @Service
 public class RateLimitService {
+
+    private static final Set<String> CREDENTIAL_ENDPOINTS = Set.of(
+        "/auth/login",
+        "/auth/register",
+        "/auth/refresh",
+        "/auth/verify",
+        "/auth/resend-verification",
+        "/auth/forgot-password",
+        "/auth/reset-password",
+        "/auth/step-up/verify");
+
+    // Longer than the one-minute window, so an active bucket never resets early. The
+    // key includes the path, which the caller chooses, so it must expire.
+    private static final Duration KEY_TTL = Duration.ofMinutes(2);
 
     private final RedissonClient redissonClient;
 
@@ -44,7 +61,9 @@ public class RateLimitService {
             int limit = resolveLimit(url);
             limiter.trySetRate(RateType.OVERALL, limit, 1, RateIntervalUnit.MINUTES);
         }
-        return limiter.tryAcquire(1);
+        boolean allowed = limiter.tryAcquire(1);
+        limiter.expire(KEY_TTL);
+        return allowed;
     }
 
     /**
@@ -66,11 +85,16 @@ public class RateLimitService {
         return defaultLimit;
     }
 
-    /**
-     * Login, registration, password reset, refresh and step-up: the endpoints whose
-     * limit is the brute-force defence, so the limiter fails closed on them.
-     */
-    public boolean isAuthTier(String url) {
+    boolean isAuthTier(String url) {
         return url.startsWith("/api/auth") || url.startsWith("/auth");
+    }
+
+    /**
+     * The endpoints that take or mint a credential, whose limit is the brute-force
+     * defence: the filter keys them by IP only and fails closed on them. Not /auth/me
+     * or /auth/logout, which every signed-in page needs.
+     */
+    public boolean isCredentialEndpoint(String url) {
+        return CREDENTIAL_ENDPOINTS.contains(url);
     }
 }

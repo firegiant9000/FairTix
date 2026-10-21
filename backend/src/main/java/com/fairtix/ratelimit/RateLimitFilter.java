@@ -12,6 +12,7 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 import org.springframework.http.HttpStatus;
 import io.jsonwebtoken.Claims;
 import com.fairtix.auth.application.JwtService;
@@ -29,6 +30,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(RateLimitFilter.class);
     private static final String AUTH_COOKIE = "fairtix_token";
+    private static final UrlPathHelper PATH_HELPER = new UrlPathHelper();
 
     private final JwtService jwtService;
     private final RateLimitService rateLimitService;
@@ -43,27 +45,35 @@ public class RateLimitFilter extends OncePerRequestFilter {
         HttpServletResponse response,
         FilterChain filterChain) throws ServletException, IOException {
 
-        if (isExempt(request)) {
+        // The decoded path, as Spring MVC routes it: the raw URI would give every
+        // percent-encoded spelling of /auth/login its own bucket.
+        String path = PATH_HELPER.getPathWithinApplication(request);
+        if (isExempt(request, path)) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        String url = request.getRequestURI().replaceAll("/[0-9a-fA-F-]{36}", "/{id}");
-        String key = resolveKey(request);
+        String url = path.replaceAll("/[0-9a-fA-F-]{36}", "/{id}");
+        boolean credentialEndpoint = rateLimitService.isCredentialEndpoint(url);
+        // Credential endpoints are always keyed by IP: registration hands out a cookie
+        // at once, so an account key there would let one client mint fresh buckets.
+        String key = credentialEndpoint ? "ip:" + request.getRemoteAddr() : resolveKey(request);
 
         boolean allowed;
         try {
             allowed = rateLimitService.isAllowed(key, url);
         } catch (Exception e) {
-            if (rateLimitService.isAuthTier(url)) {
-                // Fail closed: the auth-tier limit is the brute-force defence.
-                log.warn("Rate limiter unavailable, rejecting auth request: {}", e.getMessage());
+            // The class name only: Redisson's messages carry the command, key and client IP.
+            if (credentialEndpoint) {
+                // Fail closed: this limit is the brute-force defence.
+                log.warn("Rate limiter unavailable, rejecting credential request: {}", e.getClass().getSimpleName());
                 reject(response, HttpStatus.SERVICE_UNAVAILABLE, "30",
                     "RATE_LIMIT_UNAVAILABLE", "Temporarily unavailable. Please try again shortly.");
                 return;
             }
-            // Fail open elsewhere, so a Redis outage doesn't take down browsing.
-            log.warn("Rate limiter unavailable, allowing request: {}", e.getMessage());
+            // Fail open elsewhere, so a Redis outage doesn't take down browsing or sign out
+            // every session (/auth/me).
+            log.warn("Rate limiter unavailable, allowing request: {}", e.getClass().getSimpleName());
             allowed = true;
         }
 
@@ -78,9 +88,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
     // CORS preflights carry no credentials and would use up the caller's quota; health
     // must report a Redis outage rather than hang in (or be blocked by) the limiter.
-    private boolean isExempt(HttpServletRequest request) {
+    private boolean isExempt(HttpServletRequest request, String path) {
         return "OPTIONS".equals(request.getMethod())
-            || request.getRequestURI().startsWith("/actuator/health");
+            || path.equals("/actuator/health")
+            || path.startsWith("/actuator/health/");
     }
 
     private void reject(HttpServletResponse response, HttpStatus status, String retryAfterSeconds,

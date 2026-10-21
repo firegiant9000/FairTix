@@ -37,7 +37,8 @@ import static org.mockito.Mockito.when;
  *
  * <p>Intended-red commits: {@code 13f00c6} (cookie key), {@code e387b53}
  * (X-Forwarded-For), {@code bc554c0} (fail closed on the auth tier, exemptions,
- * Retry-After).
+ * Retry-After), {@code dc4dd21} (review round 1: IP-only key and fail-closed on the
+ * credential endpoints, decoded path).
  */
 class RateLimitFilterTest {
 
