@@ -25,10 +25,11 @@
   <suppress>
     <notes><![CDATA[
       False positive. CVE-2022-29631 is CRLF injection in Jodd HTTP (jodd-http <= 6.0.9). The
-      jodd-core jar here (via Redisson's jodd-bean) contains no HTTP client; it is matched to the
-      jodd product CPE. Scoped to this one CVE on jodd-core.
+      jodd-core and jodd-bean jars here (via Redisson) contain no jodd/http classes; they are
+      matched to the jodd product CPE, and which of the two gets the match varies between
+      runs. Scoped to this one CVE on those two jars.
     ]]></notes>
-    <filePath regex="true">.*jodd-core-[0-9][^/]*\.jar</filePath>
+    <filePath regex="true">.*jodd-(core|bean)-[0-9][^/]*\.jar</filePath>
     <cve>CVE-2022-29631</cve>
   </suppress>
 
