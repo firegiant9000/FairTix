@@ -226,6 +226,21 @@ public class StripePaymentService {
     }
   }
 
+  // Red-commit stubs: ignore the key until the green commit.
+  public Refund createRefund(String paymentIntentId, long amountCents, String reason, UUID refundId) {
+    return createRefund(paymentIntentId, amountCents, reason);
+  }
+
+  public String createPaymentIntent(long amountCents, String currency, ConnectContext connect,
+      String idempotencyKey) {
+    return createPaymentIntent(amountCents, currency, connect);
+  }
+
+  public PaymentIntent createCardPresentPaymentIntent(long amountCents, String currency,
+      ConnectContext connect, String idempotencyKey) {
+    return createCardPresentPaymentIntent(amountCents, currency, connect);
+  }
+
   public boolean isStripeEnabled() {
     return stripeEnabled;
   }
