@@ -19,7 +19,7 @@ import org.springframework.web.context.WebApplicationContext;
  * Browser security headers (exposure gate (a), RM:327). The CSP is limited to the JSON
  * API, because swagger-ui needs scripts.
  *
- * <p>Intended-red commit: {@code TBD}.
+ * <p>Intended-red commit: {@code d6898fe}.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 class SecurityHeadersTest {

@@ -17,12 +17,19 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.header.writers.DelegatingRequestMatcherHeaderWriter;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy;
+import org.springframework.security.web.header.writers.StaticHeadersWriter;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.OrRequestMatcher;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.filter.CorsFilter;
 
 @EnableMethodSecurity(jsr250Enabled = true)
 @Configuration
 public class SecurityConfig {
+
+  private static final String API_CSP = "default-src 'none'; frame-ancestors 'none'";
 
   private final JwtAuthenticationFilter jwtFilter;
   private final StepUpFilter stepUpFilter;
@@ -65,6 +72,20 @@ public class SecurityConfig {
         // Token CSRF can't work cross-site (the SPA can't read the API's cookies);
         // OriginCheckFilter, below, checks Origin/Referer on cookie requests instead.
         .csrf(csrf -> csrf.disable())
+        .headers(headers -> headers
+            .referrerPolicy(referrer -> referrer.policy(ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
+            // Only sent on secure requests; behind the ALB, ForwardedHeadersConfig's
+            // RemoteIpValve makes those secure from X-Forwarded-Proto.
+            .httpStrictTransportSecurity(hsts -> hsts
+                .maxAgeInSeconds(31_536_000)
+                .includeSubDomains(true))
+            // JSON only, so nothing may load or frame it; swagger-ui needs scripts and
+            // is left out.
+            .addHeaderWriter(new DelegatingRequestMatcherHeaderWriter(
+                new OrRequestMatcher(
+                    PathPatternRequestMatcher.withDefaults().matcher("/api/**"),
+                    PathPatternRequestMatcher.withDefaults().matcher("/auth/**")),
+                new StaticHeadersWriter("Content-Security-Policy", API_CSP))))
         .authorizeHttpRequests(auth -> auth
             .requestMatchers("/actuator/health", "/actuator/info").permitAll()
             .requestMatchers("/_health/deep").hasRole("ADMIN")
