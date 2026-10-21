@@ -46,7 +46,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 
 /**
- * L1 item 3 (without the deadlock variant): N=200 distinct users race for an
+ * L1 item 3 (the no-ordering deadlock variant is {@link SeatLockOrderingDeadlockIT}): N=200 distinct users race for an
  * M=50-seat section through {@link SeatHoldService#createHold}. Each asks for 1-4
  * seats drawn from the whole section with a fixed seed, so requests overlap
  * heavily. The invariant is zero oversells: at most one ACTIVE hold per seat, and
