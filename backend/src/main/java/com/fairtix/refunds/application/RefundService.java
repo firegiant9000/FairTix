@@ -24,6 +24,9 @@ import com.fairtix.tickets.domain.TicketStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
+import jakarta.persistence.PersistenceContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -54,6 +57,9 @@ public class RefundService {
   private final EmailTemplateService emailTemplateService;
   private final RiskScoringService riskScoringService;
   private final StripePaymentService stripePaymentService;
+
+  @PersistenceContext
+  private EntityManager entityManager;
 
   private static final long STRIPE_REFUND_WINDOW_DAYS = 180L;
 
@@ -134,25 +140,25 @@ public class RefundService {
     RefundRequest refund = new RefundRequest(orderId, userId, amount, reason);
     refund = refundRepository.save(refund);
 
-    auditService.log(userId, "REFUND_REQUESTED", "REFUND", refund.getId(),
+    auditService.logInCurrentTransaction(userId, "REFUND_REQUESTED", "REFUND", refund.getId(),
         "Refund requested for order " + orderId + ", amount=" + amount);
 
     RiskTier tier = riskScoringService.getTier(userId);
     if (tier == RiskTier.HIGH || tier == RiskTier.CRITICAL) {
       refund.holdForManualReview();
       refundRepository.save(refund);
-      auditService.log(userId, "REFUND_HELD_FRAUD_RISK", "REFUND", refund.getId(),
+      auditService.logInCurrentTransaction(userId, "REFUND_HELD_FRAUD_RISK", "REFUND", refund.getId(),
           "tier=" + tier);
       return refund;
     }
 
-    // Auto-approve if amount is below the configured threshold
+    // Auto-approve if amount is below the configured threshold. The money moves
+    // after this transaction commits (RefundExecutionService), never inside it.
     if (amount.compareTo(autoApproveThreshold) <= 0) {
       refund.approve(userId, "Auto-approved: amount within threshold");
       refundRepository.save(refund);
-      auditService.log(userId, "REFUND_AUTO_APPROVED", "REFUND", refund.getId(),
+      auditService.logInCurrentTransaction(userId, "REFUND_AUTO_APPROVED", "REFUND", refund.getId(),
           "Auto-approved refund for order " + orderId + ", amount=" + amount);
-      processRefund(refund, userId);
     } else {
       sendRefundRequestedEmail(userId, refund);
     }
@@ -172,13 +178,12 @@ public class RefundService {
     if (approved) {
       refund.approve(adminUserId, notes);
       refundRepository.save(refund);
-      auditService.log(adminUserId, "REFUND_APPROVED", "REFUND", refundId,
+      auditService.logInCurrentTransaction(adminUserId, "REFUND_APPROVED", "REFUND", refundId,
           "Refund approved for order " + refund.getOrderId());
-      processRefund(refund, adminUserId);
     } else {
       refund.reject(adminUserId, notes);
       refundRepository.save(refund);
-      auditService.log(adminUserId, "REFUND_REJECTED", "REFUND", refundId,
+      auditService.logInCurrentTransaction(adminUserId, "REFUND_REJECTED", "REFUND", refundId,
           "Refund rejected for order " + refund.getOrderId() + ": " + notes);
       sendRefundRejectedEmail(refund, notes);
     }
@@ -186,17 +191,42 @@ public class RefundService {
     return refund;
   }
 
-  @Transactional
-  public void processRefund(RefundRequest refund, UUID actorId) {
-    // Idempotency: if Stripe refund already initiated, do nothing.
-    if (refund.getStripeRefundId() != null && !refund.getStripeRefundId().isBlank()) {
-      log.info("processRefund: refund {} already has stripeRefundId={}, skipping",
-          refund.getId(), refund.getStripeRefundId());
-      return;
-    }
+  /** What {@link RefundExecutionService} needs to move the money for one refund request. */
+  public record RefundPlan(UUID refundId, UUID orderId, String paymentIntentId,
+      long amountCents, String reason) {
 
+    /** True when the money goes back through Stripe; false for cash, comp or simulated orders. */
+    public boolean viaStripe() {
+      return paymentIntentId != null;
+    }
+  }
+
+  /** The refund after {@link #finalise}, and whether this call applied its effects. */
+  public record FinaliseResult(RefundRequest refund, boolean applied) {}
+
+  /**
+   * Checks that the refund can still be executed and resolves how. Runs before the
+   * Stripe call, in its own short read-only transaction.
+   *
+   * <p>A refund is executable while it is {@code APPROVED}, or {@code COMPLETED}
+   * by the {@code charge.refunded} webhook before our side committed, and its
+   * order is not yet {@code REFUNDED}. The order's {@code REFUNDED} status is the
+   * "already finalised" marker: only {@link #finalise} sets it, in the same
+   * transaction as every other effect.
+   */
+  @Transactional(readOnly = true)
+  public RefundPlan prepare(UUID refundId) {
+    RefundRequest refund = refundRepository.findById(refundId)
+        .orElseThrow(() -> new IllegalArgumentException("Refund request not found: " + refundId));
+    if (refund.getStatus() != RefundStatus.APPROVED && refund.getStatus() != RefundStatus.COMPLETED) {
+      throw new IllegalStateException(
+          "Refund is not approved (current: " + refund.getStatus() + ")");
+    }
     Order order = orderRepository.findById(refund.getOrderId())
         .orElseThrow(() -> new IllegalStateException("Order not found during refund processing"));
+    if (order.getStatus() == OrderStatus.REFUNDED) {
+      throw new IllegalStateException("Refund " + refundId + " has already been executed");
+    }
 
     // Stripe 180-day refund window guard.
     if (order.getCreatedAt() != null
@@ -206,33 +236,45 @@ public class RefundService {
               + " days and cannot be refunded through Stripe.");
     }
 
-    // Look up original Stripe PaymentIntent before mutating any state.
     PaymentRecord originalPayment = paymentRecordRepository.findByOrderId(refund.getOrderId()).orElse(null);
-    String stripeRefundId = null;
-    boolean stripeRefundInitiated = false;
-
-    if (stripePaymentService.isStripeEnabled()
+    String paymentIntentId = stripePaymentService.isStripeEnabled()
         && originalPayment != null
         && originalPayment.getTransactionId() != null
-        && originalPayment.getTransactionId().startsWith("pi_")) {
-      try {
-        long amountCents = refund.getAmount()
-            .multiply(BigDecimal.valueOf(100))
-            .setScale(0, java.math.RoundingMode.HALF_UP)
-            .longValueExact();
-        com.stripe.model.Refund stripeRefund = stripePaymentService.createRefund(
-            originalPayment.getTransactionId(), amountCents, refund.getReason(), refund.getId());
-        stripeRefundId = stripeRefund.getId();
-        stripeRefundInitiated = true;
-      } catch (RuntimeException ex) {
-        log.error("Stripe refund failed for refund {} (order {}): {}",
-            refund.getId(), refund.getOrderId(), ex.getMessage());
-        auditService.log(actorId, "REFUND_STRIPE_FAILED", "REFUND", refund.getId(),
-            "Stripe refund call failed: " + ex.getMessage());
-        // Leave refund in APPROVED; do NOT mark order REFUNDED.
-        throw ex;
-      }
+        && originalPayment.getTransactionId().startsWith("pi_")
+        ? originalPayment.getTransactionId() : null;
+    long amountCents = refund.getAmount()
+        .multiply(BigDecimal.valueOf(100))
+        .setScale(0, java.math.RoundingMode.HALF_UP)
+        .longValueExact();
+    return new RefundPlan(refundId, refund.getOrderId(), paymentIntentId, amountCents, refund.getReason());
+  }
+
+  /**
+   * Applies a refund's DB side once: order {@code REFUNDED}, the negative payment
+   * record, tickets {@code REFUNDED} and seats released. {@code stripeRefundId} is
+   * null when no Stripe refund was needed, and the refund then completes inline.
+   *
+   * <p>Retry-safe: the refund row is locked and re-read, and a refund whose order
+   * is already {@code REFUNDED} is returned unchanged ({@code applied=false}). A
+   * {@code COMPLETED} status set by the webhook in the meantime is kept.
+   */
+  @Transactional
+  public FinaliseResult finalise(UUID refundId, String stripeRefundId, UUID actorId) {
+    RefundRequest refund = refundRepository.findById(refundId)
+        .orElseThrow(() -> new IllegalArgumentException("Refund request not found: " + refundId));
+    // Lock and re-read: under open-in-view the entity may be a stale copy from prepare().
+    entityManager.flush();
+    entityManager.refresh(refund, LockModeType.PESSIMISTIC_WRITE);
+    Order order = orderRepository.findById(refund.getOrderId())
+        .orElseThrow(() -> new IllegalStateException("Order not found during refund processing"));
+    entityManager.refresh(order);
+    if (order.getStatus() == OrderStatus.REFUNDED) {
+      log.info("finalise: refund {} already finalised, skipping", refundId);
+      return new FinaliseResult(refund, false);
     }
+
+    PaymentRecord originalPayment = paymentRecordRepository.findByOrderId(refund.getOrderId()).orElse(null);
+    boolean stripeRefundInitiated = stripeRefundId != null;
 
     order.setStatus(OrderStatus.REFUNDED);
     orderRepository.save(order);
@@ -260,25 +302,40 @@ public class RefundService {
       seatRepository.save(seat);
     }
 
-    if (stripeRefundId != null) {
-      refund.setStripeRefundId(stripeRefundId);
-    }
-
     if (stripeRefundInitiated) {
-      // Stripe is processing; the charge.refunded webhook will flip to COMPLETED
-      // and send the "refund complete" email. Email user that the refund was initiated.
+      // Stripe is processing; the charge.refunded webhook flips the request to
+      // COMPLETED (it may already have) and sends the "refund complete" email.
+      refund.setStripeRefundId(stripeRefundId);
       refundRepository.save(refund);
-      auditService.log(actorId, "REFUND_INITIATED", "REFUND", refund.getId(),
+      auditService.logInCurrentTransaction(actorId, "REFUND_INITIATED", "REFUND", refund.getId(),
           "Stripe refund initiated for order " + refund.getOrderId()
               + ", amount=" + refund.getAmount() + ", stripeRefundId=" + stripeRefundId);
-      sendRefundInitiatedEmail(refund);
     } else {
       // Stripe disabled or no Stripe PaymentIntent (e.g. cash/manual order):
       // complete the refund inline to preserve existing behavior.
       refund.complete();
       refundRepository.save(refund);
-      auditService.log(actorId, "REFUND_COMPLETED", "REFUND", refund.getId(),
+      auditService.logInCurrentTransaction(actorId, "REFUND_COMPLETED", "REFUND", refund.getId(),
           "Refund completed for order " + refund.getOrderId() + ", amount=" + refund.getAmount());
+    }
+    return new FinaliseResult(refund, true);
+  }
+
+  /**
+   * Records a failed Stripe refund call. Its own short transaction, so the row is
+   * written on the caller's connection rather than a second pooled one.
+   */
+  @Transactional
+  public void recordStripeFailure(UUID refundId, UUID actorId, String message) {
+    auditService.logInCurrentTransaction(actorId, "REFUND_STRIPE_FAILED", "REFUND", refundId,
+        "Stripe refund call failed: " + message);
+  }
+
+  /** The customer email for a refund that {@link #finalise} just applied. */
+  public void sendOutcomeEmail(RefundRequest refund) {
+    if (refund.getStripeRefundId() != null) {
+      sendRefundInitiatedEmail(refund);
+    } else {
       sendRefundCompletedEmail(refund);
     }
   }
@@ -307,7 +364,13 @@ public class RefundService {
                 order.getTotalAmount(), "Event cancelled");
             refund.approve(actorId, "Automatic refund due to event cancellation");
             refund = refundRepository.save(refund);
-            processRefund(refund, actorId);
+            // Still inside the event-cancel transaction; moved out in the next commit.
+            RefundPlan plan = prepare(refund.getId());
+            String stripeRefundId = plan.viaStripe()
+                ? stripePaymentService.createRefund(plan.paymentIntentId(), plan.amountCents(),
+                    plan.reason(), plan.refundId()).getId()
+                : null;
+            finalise(refund.getId(), stripeRefundId, actorId);
           } catch (Exception ex) {
             log.error("Failed to auto-process cancellation refund for order {}: {}",
                 order.getId(), ex.getMessage());

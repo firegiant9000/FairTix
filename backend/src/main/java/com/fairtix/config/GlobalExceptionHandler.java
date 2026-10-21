@@ -18,6 +18,7 @@ import com.fairtix.payments.api.PaymentProcessingException;
 import com.fairtix.payments.application.PaymentDeclinedException;
 import com.fairtix.payments.application.PaymentFailedException;
 import com.fairtix.payments.application.PaymentRetryConflictException;
+import com.fairtix.refunds.application.RefundProviderException;
 import com.fairtix.fraud.application.StepUpUnavailableException;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.queue.application.QueueConflictException;
@@ -365,6 +366,12 @@ public class GlobalExceptionHandler {
     log.warn("Stripe idempotency conflict: {}", ex.getMessage());
     return error(HttpStatus.CONFLICT, "PAYMENT_RETRY_CONFLICT",
         "This payment changed since the last attempt. Start again.", req);
+  }
+
+  @ExceptionHandler(RefundProviderException.class)
+  public ResponseEntity<Map<String, Object>> handleRefundProvider(
+      RefundProviderException ex, HttpServletRequest req) {
+    return error(HttpStatus.BAD_GATEWAY, "REFUND_PROVIDER_ERROR", ex.getMessage(), req);
   }
 
   @ExceptionHandler(PaymentDeclinedException.class)

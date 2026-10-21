@@ -10,6 +10,12 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.fairtix.auth.WithMockPrincipal;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.domain.Seat;
@@ -53,7 +59,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.context.WebApplicationContext;
 
 /**
  * Exposure gate (b), RM:344: the Stripe refund runs with no DB transaction open,
@@ -65,8 +74,10 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * commit failure is injected when the negative refund {@code PaymentRecord} is saved,
  * after the Stripe call and before the transaction commits.
  *
- * <p>Red on commit {@code RED_HASH}: the Stripe call ran inside the refund
- * transaction, and a failed commit rolled the approval back to {@code REQUESTED}.
+ * <p>Red on commit {@code 9d3738a}: the Stripe call ran inside the refund
+ * transaction, a failed commit rolled the approval back to {@code REQUESTED}, and two
+ * concurrent retries both applied the DB side. {@code webhookBeforeFinalise} is a
+ * guard for the new ordering and passed before too.
  */
 @TestPropertySource(properties = "stripe.enabled=true")
 class RefundStripeRetryIT extends PostgresIT {
@@ -78,6 +89,7 @@ class RefundStripeRetryIT extends PostgresIT {
   @Autowired private OrderRepository orderRepository;
   @Autowired private TicketRepository ticketRepository;
   @Autowired private JdbcTemplate jdbcTemplate;
+  @Autowired private WebApplicationContext context;
 
   @MockitoSpyBean private StripePaymentService stripePaymentService;
   @MockitoSpyBean private PaymentRecordRepository paymentRecordRepository;
@@ -102,8 +114,7 @@ class RefundStripeRetryIT extends PostgresIT {
     doAnswer(inv -> {
       String key = StripeIdempotencyKeys.refund(inv.getArgument(3));
       sentKeys.add(key);
-      txActiveAtStripe.add(TransactionSynchronizationManager.isActualTransactionActive());
-      String id = refundIdByKey.computeIfAbsent(key, k -> "re_test_" + refundCounter.incrementAndGet());
+      txActiveAtStripe.add(TransactionSynchronizationManager.isActualTransactionActive());      String id = refundIdByKey.computeIfAbsent(key, k -> "re_test_" + refundCounter.incrementAndGet());
       Refund refund = mock(Refund.class);
       when(refund.getId()).thenReturn(id);
       return refund;
@@ -251,7 +262,53 @@ class RefundStripeRetryIT extends PostgresIT {
     assertThat(negativeRecords(order.getId())).isEqualTo(1);
   }
 
+  // --- POST /api/admin/refunds/{id}/retry -------------------------------------
+
+  @Test
+  void retryEndpoint_afterCommitFailure_finalises() throws Exception {
+    Order order = stripePaidOrder("75.00", "B1");
+    RefundRequest requested = refundExecutionService.request(buyer.getId(), order.getId(), "Can't go");
+    failNextRefundRecord.set(true);
+    assertThatThrownBy(() -> refundExecutionService.review(adminId, requested.getId(), true, "ok"))
+        .hasMessageContaining("simulated commit failure");
+
+    mockMvc().perform(post("/api/admin/refunds/{id}/retry", requested.getId())
+            .with(WithMockPrincipal.admin(adminId, "admin@test.com")))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("APPROVED"));
+
+    assertThat(orderStatus(order.getId())).isEqualTo("REFUNDED");
+    assertThat(negativeRecords(order.getId())).isEqualTo(1);
+  }
+
+  @Test
+  void retryEndpoint_onFinalisedRefund_is409() throws Exception {
+    Order order = stripePaidOrder("75.00", "B2");
+    RefundRequest requested = refundExecutionService.request(buyer.getId(), order.getId(), "Can't go");
+    refundExecutionService.review(adminId, requested.getId(), true, "ok");
+
+    mockMvc().perform(post("/api/admin/refunds/{id}/retry", requested.getId())
+            .with(WithMockPrincipal.admin(adminId, "admin@test.com")))
+        .andExpect(status().isConflict());
+    assertThat(sentKeys).hasSize(1);
+  }
+
+  @Test
+  void retryEndpoint_nonAdmin_is403() throws Exception {
+    Order order = stripePaidOrder("75.00", "B3");
+    RefundRequest requested = refundExecutionService.request(buyer.getId(), order.getId(), "Can't go");
+
+    mockMvc().perform(post("/api/admin/refunds/{id}/retry", requested.getId())
+            .with(WithMockPrincipal.user(buyer.getId(), buyer.getEmail())))
+        .andExpect(status().isForbidden());
+    assertThat(sentKeys).isEmpty();
+  }
+
   // --- fixtures -------------------------------------------------------------
+
+  private MockMvc mockMvc() {
+    return MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
+  }
 
   private void safeRetry(UUID refundId) {
     try {
