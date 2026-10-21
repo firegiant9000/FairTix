@@ -160,7 +160,8 @@ Trivy image scan.
   rejects everything.
 - Rate limits, login-attempt tracking, reCAPTCHA and step-up challenges are
   the abuse controls. None of this has been penetration tested.
-- Rate limits key signed-in users by account and everyone else by client IP.
+- Rate limits key signed-in users by account and everyone else by client IP;
+  the credential endpoints are always keyed by client IP.
   `X-Forwarded-For` is honoured only when the connection comes from a trusted
   proxy: loopback and the private ranges by default, or the regex in
   `fairtix.proxy.internal-proxies` (set it to the load balancer's subnets in a
@@ -178,8 +179,9 @@ Trivy image scan.
   automated test.
 - Ten `@Scheduled` jobs run on every replica; there is no leader election.
 - Stripe calls carry no idempotency keys and run inside database transactions.
-- With Redis down, the rate limiter fails closed (503) on the auth endpoints
-  and open everywhere else.
+- With Redis down, the rate limiter fails closed (503) on the credential
+  endpoints (login, registration, refresh, verification, password reset,
+  step-up) and open everywhere else.
 - No end-to-end browser tests, no load test, no metrics or tracing.
 
 ## Team and contributions
