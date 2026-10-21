@@ -34,6 +34,10 @@ import static org.mockito.Mockito.when;
  * <p>Exposure gate (a), RM:316. The browser client authenticates with the
  * {@code fairtix_token} cookie only, so a limiter that reads just the Bearer
  * header keys every signed-in user by IP.
+ *
+ * <p>Intended-red commits: {@code 13f00c6} (cookie key), {@code e387b53}
+ * (X-Forwarded-For), {@code bc554c0} (fail closed on the auth tier, exemptions,
+ * Retry-After).
  */
 class RateLimitFilterTest {
 

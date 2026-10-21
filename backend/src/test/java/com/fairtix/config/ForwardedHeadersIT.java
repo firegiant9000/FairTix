@@ -20,6 +20,8 @@ import org.springframework.boot.test.web.server.LocalServerPort;
  * rightmost untrusted X-Forwarded-For entry, never the leftmost one, which the
  * caller controls. The probe is the rate limiter itself: {@code /auth/me} is on
  * the auth tier (10 per minute), so only 429 versus anything else matters here.
+ *
+ * <p>Intended-red commit: {@code e387b53}.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class ForwardedHeadersIT extends PostgresIT {

@@ -52,6 +52,7 @@ class RedisBackedFeaturesIT extends PostgresIT {
   /**
    * Redisson's defaults (3 s timeout, 3 retries 1.5 s apart) stall a request for
    * seconds before RateLimitFilter can fail open or closed. Bound them.
+   * Intended-red commit: {@code bc554c0}.
    */
   @Test
   void redissonCallsAreBounded() {
