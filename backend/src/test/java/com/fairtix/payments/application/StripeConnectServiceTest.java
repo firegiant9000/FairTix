@@ -3,6 +3,7 @@ package com.fairtix.payments.application;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
+import com.stripe.exception.IdempotencyException;
 import com.stripe.model.Account;
 import com.stripe.model.AccountLink;
 import com.stripe.net.RequestOptions;
@@ -18,6 +19,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -60,6 +62,31 @@ class StripeConnectServiceTest {
       ArgumentCaptor<RequestOptions> opts = ArgumentCaptor.forClass(RequestOptions.class);
       accounts.verify(() -> Account.create(any(AccountCreateParams.class), opts.capture()));
       assertThat(opts.getValue().getIdempotencyKey()).isEqualTo("fairtix-acct-" + orgId);
+    }
+  }
+
+  /** Review round 1 (#6): a changed email/slug within the key window is a 409, not a 500. */
+  @Test
+  void createOnboardingLink_idempotencyError_mapsToRetryConflict() {
+    OrganizationRepository orgs = mock(OrganizationRepository.class);
+    StripeConnectService service = new StripeConnectService(orgs, mock(AuditService.class));
+    ReflectionTestUtils.setField(service, "stripeEnabled", true);
+    UUID orgId = UUID.randomUUID();
+    Organization org = mock(Organization.class);
+    when(org.getId()).thenReturn(orgId);
+    when(org.getSlug()).thenReturn("acme");
+    when(org.getContactEmail()).thenReturn("new@acme.test");
+    when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+    try (MockedStatic<Account> accounts = Mockito.mockStatic(Account.class)) {
+      IdempotencyException conflict = new IdempotencyException(
+          "Keys for idempotent requests can only be used with the same parameters", "req_test",
+          "idempotency_error", 400);
+      accounts.when(() -> Account.create(any(AccountCreateParams.class), any(RequestOptions.class)))
+          .thenThrow(conflict);
+
+      assertThatThrownBy(() -> service.createOnboardingLink(orgId, UUID.randomUUID(), "US"))
+          .isInstanceOf(PaymentRetryConflictException.class);
     }
   }
 }

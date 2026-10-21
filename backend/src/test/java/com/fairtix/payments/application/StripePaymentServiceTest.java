@@ -186,6 +186,45 @@ class StripePaymentServiceTest {
     }
   }
 
+  /** Review round 1 (#5): a failed or canceled Stripe refund is not a refund. */
+  @Test
+  void createRefund_existingFailedRefund_isNotReused() throws Exception {
+    UUID refundId = UUID.randomUUID();
+    try (MockedStatic<PaymentIntent> pi = Mockito.mockStatic(PaymentIntent.class);
+         MockedStatic<Refund> refunds = Mockito.mockStatic(Refund.class)) {
+      pi.when(() -> PaymentIntent.retrieve("pi_r4")).thenReturn(mock(PaymentIntent.class));
+      Refund failed = mock(Refund.class);
+      when(failed.getId()).thenReturn("re_failed");
+      when(failed.getStatus()).thenReturn("failed");
+      when(failed.getMetadata()).thenReturn(Map.of("fairtix_refund_id", refundId.toString()));
+      RefundCollection page = mock(RefundCollection.class);
+      when(page.getData()).thenReturn(List.of(failed));
+      refunds.when(() -> Refund.list(any(RefundListParams.class))).thenReturn(page);
+
+      assertThatThrownBy(() -> service.createRefund("pi_r4", 2500L, null, refundId))
+          .hasMessageContaining("re_failed")
+          .hasMessageContaining("failed");
+    }
+  }
+
+  @Test
+  void createRefund_createdRefundCanceled_throws() throws Exception {
+    try (MockedStatic<PaymentIntent> pi = Mockito.mockStatic(PaymentIntent.class);
+         MockedStatic<Refund> refunds = Mockito.mockStatic(Refund.class)) {
+      pi.when(() -> PaymentIntent.retrieve("pi_r5")).thenReturn(mock(PaymentIntent.class));
+      RefundCollection none = emptyRefunds();
+      refunds.when(() -> Refund.list(any(RefundListParams.class))).thenReturn(none);
+      Refund canceled = mock(Refund.class);
+      when(canceled.getId()).thenReturn("re_canceled");
+      when(canceled.getStatus()).thenReturn("canceled");
+      refunds.when(() -> Refund.create(any(RefundCreateParams.class), any(RequestOptions.class)))
+          .thenReturn(canceled);
+
+      assertThatThrownBy(() -> service.createRefund("pi_r5", 2500L, null, UUID.randomUUID()))
+          .hasMessageContaining("canceled");
+    }
+  }
+
   @Test
   void createRefund_idempotencyError_mapsToRetryConflict() {
     try (MockedStatic<PaymentIntent> pi = Mockito.mockStatic(PaymentIntent.class);

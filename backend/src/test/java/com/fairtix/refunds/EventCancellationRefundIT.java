@@ -107,6 +107,30 @@ class EventCancellationRefundIT extends PostgresIT {
         Integer.class, refundA)).isEqualTo(1);
   }
 
+  /**
+   * Review round 1 (#3): a refund that fails before Stripe (here the 180-day window,
+   * hit by long pre-sales) is audited, not just logged, so it can be found later.
+   */
+  @Test
+  void preStripeFailure_isAudited() {
+    User buyer = user("cancel-old");
+    UUID adminId = user("cancel-admin2").getId();
+    Event event = eventRepository.save(
+        new Event("Long Presale", null, Instant.now().plusSeconds(86400), (UUID) null));
+    Order old = stripePaidOrder(buyer, event, "9", "pi_test_old_" + UUID.randomUUID());
+    jdbcTemplate.update("UPDATE orders SET created_at = now() - interval '200 days' WHERE id = ?",
+        old.getId());
+
+    eventService.cancelEvent(event.getId(), adminId, "Cancelled");
+    refundExecutionService.executeAllForEvent(event.getId(), adminId);
+
+    UUID refundId = jdbcTemplate.queryForObject(
+        "SELECT id FROM refund_requests WHERE order_id = ?", UUID.class, old.getId());
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'REFUND_EXECUTION_FAILED' AND resource_id = ?",
+        Integer.class, refundId)).isEqualTo(1);
+  }
+
   private User user(String prefix) {
     User u = new User();
     u.setEmail(prefix + "_" + UUID.randomUUID() + "@test.com");

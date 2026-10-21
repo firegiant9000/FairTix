@@ -262,6 +262,37 @@ class RefundStripeRetryIT extends PostgresIT {
     assertThat(negativeRecords(order.getId())).isEqualTo(1);
   }
 
+  /** Review round 1 (#1): money moved but the DB side failed; leave a trace with the re_ id. */
+  @Test
+  void finaliseFailure_isAuditedWithStripeRefundId() {
+    Order order = stripePaidOrder("75.00", "C1");
+    RefundRequest requested = refundExecutionService.request(buyer.getId(), order.getId(), "Can't go");
+    failNextRefundRecord.set(true);
+
+    assertThatThrownBy(() -> refundExecutionService.review(adminId, requested.getId(), true, "ok"))
+        .hasMessageContaining("simulated commit failure");
+
+    List<String> details = jdbcTemplate.queryForList(
+        "SELECT details FROM audit_logs WHERE action = 'REFUND_FINALISE_FAILED' AND resource_id = ?",
+        String.class, requested.getId());
+    assertThat(details).hasSize(1);
+    assertThat(details.get(0)).contains("re_test_1");
+  }
+
+  /** Review round 1 (#1): the customer's request succeeded even if our bookkeeping didn't. */
+  @Test
+  void userAutoApprove_finaliseFailure_returnsApproved() {
+    Order order = stripePaidOrder("30.00", "C2");
+    failNextRefundRecord.set(true);
+
+    RefundRequest refund = refundExecutionService.request(buyer.getId(), order.getId(), "Can't go");
+
+    assertThat(refund.getStatus()).isEqualTo(RefundStatus.APPROVED);
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'REFUND_FINALISE_FAILED' AND resource_id = ?",
+        Integer.class, refund.getId())).isEqualTo(1);
+  }
+
   // --- POST /api/admin/refunds/{id}/retry -------------------------------------
 
   @Test

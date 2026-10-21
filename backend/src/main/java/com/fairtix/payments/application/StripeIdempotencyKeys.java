@@ -36,6 +36,12 @@ public final class StripeIdempotencyKeys {
     return "fairtix-pi-" + sha256Hex(userId + "|" + holds + "|" + amountCents);
   }
 
+  // Red-commit stub (review round 1, #4): ignores the Connect parameters.
+  public static String onlineIntent(UUID userId, Collection<UUID> holdIds, long amountCents,
+      StripePaymentService.ConnectContext connect) {
+    return onlineIntent(userId, holdIds, amountCents);
+  }
+
   /** One key per pending box-office sale row. */
   public static String boxOfficeIntent(UUID saleId) {
     return "fairtix-bo-" + saleId;

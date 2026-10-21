@@ -31,26 +31,42 @@ class StripeIdempotencyKeysTest {
 
   @Test
   void onlineIntent_ignoresHoldOrder() {
-    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A, HOLD_B), 5000L))
-        .isEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_B, HOLD_A), 5000L));
+    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A, HOLD_B), 5000L, null))
+        .isEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_B, HOLD_A), 5000L, null));
   }
 
   @Test
   void onlineIntent_differsByAmount() {
-    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L))
-        .isNotEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5001L));
+    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null))
+        .isNotEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5001L, null));
   }
 
   @Test
   void onlineIntent_differsByUser() {
-    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L))
-        .isNotEqualTo(StripeIdempotencyKeys.onlineIntent(UUID.randomUUID(), List.of(HOLD_A), 5000L));
+    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null))
+        .isNotEqualTo(StripeIdempotencyKeys.onlineIntent(UUID.randomUUID(), List.of(HOLD_A), 5000L, null));
   }
 
   @Test
   void onlineIntent_differsByHoldSet() {
-    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L))
-        .isNotEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A, HOLD_B), 5000L));
+    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null))
+        .isNotEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A, HOLD_B), 5000L, null));
+  }
+
+  /**
+   * Review round 1 (#4): the Connect parameters go out with the same key, so a fee
+   * or destination change must yield a new key, not a permanent 409.
+   */
+  @Test
+  void onlineIntent_differsByConnectFee() {
+    StripePaymentService.ConnectContext free =
+        new StripePaymentService.ConnectContext("org-1", "acct_1", 125L, "Acme");
+    StripePaymentService.ConnectContext pro =
+        new StripePaymentService.ConnectContext("org-1", "acct_1", 75L, "Acme");
+    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, free))
+        .isNotEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, pro))
+        .isNotEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null))
+        .isEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, free));
   }
 
   @Test
@@ -58,7 +74,7 @@ class StripeIdempotencyKeysTest {
     UUID id = UUID.randomUUID();
     List<String> keys = List.of(
         StripeIdempotencyKeys.refund(id),
-        StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A, HOLD_B), 5000L),
+        StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A, HOLD_B), 5000L, null),
         StripeIdempotencyKeys.boxOfficeIntent(id),
         StripeIdempotencyKeys.connectAccount(id));
     assertThat(keys).allSatisfy(k -> {
