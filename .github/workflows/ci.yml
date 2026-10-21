@@ -131,9 +131,15 @@ jobs:
     name: Dependency Vulnerability Scan
     runs-on: ubuntu-latest
     needs: test
+    # The floating scanner image runs as root with the workspace mounted, so keep the token
+    # read-only and out of .git/config.
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -145,6 +151,14 @@ jobs:
       - name: Copy runtime dependencies
         working-directory: backend
         run: ./mvnw -B -q dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/dependency
+
+      # An empty directory makes Dependency-Check scan 0 dependencies and pass. About 140 today.
+      - name: Check runtime JARs were copied
+        working-directory: backend
+        run: |
+          n=$(find target/dependency -maxdepth 1 -name '*.jar' | wc -l)
+          echo "$n runtime JARs to scan"
+          test "$n" -ge 100
 
       - name: Run OWASP Dependency Check
         uses: dependency-check/Dependency-Check_Action@1e54355a8b4c8abaa8cc7d0b70aa655a3bb15a6c # main @ 2025-12-10 (no release after 1.1.0)
