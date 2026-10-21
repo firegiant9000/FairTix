@@ -63,6 +63,10 @@ public class RefundExecutionService {
     return execute(refundId, adminId);
   }
 
+  /** Red-commit stub: cancelEvent still refunds inside its own transaction. */
+  public void executeAllForEvent(UUID eventId, UUID actorId) {
+  }
+
   RefundRequest execute(UUID refundId, UUID actorId) {
     RefundPlan plan = refundService.prepare(refundId);
     String stripeRefundId = null;
