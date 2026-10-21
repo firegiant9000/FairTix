@@ -100,5 +100,5 @@ Both are fixed on `fix/l1rest-correctness`:
 - This is a correctness test, not a performance measurement. The timings above come from one developer machine. CI hardware varies, and nothing here supports a throughput or "under load" claim.
 - Concurrency is 20 workers (9 in L1-min, bounded by finding 2), so at most 20 transactions contend at once, and only 10 hold a connection. It is not 200-way contention.
 - One round per run. The roadmap's multi-round run remains open. The no-ordering variant (above) shows the sorted path avoids the deadlocks that unordered locking produces. It doesn't prove that every locking path in the codebase is ordered: `EventHoldService`, `CompService` and `BoxOfficeService` go through the same sorted `findAndLockByIdIn`, but they weren't raced here.
-- Redis is a mock, and the queue gate is off for this event.
-- Scheduled expiry is off in this test. `CONFIRMED`-hold expiry, including a checkout racing the sweep, is covered separately by `ConfirmedHoldExpiryIT` (L1-rest). The payment-failure paths are not exercised (L1-rest).
+- The queue gate is off for this event. Since L1-rest C the IT suite runs on a real Redis 7 container, but the contention workload doesn't touch Redis.
+- Scheduled expiry is off in this test. `CONFIRMED`-hold expiry, including a checkout racing the sweep, is covered separately by `ConfirmedHoldExpiryIT` (L1-rest). The payment-failure paths are covered by `PaymentFailurePathsIT` and `StripeOrderFailureIT` (L1-rest).

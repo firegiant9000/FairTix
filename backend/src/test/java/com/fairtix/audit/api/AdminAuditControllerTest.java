@@ -19,6 +19,14 @@ import static org.springframework.security.test.web.servlet.setup.SecurityMockMv
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
+/**
+ * Red on commit {@code 87b39fe} (the first run on PostgreSQL): every query that
+ * omitted a filter returned 500, because {@code AuditLogRepository.findWithFilters}
+ * bound the missing filters as untyped nulls, which PostgreSQL resolves as
+ * {@code bytea} ("operator does not exist: character varying ~~ bytea"). H2 accepted
+ * the query. Fixed with {@code AuditLogSpecifications}, which adds a predicate only
+ * for filters that are set.
+ */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @Transactional
 class AdminAuditControllerTest {
@@ -75,6 +83,24 @@ class AdminAuditControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content", hasSize(1)))
                 .andExpect(jsonPath("$.content[0].action", is("STEP_UP_VERIFY_SUCCESS")));
+    }
+
+    @Test
+    void adminCanQueryWithoutFilters() throws Exception {
+        mockMvc.perform(get("/api/admin/audit")
+                        .with(user("admin@test.com").roles("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[*].userId", hasItem(targetUserId.toString())));
+    }
+
+    @Test
+    void adminCanFilterByFrom() throws Exception {
+        mockMvc.perform(get("/api/admin/audit")
+                        .param("userId", targetUserId.toString())
+                        .param("from", java.time.Instant.now().plusSeconds(3600).toString())
+                        .with(user("admin@test.com").roles("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content", hasSize(0)));
     }
 
     @Test
