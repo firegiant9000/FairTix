@@ -64,6 +64,18 @@ class RegistrationPolicyTest {
     assertThat(policy.check("").allowed()).isFalse();
   }
 
+  /**
+   * Java folds the Kelvin sign (U+212A) to {@code k}; PostgreSQL's case-insensitive
+   * duplicate check may not, so a lookalike would get a second pre-verified account.
+   * Red on commit {@code <red3>} (review round 2).
+   */
+  @Test
+  void allowlist_nonAscii_isBlocked() {
+    RegistrationPolicy policy = new RegistrationPolicy("allowlist", "kim@x.com");
+    assertThat(policy.check("Kim@x.com").allowed()).isFalse();
+    assertThat(policy.check("kim@x.com").allowed()).isTrue();
+  }
+
   @Test
   void allowlist_matchesExactAddressesOnly() {
     RegistrationPolicy policy = new RegistrationPolicy("allowlist", "@fairtix.demo");
