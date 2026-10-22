@@ -29,12 +29,15 @@ public class DeepHealthController {
   private final RedisConnectionFactory redis;
   private final ObjectProvider<JavaMailSender> mailSenderProvider;
   private final boolean stripeEnabled;
+  private final boolean mailEnabled;
 
   public DeepHealthController(
       JdbcTemplate jdbc,
       RedisConnectionFactory redis,
       ObjectProvider<JavaMailSender> mailSenderProvider,
-      @Value("${stripe.enabled:false}") boolean stripeEnabled) {
+      @Value("${stripe.enabled:false}") boolean stripeEnabled,
+      @Value("${fairtix.mail.enabled:false}") boolean mailEnabled) {
+    this.mailEnabled = mailEnabled;
     this.jdbc = jdbc;
     this.redis = redis;
     this.mailSenderProvider = mailSenderProvider;
