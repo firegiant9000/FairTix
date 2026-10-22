@@ -36,6 +36,7 @@ terraform -chdir=infra/bootstrap apply bootstrap.tfplan
 ```
 
 Then:
+0. **Expect one "not-running" ALARM in the first hour, then an OK.** The schedule hasn't fired yet, and missing data counts as breaching. Anything later is real.
 1. Confirm the SNS subscription from the email AWS sends (the link expires after 3 days). `teardown.preflight` refuses any lab apply until a confirmed subscription exists.
 2. Check the budget exists: `aws budgets describe-budgets --account-id <id> --query "Budgets[].BudgetName"` (don't paste the id anywhere).
 3. Run T5b: `python -m teardown.simulate` from `infra/` (see `docs/infra/teardown-tests.md`).
