@@ -238,7 +238,7 @@ def test_teardown_steps_run_decide_destroy_verify_reset_and_report(teardown_job)
     joined = "\n".join(runs)
     order = [
         joined.index("python -m teardown.decide"),
-        joined.index("terraform -chdir=infra/lab destroy"),
+        joined.index('terraform -chdir="$stack" destroy'),
         joined.index("python -m teardown.verify"),
         joined.index("/fairtix-lab/expires_at"),
         joined.index("lab teardown failed"),
@@ -255,13 +255,21 @@ def test_teardown_oidc_runs_before_decide(teardown_job):
 
 
 def test_destroy_retries_once_on_dependency_violation(teardown_job):
-    step = next(s for s in _steps(teardown_job) if "terraform -chdir=infra/lab destroy" in s.get("run", ""))
+    step = next(s for s in _steps(teardown_job) if 'terraform -chdir="$stack" destroy' in s.get("run", ""))
     assert "DependencyViolation" in step["run"]
     assert "sleep 90" in step["run"]
 
 
+def test_destroy_covers_the_lab_then_the_canary(teardown_job):
+    # T4/T5 need the scheduled run to destroy infra/canary; stage B adds infra/lab.
+    step = next(s for s in _steps(teardown_job) if 'terraform -chdir="$stack" destroy' in s.get("run", ""))
+    assert "for stack in infra/lab infra/canary; do" in step["run"]
+    assert 'terraform -chdir="$stack" init -input=false -lockfile=readonly' in step["run"]
+    assert 'exit "$failed"' in step["run"]
+
+
 def test_verify_and_reset_only_after_destroy(teardown_job):
-    for marker in ("python -m teardown.verify", "/fairtix-lab/expires_at", "terraform -chdir=infra/lab destroy"):
+    for marker in ("python -m teardown.verify", "/fairtix-lab/expires_at", 'terraform -chdir="$stack" destroy'):
         step = next(s for s in _steps(teardown_job) if marker in s.get("run", ""))
         assert "steps.decide.outputs.decision == 'destroy'" in step["if"], marker
 

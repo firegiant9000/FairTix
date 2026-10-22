@@ -74,7 +74,8 @@ class Recorder:
         self.calls = []
 
     def attach(self, client):
-        prefix = client.meta.service_model.endpoint_prefix
+        # The SigV4 signing name is the IAM prefix (ECR's endpoint prefix is "api.ecr").
+        prefix = client.meta.service_model.signing_name
 
         def hook(params, model, **_):
             self.calls.append((f"{prefix}:{model.name}", params))
