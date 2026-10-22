@@ -28,7 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * {@code POST /auth/register} under each registration mode (RM:323). {@code open} is
  * the test file's setting and is covered by {@link AuthControllerTest}.
  *
- * <p>Red on commit {@code <red>}: every mode let anyone register.
+ * <p>Red on commit {@code 4bf8642}: every mode let anyone register.
  */
 class RegistrationModeTest {
 

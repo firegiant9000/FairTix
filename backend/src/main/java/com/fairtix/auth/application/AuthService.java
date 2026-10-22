@@ -34,6 +34,7 @@ public class AuthService {
   private final EmailVerificationService emailVerificationService;
   private final AuditService auditService;
   private final TransactionTemplate transactionTemplate;
+  private final RegistrationPolicy registrationPolicy;
 
   private static final Pattern UPPERCASE = Pattern.compile("[A-Z]");
   private static final Pattern LOWERCASE = Pattern.compile("[a-z]");
@@ -49,8 +50,10 @@ public class AuthService {
       NotificationPreferenceService notificationPreferenceService,
       EmailVerificationService emailVerificationService,
       AuditService auditService,
-      PlatformTransactionManager transactionManager) {
+      PlatformTransactionManager transactionManager,
+      RegistrationPolicy registrationPolicy) {
     this.transactionTemplate = new TransactionTemplate(transactionManager);
+    this.registrationPolicy = registrationPolicy;
     this.userRepository = userRepository;
     this.passwordEncoder = passwordEncoder;
     this.jwtService = jwtService;
@@ -67,6 +70,13 @@ public class AuthService {
    * sent. A token written before the commit can't see the user row (foreign key).
    */
   public String register(RegisterRequest request) {
+    RegistrationPolicy.Decision decision = registrationPolicy.check(request.email());
+    if (!decision.allowed()) {
+      // No transaction is open, so the REQUIRES_NEW audit takes one connection.
+      // The detail names the mode only: no address from an anonymous caller.
+      tryAudit(null, "REGISTRATION_BLOCKED", "mode=" + registrationPolicy.mode());
+      throw new RegistrationClosedException();
+    }
     validatePasswordStrength(request.password());
 
     if (userRepository.findByEmail(request.email()).isPresent()) {
@@ -77,6 +87,7 @@ public class AuthService {
       User created = new User();
       created.setEmail(request.email());
       created.setPassword(passwordEncoder.encode(request.password()));
+      created.setEmailVerified(decision.preVerified());
       userRepository.saveAndFlush(created);
       notificationPreferenceService.createDefault(created.getId());
       auditService.logInCurrentTransaction(created.getId(), "USER_REGISTERED", "USER",
@@ -85,7 +96,9 @@ public class AuthService {
     });
 
     try {
-      emailVerificationService.sendVerificationEmail(user);
+      if (!user.isEmailVerified()) {
+        emailVerificationService.sendVerificationEmail(user);
+      }
     } catch (Exception e) {
       // Don't fail registration if email delivery fails; the user can resend.
       log.error("Failed to send verification email userId={} error={}", user.getId(), e.getMessage());

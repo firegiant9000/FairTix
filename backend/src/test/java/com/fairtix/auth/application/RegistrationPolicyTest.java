@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Registration mode (RM:323). Red on commit {@code <red>}: registration was open to
+ * Registration mode (RM:323). Red on commit {@code 4bf8642}: registration was open to
  * anyone, with no setting to close it.
  */
 class RegistrationPolicyTest {

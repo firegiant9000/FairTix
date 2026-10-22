@@ -1,5 +1,6 @@
 package com.fairtix.config;
 
+import com.fairtix.auth.application.RegistrationClosedException;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.inventory.application.DuplicateSeatException;
 import com.fairtix.inventory.application.SeatHoldConflictException;
@@ -93,6 +94,12 @@ public class GlobalExceptionHandler {
   public ResponseEntity<Map<String, Object>> handleUserFlagged(
       UserFlaggedForAbuseException ex, HttpServletRequest req) {
     return error(HttpStatus.FORBIDDEN, "USER_FLAGGED_FOR_ABUSE", ex.getMessage(), req);
+  }
+
+  @ExceptionHandler(RegistrationClosedException.class)
+  public ResponseEntity<Map<String, Object>> handleRegistrationClosed(
+      RegistrationClosedException ex, HttpServletRequest req) {
+    return error(HttpStatus.FORBIDDEN, "REGISTRATION_CLOSED", ex.getMessage(), req);
   }
 
   @ExceptionHandler(QueueConflictException.class)
