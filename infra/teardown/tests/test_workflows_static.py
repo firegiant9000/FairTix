@@ -185,6 +185,30 @@ def test_no_secrets_expression_inside_run(path):
             assert not SECRETS_EXPR.search(step.get("run", "")), f"secrets in run: of {step.get('name')}"
 
 
+@pytest.mark.parametrize("path", [TEARDOWN_FILE, APPLY_FILE], ids=lambda p: p.name)
+def test_pip_installs_require_hashes_from_the_lock(path):
+    # These jobs hold id-token: write, so no transitive dependency may float (FT-3 carry-in).
+    workflow = _load(path)
+    installs = [s["run"] for job in workflow["jobs"].values() for s in _steps(job)
+                if re.search(r"\bpip\b.*\binstall\b", s.get("run", ""))]
+    assert installs
+    for run in installs:
+        assert "--require-hashes" in run, run
+        assert "-r teardown/requirements.lock" in run, run
+
+
+def test_the_lock_pins_every_top_level_requirement():
+    teardown_dir = WORKFLOWS.parents[1] / "infra" / "teardown"
+    lock = (teardown_dir / "requirements.lock").read_text(encoding="utf-8")
+    pins = [line.strip() for line in (teardown_dir / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")]
+    assert pins
+    for pin in pins:
+        assert re.search(rf"^{re.escape(pin)} \\$", lock, re.MULTILINE), f"{pin} missing from the lock; regenerate it"
+    entries = re.findall(r"^\S+==\S+ \\\n\s+--hash=sha256:[0-9a-f]{64}$", lock, re.MULTILINE)
+    assert len(entries) == len(re.findall(r"^\S+==", lock, re.MULTILINE))
+
+
 def test_apply_preflight_precedes_every_terraform_step(apply_job):
     steps = _steps(apply_job)
     preflights = [i for i, s in enumerate(steps) if "teardown.preflight" in s.get("run", "")]

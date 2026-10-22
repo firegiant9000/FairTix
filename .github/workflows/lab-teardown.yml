@@ -50,11 +50,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: infra/teardown/requirements.txt
+          cache-dependency-path: infra/teardown/requirements.lock
 
       - name: Install pinned dependencies
         working-directory: infra
-        run: python -m pip install -r teardown/requirements.txt
+        run: python -m pip install --require-hashes -r teardown/requirements.lock
 
       # Trust (FT-3): sub = repo:firegiant9000/FairTix:environment:lab-teardown AND
       # job_workflow_ref = firegiant9000/FairTix/.github/workflows/lab-teardown.yml@refs/heads/main
