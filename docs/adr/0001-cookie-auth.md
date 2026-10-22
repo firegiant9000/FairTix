@@ -31,6 +31,8 @@ CSRF protection in Spring Security is disabled (see `SecurityConfig.java` line 6
 
 If we ever relax `SameSite` (e.g. for a 3rd-party embed) we must re-enable CSRF tokens — track in a follow-up ADR.
 
+**Update (2026-10, exposure gate RM:317).** The second bullet no longer holds: `AuthController` issues both cookies with `SameSite=None; Secure` whenever `app.cookie.secure=true` (the base, staging and prod profiles), so the Netlify → API deployment works cross-site. CSRF tokens still can't work there, because the SPA can't read the API's cookies. Instead, `OriginCheckFilter` (in the security chain after CORS) rejects any POST, PUT, PATCH or DELETE that carries `fairtix_token` or `fairtix_refresh` unless its `Origin`, or failing that its `Referer`, is in `app.cors.allowed-origins` or is the API's own origin. With neither header, the request is rejected (403 `CSRF_ORIGIN_REJECTED`). This follows OWASP's "verify origin with standard headers" defence.
+
 ## Cross-subdomain note
 
 Staging (#165) splits `staging.fairtix.io` (frontend) from `api.staging.fairtix.io` (backend). The two viable shapes — `.fairtix.io`-scoped cookies with `SameSite=None; Secure`, vs reverse-proxying `/api` through the frontend host so both share an origin — are resolved in [ADR 0002](0002-cross-subdomain-cookies.md). **The reverse-proxy path was chosen**, which preserves `SameSite=Strict` and keeps the cookie scoped to the SPA host.

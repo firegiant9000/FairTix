@@ -44,7 +44,7 @@ All backend variables are loaded from `.env` at the project root. Frontend varia
 | `POSTGRES_PORT` | No | `5432` | DB port | Leave default |
 | `REDIS_HOST` | No | `redis` | Redis hostname | Leave default inside Docker |
 | `REDIS_PORT` | No | `6379` | Redis port | Leave default |
-| `JWT_SECRET` | Yes | — | JWT signing secret, must be ≥64 characters | `python3 -c "import secrets; print(secrets.token_hex(48))"` |
+| `JWT_SECRET` | Yes | — | JWT signing secret: ≥ 32 bytes and not the `.env.example` placeholder (checked at startup); use 64+ random characters | `python3 -c "import secrets; print(secrets.token_hex(48))"` |
 | `MAIL_HOST` | No | `mailhog` | SMTP host | `mailhog` for dev; real SMTP for prod |
 | `MAIL_PORT` | No | `1025` | SMTP port | `1025` for MailHog; `587` for TLS SMTP |
 | `MAIL_USERNAME` | No | `` | SMTP username | From your mail provider |
@@ -113,7 +113,7 @@ Then re-run `docker compose up --build` to re-apply the fixed migration.
 
 ## Secrets Management
 
-- **`JWT_SECRET`**: Must be at least 64 characters. Shorter values will fail at startup. Generate with:
+- **`JWT_SECRET`**: Must be at least 32 bytes (UTF-8), and must not be the `.env.example` placeholder; the backend refuses to start otherwise. Use a random value of 64 characters or more. Generate with:
   ```bash
   python3 -c "import secrets; print(secrets.token_hex(48))"
   ```

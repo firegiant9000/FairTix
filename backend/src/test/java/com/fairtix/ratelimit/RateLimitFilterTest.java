@@ -1,6 +1,7 @@
 package com.fairtix.ratelimit;
 
 import com.fairtix.auth.application.JwtService;
+import com.fairtix.config.AllowedOrigins;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import jakarta.servlet.FilterChain;
@@ -18,6 +19,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -42,11 +44,13 @@ import static org.mockito.Mockito.when;
  * Retry-After), {@code dc4dd21} (review round 1: IP-only key and fail-closed on the
  * credential endpoints, decoded path), {@code 4f394c1} (review round 2: refresh
  * fails open), {@code baab98b} (review round 3, in RateLimitServiceTest and
- * RedisBackedFeaturesIT: refresh tier, expiry retry).
+ * RedisBackedFeaturesIT: refresh tier, expiry retry), {@code 3f2146f} (slice 5b: CORS
+ * headers on the 429 and 503).
  */
 class RateLimitFilterTest {
 
     private static final String REMOTE = "198.51.100.9";
+    private static final String SPA = "https://app.example";
 
     private RedissonClient redisson;
     private RRateLimiter limiter;
@@ -68,7 +72,7 @@ class RateLimitFilterTest {
         ReflectionTestUtils.setField(service, "defaultLimit", 100);
 
         jwtService = mock(JwtService.class);
-        filter = new RateLimitFilter(service, jwtService);
+        filter = new RateLimitFilter(service, jwtService, new AllowedOrigins(SPA));
         chain = mock(FilterChain.class);
     }
 
@@ -274,6 +278,54 @@ class RateLimitFilterTest {
         filter.doFilter(request("POST", uri), new MockHttpServletResponse(), chain);
 
         assertEquals("rate_limit:ip:" + REMOTE + ":/auth/login", limiterKey());
+    }
+
+    // ---- Slice 5b: CORS on the limiter's own responses ----
+
+    /**
+     * The limiter runs before Spring Security's CORS filter, so without these headers
+     * the SPA can't read its 429 (the browser reports a network error instead).
+     */
+    @Test
+    void rateLimited_fromAllowedOrigin_carriesCorsHeaders() throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+        MockHttpServletRequest request = request("POST", "/api/orders");
+        request.addHeader("Origin", SPA);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, chain);
+
+        assertEquals(429, response.getStatus());
+        assertEquals(SPA, response.getHeader("Access-Control-Allow-Origin"));
+        assertEquals("true", response.getHeader("Access-Control-Allow-Credentials"));
+        assertTrue(response.getHeaders("Vary").contains("Origin"));
+    }
+
+    @Test
+    void unavailable_fromAllowedOrigin_carriesCorsHeaders() throws Exception {
+        when(redisson.getRateLimiter(anyString())).thenThrow(new RedisException("connection refused"));
+        MockHttpServletRequest request = request("POST", "/auth/login");
+        request.addHeader("Origin", SPA);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, chain);
+
+        assertEquals(503, response.getStatus());
+        assertEquals(SPA, response.getHeader("Access-Control-Allow-Origin"));
+    }
+
+    @Test
+    void rateLimited_fromOtherOrigin_hasNoCorsHeaders() throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+        MockHttpServletRequest request = request("POST", "/api/orders");
+        request.addHeader("Origin", "https://evil.example");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, chain);
+
+        assertEquals(429, response.getStatus());
+        assertNull(response.getHeader("Access-Control-Allow-Origin"));
+        assertNull(response.getHeader("Access-Control-Allow-Credentials"));
     }
 
     private MockHttpServletRequest request(String method, String uri) {
