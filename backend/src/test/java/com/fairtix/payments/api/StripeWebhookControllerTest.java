@@ -214,7 +214,7 @@ class StripeWebhookControllerTest {
         new BigDecimal("50.00"), "Event cancelled");
     refundRequest.approve(UUID.randomUUID(), "Approved");
     when(refundRepository.findAllByOrderId(orderId)).thenReturn(List.of(refundRequest));
-    when(refundRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+    when(refundRepository.completeIfActive(any(), any())).thenReturn(1);
 
     mockMvc.perform(post("/api/webhooks/stripe")
             .contentType(MediaType.APPLICATION_JSON)
@@ -222,7 +222,32 @@ class StripeWebhookControllerTest {
             .content(payload))
         .andExpect(status().isOk());
 
-    verify(refundRepository).save(refundRequest);
+    // A conditional update, never a full-row save (see RefundWebhookRaceIT).
+    verify(refundRepository).completeIfActive(eq(refundRequest.getId()), any());
+    verify(refundRepository, never()).save(any());
     verify(auditService).log(eq(new UUID(0L, 0L)), eq("REFUND_COMPLETED"), eq("REFUND"), any(), anyString());
+  }
+
+  @Test
+  void chargeRefunded_noLongerActive_isNotAudited() throws Exception {
+    String piId = "pi_refund_789";
+    UUID orderId = UUID.randomUUID();
+    String payload = chargeRefundedEvent(piId);
+    String sigHeader = stripeSignature(payload, WEBHOOK_SECRET);
+    when(paymentRecordRepository.findByTransactionId(piId)).thenReturn(Optional.of(new PaymentRecord(
+        orderId, UUID.randomUUID(), new BigDecimal("50.00"), "usd", PaymentStatus.SUCCESS, piId, null)));
+    RefundRequest refundRequest = new RefundRequest(orderId, UUID.randomUUID(),
+        new BigDecimal("50.00"), "Event cancelled");
+    refundRequest.approve(UUID.randomUUID(), "Approved");
+    when(refundRepository.findAllByOrderId(orderId)).thenReturn(List.of(refundRequest));
+    when(refundRepository.completeIfActive(any(), any())).thenReturn(0);
+
+    mockMvc.perform(post("/api/webhooks/stripe")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header("Stripe-Signature", sigHeader)
+            .content(payload))
+        .andExpect(status().isOk());
+
+    verify(auditService, never()).log(any(), eq("REFUND_COMPLETED"), any(), any(), anyString());
   }
 }

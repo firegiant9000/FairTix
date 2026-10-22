@@ -39,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class RefundServiceTest {
 
     @Autowired private RefundService refundService;
+    @Autowired private RefundExecutionService refundExecutionService;
     @Autowired private UserRepository userRepository;
     @Autowired private EventRepository eventRepository;
     @Autowired private SeatRepository seatRepository;
@@ -113,14 +114,14 @@ class RefundServiceTest {
     void mediumTierUser_underThreshold_isAutoApproved() {
         setRiskScore(30, RiskTier.MEDIUM);
 
-        RefundRequest refund = refundService.requestRefund(user.getId(), order.getId(), "Test refund");
+        RefundRequest refund = refundExecutionService.request(user.getId(), order.getId(), "Test refund");
 
         assertThat(refund.getStatus()).isEqualTo(RefundStatus.COMPLETED);
     }
 
     @Test
     void lowTierUser_underThreshold_isAutoApproved() {
-        RefundRequest refund = refundService.requestRefund(user.getId(), order.getId(), "Test refund");
+        RefundRequest refund = refundExecutionService.request(user.getId(), order.getId(), "Test refund");
 
         assertThat(refund.getStatus()).isEqualTo(RefundStatus.COMPLETED);
     }
@@ -182,7 +183,7 @@ class RefundServiceTest {
         RefundRequest refund = refundService.requestRefund(user.getId(), highOrder.getId(), "Please refund");
         assertThat(refund.getStatus()).isEqualTo(RefundStatus.REQUESTED);
 
-        RefundRequest result = refundService.reviewRefund(newAdmin(), refund.getId(), true, "Approved");
+        RefundRequest result = refundExecutionService.review(newAdmin(), refund.getId(), true, "Approved");
 
         assertThat(result.getStatus()).isEqualTo(RefundStatus.COMPLETED);
         Seat reloaded = seatRepository.findById(highSeat.getId()).orElseThrow();

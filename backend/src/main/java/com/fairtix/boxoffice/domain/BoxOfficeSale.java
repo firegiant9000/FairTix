@@ -85,6 +85,11 @@ public class BoxOfficeSale {
     this.staffUserId = staffUserId;
   }
 
+  /** Links the card-present PaymentIntent once Stripe has created it. */
+  public void attachPaymentIntent(String stripePaymentIntentId) {
+    this.stripePaymentIntentId = stripePaymentIntentId;
+  }
+
   /** Fills the customer + order linkage when a card-present hold is confirmed. */
   public void completeCard(UUID orderId, String customerEmail, String customerName) {
     this.orderId = orderId;

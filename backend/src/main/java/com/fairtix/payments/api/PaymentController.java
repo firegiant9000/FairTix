@@ -13,6 +13,7 @@ import com.fairtix.organizations.domain.Plan;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.payments.application.PaymentFailedException;
 import com.fairtix.payments.application.PaymentSimulationService;
+import com.fairtix.payments.application.StripeIdempotencyKeys;
 import com.fairtix.payments.application.StripePaymentService;
 import com.fairtix.payments.application.StripePaymentService.ConnectContext;
 import com.fairtix.payments.dto.PaymentIntentRequest;
@@ -149,7 +150,9 @@ public class PaymentController {
     if (connect != null) {
       salesCapService.checkCanCharge(UUID.fromString(connect.organizationId()), amountCents);
     }
-    String clientSecret = stripePaymentService.createPaymentIntent(amountCents, "usd", connect);
+    String clientSecret = stripePaymentService.createPaymentIntent(amountCents, "usd", connect,
+        StripeIdempotencyKeys.onlineIntent(principal.getUserId(), request.holdIds(), amountCents,
+            connect));
     return new PaymentIntentResponse(clientSecret);
   }
 

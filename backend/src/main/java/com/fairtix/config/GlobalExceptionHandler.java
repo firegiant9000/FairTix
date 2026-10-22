@@ -17,6 +17,9 @@ import com.fairtix.auth.application.WeakPasswordException;
 import com.fairtix.payments.api.PaymentProcessingException;
 import com.fairtix.payments.application.PaymentDeclinedException;
 import com.fairtix.payments.application.PaymentFailedException;
+import com.fairtix.payments.application.PaymentRetryConflictException;
+import com.fairtix.refunds.application.RefundFinaliseException;
+import com.fairtix.refunds.application.RefundProviderException;
 import com.fairtix.fraud.application.StepUpUnavailableException;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.queue.application.QueueConflictException;
@@ -356,6 +359,29 @@ public class GlobalExceptionHandler {
   public ResponseEntity<Map<String, Object>> handlePaymentFailed(
       PaymentFailedException ex, HttpServletRequest req) {
     return error(HttpStatus.PAYMENT_REQUIRED, "PAYMENT_FAILED", ex.getMessage(), req);
+  }
+
+  @ExceptionHandler(PaymentRetryConflictException.class)
+  public ResponseEntity<Map<String, Object>> handlePaymentRetryConflict(
+      PaymentRetryConflictException ex, HttpServletRequest req) {
+    log.warn("Stripe idempotency conflict: {}", ex.getMessage());
+    return error(HttpStatus.CONFLICT, "PAYMENT_RETRY_CONFLICT",
+        "This payment changed since the last attempt. Start again.", req);
+  }
+
+  @ExceptionHandler(RefundProviderException.class)
+  public ResponseEntity<Map<String, Object>> handleRefundProvider(
+      RefundProviderException ex, HttpServletRequest req) {
+    return error(HttpStatus.BAD_GATEWAY, "REFUND_PROVIDER_ERROR", ex.getMessage(), req);
+  }
+
+  @ExceptionHandler(RefundFinaliseException.class)
+  public ResponseEntity<Map<String, Object>> handleRefundFinalise(
+      RefundFinaliseException ex, HttpServletRequest req) {
+    log.error("Refund finalise failed: {}", ex.getMessage(), ex.getCause());
+    return error(HttpStatus.INTERNAL_SERVER_ERROR, "REFUND_FINALISE_ERROR",
+        "The refund was sent to the payment provider but its record could not be saved. "
+            + "It can be retried.", req);
   }
 
   @ExceptionHandler(PaymentDeclinedException.class)

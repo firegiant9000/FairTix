@@ -45,6 +45,7 @@ import static org.mockito.Mockito.verify;
 class EventCancellationIntegrationTest {
 
     @Autowired private EventService eventService;
+    @Autowired private com.fairtix.refunds.application.RefundExecutionService refundExecutionService;
     @Autowired private EventRepository eventRepository;
     @Autowired private SeatRepository seatRepository;
     @Autowired private SeatHoldRepository seatHoldRepository;
@@ -92,9 +93,11 @@ class EventCancellationIntegrationTest {
     @Test
     void cancelEvent_withTicketHolder_cancelsTicketAndSendsEmail() {
         eventService.cancelEvent(testEvent.getId(), adminId, "Venue unavailable");
+        // EventController runs the approved refunds after the cancellation commits.
+        refundExecutionService.executeAllForEvent(testEvent.getId(), adminId);
 
         Ticket refreshed = ticketRepository.findById(testTicket.getId()).orElseThrow();
-        // COMPLETED orders trigger processRefund → REFUNDED; no-order tickets become CANCELLED
+        // COMPLETED orders are refunded → REFUNDED; no-order tickets become CANCELLED
         assertThat(refreshed.getStatus()).isEqualTo(TicketStatus.REFUNDED);
 
         verify(emailService).sendEmail(

@@ -26,6 +26,7 @@ import com.fairtix.organizations.domain.OrgPermission;
 import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.domain.Plan;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
+import com.fairtix.payments.application.StripeIdempotencyKeys;
 import com.fairtix.payments.application.StripePaymentService;
 import com.fairtix.payments.application.StripePaymentService.ConnectContext;
 import com.fairtix.payments.domain.PaymentRecord;
@@ -37,7 +38,9 @@ import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -82,6 +85,7 @@ public class BoxOfficeService {
   private final StripePaymentService stripePaymentService;
   private final OrgSalesCapService salesCapService;
   private final AuditService auditService;
+  private final TransactionTemplate transactionTemplate;
 
   public BoxOfficeService(BoxOfficeSessionRepository sessions,
                           BoxOfficeSaleRepository sales,
@@ -96,7 +100,8 @@ public class BoxOfficeService {
                           PaymentRecordRepository paymentRecordRepository,
                           StripePaymentService stripePaymentService,
                           OrgSalesCapService salesCapService,
-                          AuditService auditService) {
+                          AuditService auditService,
+                          PlatformTransactionManager transactionManager) {
     this.sessions = sessions;
     this.sales = sales;
     this.seatRepository = seatRepository;
@@ -111,6 +116,7 @@ public class BoxOfficeService {
     this.stripePaymentService = stripePaymentService;
     this.salesCapService = salesCapService;
     this.auditService = auditService;
+    this.transactionTemplate = new TransactionTemplate(transactionManager);
   }
 
   // ---- Session lifecycle ----
@@ -231,37 +237,81 @@ public class BoxOfficeService {
    * dip, or swipe. The reader confirms the intent client-side; the frontend
    * then calls {@link #confirmCardSale}.
    */
-  @Transactional
   public CardPresentIntentResult createCardPresentIntent(UUID sessionId, UUID organizationId,
       UUID staffUserId, UUID eventId, List<UUID> seatIds, String terminalReaderId) {
-    BoxOfficeSession session = requireOpenSession(sessionId, organizationId, staffUserId);
-    if (!stripePaymentService.isStripeEnabled()) {
-      throw new BoxOfficeStateException("Stripe is not enabled in this environment");
+    // Not @Transactional: the Stripe call must not run under the seat locks
+    // (exposure gate (b)). 1) hold the seats and commit a pending sale row;
+    // 2) create the intent keyed by that row; 3) attach the intent id.
+    PendingCardSale pending = transactionTemplate.execute(status -> {
+      BoxOfficeSession session = requireOpenSession(sessionId, organizationId, staffUserId);
+      if (!stripePaymentService.isStripeEnabled()) {
+        throw new BoxOfficeStateException("Stripe is not enabled in this environment");
+      }
+      Organization org = organizationRepository.findById(organizationId)
+          .orElseThrow(() -> new ResourceNotFoundException("Organization not found"));
+      if (org.getStripeConnectAccountId() == null || !org.isStripeChargesEnabled()) {
+        throw new BoxOfficeStateException(
+            "Organization must complete Stripe Connect onboarding before taking card payments");
+      }
+
+      BigDecimal amount = holdSeats(eventId, seatIds, staffUserId, organizationId);
+      long amountCents = amount.multiply(BigDecimal.valueOf(100)).longValueExact();
+      salesCapService.checkCanCharge(organizationId, amountCents);
+      Plan plan = org.getPlan() == null ? Plan.FREE : org.getPlan();
+      long feeCents = (amountCents * plan.getPlatformFeeBps()) / 10_000L;
+      ConnectContext connect = new ConnectContext(
+          org.getId().toString(), org.getStripeConnectAccountId(), feeCents, org.getName());
+
+      // Pending sale row (no intent yet): its id keys the Stripe call, and
+      // confirmCardSale correlates on the intent id attached below.
+      BoxOfficeSale sale = sales.save(new BoxOfficeSale(
+          session.getId(), organizationId, eventId, null,
+          SaleMethod.CARD, amount, seatIds.size(),
+          null, null, null, null, terminalReaderId, staffUserId));
+      return new PendingCardSale(sale.getId(), amountCents, connect, feeCents);
+    });
+
+    com.stripe.model.PaymentIntent intent;
+    try {
+      intent = stripePaymentService.createCardPresentPaymentIntent(pending.amountCents(), "usd",
+          pending.connect(), StripeIdempotencyKeys.boxOfficeIntent(pending.saleId()));
+    } catch (RuntimeException ex) {
+      try {
+        transactionTemplate.executeWithoutResult(
+            status -> abandonPendingCardSale(pending.saleId(), seatIds, staffUserId));
+      } catch (RuntimeException cleanup) {
+        // The 1-minute hold expiry frees the seats; the sale row has no order or intent.
+        ex.addSuppressed(cleanup);
+      }
+      throw ex;
     }
-    Organization org = organizationRepository.findById(organizationId)
-        .orElseThrow(() -> new ResourceNotFoundException("Organization not found"));
-    if (org.getStripeConnectAccountId() == null || !org.isStripeChargesEnabled()) {
-      throw new BoxOfficeStateException(
-          "Organization must complete Stripe Connect onboarding before taking card payments");
+
+    // If this commit fails, the intent is orphaned: the reader never got its
+    // client secret, so nothing is charged, and the holds expire in a minute.
+    transactionTemplate.executeWithoutResult(status ->
+        sales.findById(pending.saleId()).orElseThrow().attachPaymentIntent(intent.getId()));
+    return new CardPresentIntentResult(intent, pending.connect().connectedAccountId(),
+        pending.feeCents());
+  }
+
+  private record PendingCardSale(UUID saleId, long amountCents, ConnectContext connect,
+      long feeCents) {}
+
+  /** Compensation when the intent can't be created: free this sale's seats and drop the row. */
+  private void abandonPendingCardSale(UUID saleId, List<UUID> seatIds, UUID staffUserId) {
+    List<UUID> sortedIds = seatIds.stream().distinct().sorted().toList();
+    seatRepository.findAndLockByIdIn(sortedIds);
+    List<SeatHold> holds = seatHoldRepository.findAllByOwnerIdAndStatus(staffUserId, HoldStatus.ACTIVE)
+        .stream()
+        .filter(h -> sortedIds.contains(h.getSeat().getId()))
+        .toList();
+    for (SeatHold hold : holds) {
+      hold.setStatus(HoldStatus.RELEASED);
+      if (hold.getSeat().getStatus() == SeatStatus.HELD) {
+        hold.getSeat().setStatus(SeatStatus.AVAILABLE);
+      }
     }
-
-    BigDecimal amount = holdSeats(eventId, seatIds, staffUserId, organizationId);
-    long amountCents = amount.multiply(BigDecimal.valueOf(100)).longValueExact();
-    salesCapService.checkCanCharge(organizationId, amountCents);
-    Plan plan = org.getPlan() == null ? Plan.FREE : org.getPlan();
-    long feeCents = (amountCents * plan.getPlatformFeeBps()) / 10_000L;
-    ConnectContext connect = new ConnectContext(
-        org.getId().toString(), org.getStripeConnectAccountId(), feeCents, org.getName());
-
-    com.stripe.model.PaymentIntent intent =
-        stripePaymentService.createCardPresentPaymentIntent(amountCents, "usd", connect);
-
-    // Pre-create a PENDING sale row so we can correlate when the reader confirms.
-    sales.save(new BoxOfficeSale(
-        session.getId(), organizationId, eventId, null,
-        SaleMethod.CARD, amount, seatIds.size(),
-        null, null, null, intent.getId(), terminalReaderId, staffUserId));
-    return new CardPresentIntentResult(intent, org.getStripeConnectAccountId(), feeCents);
+    sales.deleteById(saleId);
   }
 
   /**

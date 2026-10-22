@@ -1,6 +1,7 @@
 package com.fairtix.refunds.api;
 
 import com.fairtix.auth.domain.CustomUserPrincipal;
+import com.fairtix.refunds.application.RefundExecutionService;
 import com.fairtix.refunds.application.RefundService;
 import com.fairtix.refunds.domain.RefundStatus;
 import com.fairtix.refunds.dto.CreateRefundRequest;
@@ -28,9 +29,12 @@ import java.util.UUID;
 public class RefundController {
 
   private final RefundService refundService;
+  private final RefundExecutionService refundExecutionService;
 
-  public RefundController(RefundService refundService) {
+  public RefundController(RefundService refundService,
+      RefundExecutionService refundExecutionService) {
     this.refundService = refundService;
+    this.refundExecutionService = refundExecutionService;
   }
 
   @Operation(summary = "Request a refund for a completed order")
@@ -41,7 +45,7 @@ public class RefundController {
       @PathVariable UUID orderId,
       @Valid @RequestBody CreateRefundRequest request) {
     return RefundResponse.from(
-        refundService.requestRefund(principal.getUserId(), orderId, request.reason()));
+        refundExecutionService.request(principal.getUserId(), orderId, request.reason()));
   }
 
   @Operation(summary = "List current user's refund requests")
@@ -78,7 +82,17 @@ public class RefundController {
       @PathVariable UUID refundId,
       @Valid @RequestBody RefundApprovalRequest request) {
     return RefundResponse.from(
-        refundService.reviewRefund(principal.getUserId(), refundId,
+        refundExecutionService.review(principal.getUserId(), refundId,
             request.approved(), request.adminNotes()));
+  }
+
+  @Operation(summary = "Admin: retry an approved refund whose payment-provider call or "
+      + "bookkeeping failed. Safe to repeat: Stripe replays the original refund.")
+  @PostMapping("/api/admin/refunds/{refundId}/retry")
+  @PreAuthorize("hasRole('ADMIN')")
+  public RefundResponse retryRefund(
+      @AuthenticationPrincipal CustomUserPrincipal principal,
+      @PathVariable UUID refundId) {
+    return RefundResponse.from(refundExecutionService.retry(principal.getUserId(), refundId));
   }
 }
