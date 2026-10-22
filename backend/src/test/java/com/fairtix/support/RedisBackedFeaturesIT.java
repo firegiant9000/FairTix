@@ -49,6 +49,45 @@ class RedisBackedFeaturesIT extends PostgresIT {
     assertThat(redissonClient.<String>getBucket("probe").get()).isEqualTo("x");
   }
 
+  /**
+   * Redisson's defaults (3 s timeout, 3 retries 1.5 s apart) stall a request for
+   * seconds before RateLimitFilter can fail open or closed. Bound them.
+   * Intended-red commit: {@code bc554c0}.
+   */
+  @Test
+  void redissonCallsAreBounded() {
+    var server = redissonClient.getConfig().useSingleServer();
+    assertThat(server.getTimeout()).as("timeout ms").isEqualTo(1000);
+    assertThat(server.getRetryAttempts()).as("retry attempts").isEqualTo(1);
+    assertThat(server.getRetryInterval()).as("retry interval ms").isEqualTo(500);
+    assertThat(server.getConnectTimeout()).as("connect timeout ms").isEqualTo(2000);
+  }
+
+  /**
+   * The key includes the request path, which the caller chooses, so limiter keys must
+   * expire or Redis grows without bound (review round 1 on #263). Checks every key the
+   * Redisson limiter creates, not just the main one.
+   */
+  @Test
+  void rateLimiterKeys_expire() {
+    rateLimitService.isAllowed("ip:203.0.113.9", "/api/anything/random-1");
+
+    var keys = new java.util.ArrayList<String>();
+    redissonClient.getKeys().getKeysByPattern("*rate_limit*").forEach(keys::add);
+    assertThat(keys).isNotEmpty();
+    for (String key : keys) {
+      assertThat(redissonClient.getBucket(key).remainTimeToLive()).as("TTL of %s", key).isPositive();
+    }
+  }
+
+  /** Refresh is on the default tier, not the auth tier's 10/min (review round 3 on #263). */
+  @Test
+  void rateLimiter_allowsElevenRefreshesFromOneIp() {
+    for (int i = 0; i < 11; i++) {
+      assertThat(rateLimitService.isAllowed("ip:203.0.113.10", "/auth/refresh")).as("refresh %d", i + 1).isTrue();
+    }
+  }
+
   @Test
   void rateLimiter_rejectsAfterTheAuthLimit() {
     // ratelimit.auth defaults to 10 per minute.

@@ -8,6 +8,7 @@ import org.redisson.api.RRateLimiter;
 import org.redisson.api.RedissonClient;
 import org.redisson.api.RateType;
 import org.redisson.api.RateIntervalUnit;
+import org.redisson.client.RedisException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Arrays;
@@ -86,6 +87,55 @@ public class RateLimitServiceTest {
         when(rateLimiter.tryAcquire(1)).thenReturn(true, false);
         assertTrue(rateLimitService.isAllowed(ipKey, url));
         assertFalse(rateLimitService.isAllowed(ipKey, url));
+    }
+
+    /**
+     * The keys expire, so a limiter that existed at isExists() can be gone by
+     * tryAcquire(), which then throws "RateLimiter is not initialized" (a 503 on the
+     * credential endpoints). trySetRate is set-if-absent: call it every time.
+     * Review round 2 on #263.
+     */
+    @Test
+    public void isAllowed_initialisesTheRateEvenWhenTheLimiterExists() {
+        when(rateLimiter.isExists()).thenReturn(true);
+        when(rateLimiter.tryAcquire(1)).thenReturn(true);
+
+        rateLimitService.isAllowed("ip:1.2.3.4", "/auth/login");
+
+        verify(rateLimiter).trySetRate(RateType.OVERALL, 10L, 1L, RateIntervalUnit.MINUTES);
+    }
+
+    /**
+     * The key can still lapse in the round trip between trySetRate (a no-op while the
+     * key exists) and tryAcquire. Re-initialise and retry once rather than fail the
+     * request (a 503 on the credential endpoints). Review round 3 on #263.
+     */
+    @Test
+    public void isAllowed_retriesOnceWhenTheLimiterExpiredMidCall() {
+        when(rateLimiter.tryAcquire(1))
+            .thenThrow(new RedisException("ERR user_script:1: RateLimiter is not initialized"))
+            .thenReturn(true);
+
+        assertTrue(rateLimitService.isAllowed("ip:1.2.3.4", "/auth/login"));
+        verify(rateLimiter, times(2)).trySetRate(RateType.OVERALL, 10L, 1L, RateIntervalUnit.MINUTES);
+    }
+
+    @Test
+    public void isAllowed_doesNotRetryOtherRedisErrors() {
+        when(rateLimiter.tryAcquire(1)).thenThrow(new RedisException("connection refused"));
+
+        assertThrows(RedisException.class, () -> rateLimitService.isAllowed("ip:1.2.3.4", "/auth/login"));
+        verify(rateLimiter, times(1)).tryAcquire(1);
+    }
+
+    /**
+     * The SPA signs the user out on any failed refresh, and after the 15-minute access
+     * cookie expires refresh is keyed by IP, so the 10/min auth tier would sign out the
+     * 11th user behind a NAT. Refresh takes a high-entropy cookie: default tier.
+     */
+    @Test
+    public void refresh_getsTheDefaultTier() {
+        assertEquals(100, rateLimitService.resolveLimit("/auth/refresh"));
     }
 
     @Test
