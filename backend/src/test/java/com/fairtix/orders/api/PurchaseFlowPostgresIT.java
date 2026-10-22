@@ -32,7 +32,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * {@link PurchaseFlowIntegrationTest} on PostgreSQL 16 with the Flyway schema:
  * create hold -> confirm hold -> checkout (payment) -> verify tickets + seat status.
- * The H2 original stays until L1-rest removes H2. Each test rolls back, and
+ * Since H2 was removed (L1-rest C) the original runs on PostgreSQL too, so the two
+ * overlap; this copy adds the real Redis container. Each test rolls back, and
  * {@link PostgresIT} truncates the committed {@code REQUIRES_NEW} audit rows.
  */
 @Transactional

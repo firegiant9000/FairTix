@@ -32,7 +32,9 @@ import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -143,6 +145,57 @@ class StripeWebhookControllerTest {
         .andExpect(status().isOk());
 
     verify(auditService, never()).log(eq(new UUID(0L, 0L)), eq("STRIPE_UNMATCHED_PAYMENT"), anyString(), any(), anyString());
+  }
+
+  @Test
+  void paymentIntentSucceeded_noRecord_auditsUnmatchedPayment() throws Exception {
+    String piId = "pi_unmatched_789";
+    String payload = paymentIntentEvent("payment_intent.succeeded", piId);
+    when(paymentRecordRepository.findByTransactionId(piId)).thenReturn(Optional.empty());
+
+    mockMvc.perform(post("/api/webhooks/stripe")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header("Stripe-Signature", stripeSignature(payload, WEBHOOK_SECRET))
+            .content(payload))
+        .andExpect(status().isOk());
+
+    verify(auditService).log(eq(new UUID(0L, 0L)), eq("STRIPE_UNMATCHED_PAYMENT"), eq("PAYMENT"),
+        isNull(), contains("paymentIntentId=" + piId));
+  }
+
+  @Test
+  void paymentIntentFailed_auditsReason_andChangesNoState() throws Exception {
+    String piId = "pi_failed_321";
+    String payload = """
+        {
+          "id": "evt_test_failed",
+          "object": "event",
+          "type": "payment_intent.payment_failed",
+          "api_version": "%s",
+          "data": {
+            "object": {
+              "id": "%s",
+              "object": "payment_intent",
+              "amount": 5000,
+              "currency": "usd",
+              "status": "requires_payment_method",
+              "last_payment_error": { "message": "Your card was declined." }
+            }
+          }
+        }
+        """.formatted(Stripe.API_VERSION, piId);
+
+    mockMvc.perform(post("/api/webhooks/stripe")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header("Stripe-Signature", stripeSignature(payload, WEBHOOK_SECRET))
+            .content(payload))
+        .andExpect(status().isOk());
+
+    verify(auditService).log(eq(new UUID(0L, 0L)), eq("STRIPE_PAYMENT_FAILED"), eq("PAYMENT"),
+        isNull(), eq("paymentIntentId=" + piId + " failed: Your card was declined."));
+    // Audit only: no order, payment or refund state changes on a failed intent.
+    verify(paymentRecordRepository, never()).save(any());
+    verify(refundRepository, never()).save(any());
   }
 
   @Test

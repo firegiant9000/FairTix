@@ -69,6 +69,23 @@ So, per Arlo's FT-2 ruling, the red test is the database invariant (a). The hone
 | `a9fbbf6` (test only) | 20 | 27 | 133 | **40 `CannotCreateTransactionException`** | 43 | 20 680 |
 | fix (`logInCurrentTransaction`) | 20 | 20 | 180 | 0 | 43 | 324 |
 
+### L1-rest: the no-ordering deadlock variant
+
+`SeatLockOrderingDeadlockIT` takes the same row locks as `findAndLockByIdIn` (`SELECT ... FOR UPDATE`), but one seat at a time, in a caller-chosen order. The service can't be used for this, because it always sorts.
+
+- **Pair:** two transactions lock seats `[s1, s2]` and `[s2, s1]`, with a barrier between their first and second lock. PostgreSQL aborts exactly one of them with SQLState `40P01` after `deadlock_timeout` (1 s by default). Spring surfaces it as a `PessimisticLockingFailureException`. With sorted order, the second transaction queues behind the first and both commit.
+- **Workload:** the same 200 requests over 50 seats (seed `20261019`, 20 workers, pool 10), locked in shuffled order. A request that finds a seat already `HELD` rolls back as a conflict.
+
+| Run | Successes | Conflicts | Deadlocks (`40P01`) | Other exceptions | Seats held |
+|---|---|---|---|---|---|
+| 1 | 22 | 170 | 8 | 0 | 44 |
+| 2 | 22 | 171 | 7 | 0 | 45 |
+| 3 | 23 | 168 | 9 | 0 | 41 |
+| 4 | 23 | 171 | 6 | 0 | 43 |
+| 5 | 21 | 175 | 4 | 0 | 43 |
+
+Deadlocks ranged from 4 to 9 (median 7) across 5 local runs on 2026-10-20, with a Hikari pool of 10. After review the test runs one connection per worker (pool 20), so no worker waits on the pool behind a deadlocked transaction. The first run at pool 20 gave 11 deadlocks. Over the same workload with sorted locking (`SeatHoldContentionIT`), there were 0. The seats held always equalled the seats claimed by winners, because a deadlock loser rolls back. Removing the sorted ordering costs failed requests, not oversells: PostgreSQL's detector breaks the cycle. The ordering exists for availability and latency (each deadlock costs a 1 s stall plus a retry), not for the double-sell invariant.
+
 ## Findings (recorded in L1-min; both fixed in L1-rest)
 
 Both are fixed on `fix/l1rest-correctness`:
@@ -82,6 +99,6 @@ Both are fixed on `fix/l1rest-correctness`:
 
 - This is a correctness test, not a performance measurement. The timings above come from one developer machine. CI hardware varies, and nothing here supports a throughput or "under load" claim.
 - Concurrency is 20 workers (9 in L1-min, bounded by finding 2), so at most 20 transactions contend at once, and only 10 hold a connection. It is not 200-way contention.
-- One round only. The roadmap's multi-round run and the no-ordering deadlock variant are L1-rest, so this doc makes no "deadlock-free" claim.
-- Redis is a mock, and the queue gate is off for this event.
-- Scheduled expiry is off in this test. `CONFIRMED`-hold expiry, including a checkout racing the sweep, is covered separately by `ConfirmedHoldExpiryIT` (L1-rest). The payment-failure paths are not exercised (L1-rest).
+- One round per run. The roadmap's multi-round run remains open. The no-ordering variant (above) shows the sorted path avoids the deadlocks that unordered locking produces. It doesn't prove that every locking path in the codebase is ordered: `EventHoldService`, `CompService` and `BoxOfficeService` go through the same sorted `findAndLockByIdIn`, but they weren't raced here.
+- The queue gate is off for this event. Since L1-rest C the IT suite runs on a real Redis 7 container, but the contention workload doesn't touch Redis.
+- Scheduled expiry is off in this test. `CONFIRMED`-hold expiry, including a checkout racing the sweep, is covered separately by `ConfirmedHoldExpiryIT` (L1-rest). The payment-failure paths are covered by `PaymentFailurePathsIT` and `StripeOrderFailureIT` (L1-rest).

@@ -2,6 +2,7 @@ package com.fairtix.audit.api;
 
 import com.fairtix.audit.domain.AuditLog;
 import com.fairtix.audit.infrastructure.AuditLogRepository;
+import com.fairtix.audit.infrastructure.AuditLogSpecifications;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -31,7 +32,7 @@ public class AdminAuditController {
             @RequestParam(defaultValue = "25") int size) {
         PageRequest pageable = PageRequest.of(page, Math.min(size, 100),
                 Sort.by(Sort.Direction.DESC, "createdAt"));
-        return auditLogRepository.findWithFilters(userId, action, from, pageable)
+        return auditLogRepository.findAll(AuditLogSpecifications.withFilters(userId, action, from), pageable)
                 .map(AuditLogResponse::from);
     }
 
