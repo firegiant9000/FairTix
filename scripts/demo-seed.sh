@@ -16,6 +16,19 @@ set -euo pipefail
 API="${API:-http://localhost:8080}"
 PG_CONTAINER="${PG_CONTAINER:-fairtix-postgres}"
 
+# The demo accounts have a fixed, published password (one of them is ADMIN), so never
+# create them on anything reachable from outside this machine.
+case "${API}" in
+  http://localhost:*|http://localhost|http://127.0.0.1:*|http://127.0.0.1) ;;
+  *)
+    if [[ "${DEMO_SEED_ALLOW_REMOTE:-}" != "1" ]]; then
+      echo "Refusing to seed ${API}: demo accounts use a fixed password." >&2
+      echo "Set DEMO_SEED_ALLOW_REMOTE=1 only for a private, throwaway environment." >&2
+      exit 1
+    fi
+    ;;
+esac
+
 # Load DB creds from .env
 set -a; source .env; set +a
 PSQL="docker exec -i ${PG_CONTAINER} psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -At"

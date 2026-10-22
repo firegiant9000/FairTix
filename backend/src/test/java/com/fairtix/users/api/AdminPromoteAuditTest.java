@@ -21,7 +21,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Promoting a user to ADMIN is audited with the acting admin and the target (RM:324:
- * who holds admin must be traceable). Red on commit {@code <red>}: no audit row.
+ * who holds admin must be traceable). Red on commit {@code 220a1ef}: no audit row.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @Transactional

@@ -5,8 +5,10 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
+import com.fairtix.audit.application.AuditService;
 import com.fairtix.auth.domain.CustomUserPrincipal;
 import com.fairtix.users.application.UserService;
 import com.fairtix.users.infrastructure.UserRepository;
@@ -35,6 +37,7 @@ public class AdminController {
 
     private final UserRepository userRepository;
     private final UserService userService;
+    private final AuditService auditService;
 
     /**
      * Returns a paginated list of all users.
@@ -65,12 +68,17 @@ public class AdminController {
     @ApiResponse(responseCode = "400", description = "User not found")
     @PatchMapping("/users/{id}/promote")
     @PreAuthorize("hasRole('ADMIN')")
-    public void promoteUser(@PathVariable UUID id) {
+    @Transactional
+    public void promoteUser(@PathVariable UUID id,
+                            @AuthenticationPrincipal CustomUserPrincipal principal) {
         User user = userRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("User not found: " + id));
 
         user.setRole(Role.ADMIN);
         userRepository.save(user);
+        // Same transaction (admin-only, not a hot path): the grant and its record commit together.
+        auditService.logInCurrentTransaction(principal != null ? principal.getUserId() : null,
+                "USER_PROMOTED", "USER", id, "role=ADMIN");
     }
 
     @Operation(summary = "Delete a user account",
