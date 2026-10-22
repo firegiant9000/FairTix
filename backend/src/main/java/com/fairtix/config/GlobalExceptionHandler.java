@@ -17,26 +17,41 @@ import com.fairtix.auth.application.WeakPasswordException;
 import com.fairtix.payments.api.PaymentProcessingException;
 import com.fairtix.payments.application.PaymentDeclinedException;
 import com.fairtix.payments.application.PaymentFailedException;
+import com.fairtix.fraud.application.StepUpUnavailableException;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.queue.application.QueueConflictException;
 import com.fairtix.refunds.application.RefundNotEligibleException;
 import com.fairtix.tickets.application.TransferVelocityExceededException;
 import com.fairtix.support.application.SupportTicketNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.AuthenticationTrustResolver;
+import org.springframework.security.authentication.AuthenticationTrustResolverImpl;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Translates domain and validation exceptions into a consistent JSON error
@@ -56,6 +71,8 @@ import java.util.Map;
 public class GlobalExceptionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+  private static final AuthenticationTrustResolver TRUST_RESOLVER =
+      new AuthenticationTrustResolverImpl();
 
   @ExceptionHandler(SeatHoldNotFoundException.class)
   public ResponseEntity<Map<String, Object>> handleNotFound(
@@ -113,6 +130,84 @@ public class GlobalExceptionHandler {
     return error(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", firstError, req);
   }
 
+  /**
+   * Handles constraint failures on controller method parameters (for example
+   * {@code @Valid List<...>} bodies and constrained {@code @RequestParam}s).
+   * It extends {@link ResponseStatusException}, so without this closer match that
+   * handler would answer with code {@code BAD_REQUEST}.
+   */
+  @ExceptionHandler(HandlerMethodValidationException.class)
+  public ResponseEntity<Map<String, Object>> handleMethodValidation(
+      HandlerMethodValidationException ex, HttpServletRequest req) {
+    logClientError(ex, req);
+    String firstError = ex.getParameterValidationResults().stream()
+        .flatMap(result -> result.getResolvableErrors().stream()
+            .map(err -> (err instanceof FieldError fe ? fe.getField()
+                : result.getMethodParameter().getParameterName())
+                + ": " + err.getDefaultMessage()))
+        .findFirst()
+        .orElse("Validation failed");
+    return error(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", firstError, req);
+  }
+
+  @ExceptionHandler(ConstraintViolationException.class)
+  public ResponseEntity<Map<String, Object>> handleConstraintViolation(
+      ConstraintViolationException ex, HttpServletRequest req) {
+    logClientError(ex, req);
+    String firstError = ex.getConstraintViolations().stream()
+        .findFirst()
+        .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+        .orElse("Validation failed");
+    return error(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", firstError, req);
+  }
+
+  /** The parser's message can quote the body (a password, say), so it is never echoed or logged. */
+  @ExceptionHandler(HttpMessageNotReadableException.class)
+  public ResponseEntity<Map<String, Object>> handleNotReadable(
+      HttpMessageNotReadableException ex, HttpServletRequest req) {
+    logClientError(ex, req);
+    return error(HttpStatus.BAD_REQUEST, "MALFORMED_REQUEST",
+        "The request body is missing or is not valid JSON", req);
+  }
+
+  @ExceptionHandler(MissingServletRequestParameterException.class)
+  public ResponseEntity<Map<String, Object>> handleMissingParameter(
+      MissingServletRequestParameterException ex, HttpServletRequest req) {
+    logClientError(ex, req);
+    return error(HttpStatus.BAD_REQUEST, "MISSING_PARAMETER",
+        "Required parameter '" + ex.getParameterName() + "' is missing", req);
+  }
+
+  @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+  public ResponseEntity<Map<String, Object>> handleTypeMismatch(
+      MethodArgumentTypeMismatchException ex, HttpServletRequest req) {
+    logClientError(ex, req);
+    return error(HttpStatus.BAD_REQUEST, "INVALID_PARAMETER",
+        "Invalid value for parameter '" + ex.getName() + "'", req);
+  }
+
+  @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+  public ResponseEntity<Map<String, Object>> handleMethodNotSupported(
+      HttpRequestMethodNotSupportedException ex, HttpServletRequest req) {
+    logClientError(ex, req);
+    ResponseEntity<Map<String, Object>> body = error(HttpStatus.METHOD_NOT_ALLOWED,
+        "METHOD_NOT_ALLOWED", "Method " + ex.getMethod() + " is not supported here", req);
+    Set<HttpMethod> allowed = ex.getSupportedHttpMethods();
+    if (allowed == null || allowed.isEmpty()) {
+      return body;
+    }
+    return ResponseEntity.status(body.getStatusCode()).allow(allowed.toArray(HttpMethod[]::new))
+        .body(body.getBody());
+  }
+
+  @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+  public ResponseEntity<Map<String, Object>> handleMediaTypeNotSupported(
+      HttpMediaTypeNotSupportedException ex, HttpServletRequest req) {
+    logClientError(ex, req);
+    return error(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "UNSUPPORTED_MEDIA_TYPE",
+        "Content type is not supported here", req);
+  }
+
   @ExceptionHandler(ResponseStatusException.class)
   public ResponseEntity<Map<String, Object>> handleResponseStatus(
       ResponseStatusException ex, HttpServletRequest req) {
@@ -130,9 +225,18 @@ public class GlobalExceptionHandler {
     return error(status, status.name(), message, req);
   }
 
+  /**
+   * {@code @PreAuthorize} on a permitAll path (such as {@code /auth/me}) denies an
+   * anonymous caller here, before Spring Security's entry point can answer, so an
+   * unauthenticated caller is mapped to the entry point's 401 rather than 403.
+   */
   @ExceptionHandler(AccessDeniedException.class)
   public ResponseEntity<Map<String, Object>> handleAccessDenied(
       AccessDeniedException ex, HttpServletRequest req) {
+    Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+    if (!TRUST_RESOLVER.isAuthenticated(auth)) {
+      return error(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "Authentication required", req);
+    }
     return error(HttpStatus.FORBIDDEN, "FORBIDDEN", "Access denied", req);
   }
 
@@ -218,6 +322,12 @@ public class GlobalExceptionHandler {
     return error(HttpStatus.SERVICE_UNAVAILABLE, "CAPTCHA_UNAVAILABLE", ex.getMessage(), req);
   }
 
+  @ExceptionHandler(StepUpUnavailableException.class)
+  public ResponseEntity<Map<String, Object>> handleStepUpUnavailable(
+      StepUpUnavailableException ex, HttpServletRequest req) {
+    return error(HttpStatus.SERVICE_UNAVAILABLE, "STEP_UP_UNAVAILABLE", ex.getMessage(), req);
+  }
+
   @ExceptionHandler(WeakPasswordException.class)
   public ResponseEntity<Map<String, Object>> handleWeakPassword(
       WeakPasswordException ex, HttpServletRequest req) {
@@ -279,6 +389,11 @@ public class GlobalExceptionHandler {
   }
 
   // -------------------------------------------------------------------------
+
+  /** Client mistakes are warn, not error, and never log the exception message. */
+  private void logClientError(Exception ex, HttpServletRequest req) {
+    log.warn("{} on {} {}", ex.getClass().getSimpleName(), req.getMethod(), req.getRequestURI());
+  }
 
   private ResponseEntity<Map<String, Object>> error(HttpStatus status, String code, String message,
       HttpServletRequest req) {

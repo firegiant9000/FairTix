@@ -87,6 +87,16 @@ class FlywayPostgresIT extends PostgresIT {
         .toList());
   }
 
+  /** V47: an audit row may have no user (a failed login for an unregistered email). */
+  @Test
+  void v47MakesAuditLogUserIdNullable() {
+    String nullable = jdbcTemplate.queryForObject(
+        "SELECT is_nullable FROM information_schema.columns"
+            + " WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'user_id'",
+        String.class);
+    assertThat(nullable).isEqualTo("YES");
+  }
+
   /** V46: one active ticket per seat, as a partial unique index. */
   @Test
   void v46AddsThePartialUniqueIndexOnTicketSeat() {

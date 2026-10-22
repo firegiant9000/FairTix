@@ -42,8 +42,8 @@ REACT_APP_RECAPTCHA_SITE_KEY=<your-site-key>
 
 | State | What happens |
 |-------|-------------|
-| `RECAPTCHA_ENABLED=false` (default) | No CAPTCHA is shown anywhere. The backend skips all token checks. |
-| `RECAPTCHA_ENABLED=true`, secret blank | Backend logs a startup warning; all verifications will fail. |
+| `RECAPTCHA_ENABLED=false` (default) | No CAPTCHA is shown anywhere and login skips token checks. Step-up **fails closed**: `POST /auth/step-up/verify` returns 503 `STEP_UP_UNAVAILABLE` and never marks the user verified, so a user the fraud gate challenges can't check out or hold seats until reCAPTCHA is configured. |
+| `RECAPTCHA_ENABLED=true`, secret blank | Backend logs a startup warning. Treated as disabled, so step-up fails closed as above. |
 | `RECAPTCHA_ENABLED=true`, valid keys | CAPTCHA is shown after **3 consecutive failed login attempts** and is always required for step-up verification. |
 
 ### When the CAPTCHA appears

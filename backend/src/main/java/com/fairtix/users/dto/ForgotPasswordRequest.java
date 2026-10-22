@@ -1,3 +1,7 @@
 package com.fairtix.users.dto;
 
-public record ForgotPasswordRequest(String email) {}
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+
+/** No {@code @Email}, as on {@link LoginRequest}: older accounts must be able to recover. */
+public record ForgotPasswordRequest(@NotBlank @Size(max = 254) String email) {}

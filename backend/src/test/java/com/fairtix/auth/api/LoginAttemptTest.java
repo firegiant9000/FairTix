@@ -1,5 +1,8 @@
 package com.fairtix.auth.api;
 
+import com.fairtix.audit.domain.AuditLog;
+import com.fairtix.audit.infrastructure.AuditLogRepository;
+import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -8,10 +11,16 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.context.WebApplicationContext;
 
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -24,6 +33,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class LoginAttemptTest {
 
   @Autowired private WebApplicationContext context;
+  @Autowired private AuditLogRepository auditLogRepository;
   private MockMvc mockMvc;
 
   @BeforeEach
@@ -131,5 +141,91 @@ class LoginAttemptTest {
     mockMvc.perform(post("/auth/login")
             .contentType(MediaType.APPLICATION_JSON).content(badLogin))
         .andExpect(status().isUnauthorized());
+  }
+
+  // -------------------------------------------------------------------------
+  // Audit events (red on commit 415adf4: no LOGIN_FAILED or ACCOUNT_LOCKED
+  // event existed). Audit writes are REQUIRES_NEW, so they commit even though
+  // this test class rolls back; each test filters by its own user or start time.
+  // -------------------------------------------------------------------------
+
+  @Test
+  void login_wrongPassword_auditsLoginFailedWithUserIdAndNoCredentials() throws Exception {
+    UUID userId = register("audit-fail@test.com");
+
+    mockMvc.perform(post("/auth/login")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{ \"email\": \"audit-fail@test.com\", \"password\": \"Wrong-P4ss!\" }"))
+        .andExpect(status().isUnauthorized());
+
+    List<AuditLog> failures = auditFor(userId, "LOGIN_FAILED");
+    assertThat(failures).hasSize(1);
+    assertThat(failures.get(0).getResourceId()).isEqualTo(userId);
+    assertNoCredentials(failures, "audit-fail@test.com", "Wrong-P4ss!");
+  }
+
+  @Test
+  void login_unknownEmail_auditsLoginFailedWithNullUser() throws Exception {
+    Instant start = Instant.now();
+
+    mockMvc.perform(post("/auth/login")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{ \"email\": \"nobody-audit@test.com\", \"password\": \"Wrong-P4ss!\" }"))
+        .andExpect(status().isUnauthorized());
+
+    List<AuditLog> failures = auditLogRepository.findAll().stream()
+        .filter(a -> "LOGIN_FAILED".equals(a.getAction()))
+        .filter(a -> a.getUserId() == null)
+        .filter(a -> !a.getCreatedAt().isBefore(start))
+        .toList();
+    assertThat(failures).isNotEmpty();
+    assertNoCredentials(failures, "nobody-audit@test.com", "Wrong-P4ss!");
+    // The behaviour sweep reads active users from audit_logs and must not see the null.
+    assertThat(auditLogRepository.findDistinctUserIdsByCreatedAtAfter(start.minusMillis(1)))
+        .doesNotContainNull();
+  }
+
+  @Test
+  void login_lockout_auditsAccountLockedOnce() throws Exception {
+    UUID userId = register("audit-lock@test.com");
+    String badLogin = """
+        { "email": "audit-lock@test.com", "password": "Wrong-P4ss!" }
+        """;
+    for (int i = 0; i < 5; i++) {
+      mockMvc.perform(post("/auth/login")
+              .contentType(MediaType.APPLICATION_JSON).content(badLogin))
+          .andExpect(status().isUnauthorized());
+    }
+    // Rejected while locked: no further LOGIN_FAILED or ACCOUNT_LOCKED.
+    mockMvc.perform(post("/auth/login")
+            .contentType(MediaType.APPLICATION_JSON).content(badLogin))
+        .andExpect(status().isTooManyRequests());
+
+    assertThat(auditFor(userId, "LOGIN_FAILED")).hasSize(5);
+    List<AuditLog> locked = auditFor(userId, "ACCOUNT_LOCKED");
+    assertThat(locked).hasSize(1);
+    assertNoCredentials(locked, "audit-lock@test.com", "Wrong-P4ss!");
+  }
+
+  private UUID register(String email) throws Exception {
+    MvcResult result = mockMvc.perform(post("/auth/register")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{ \"email\": \"%s\", \"password\": \"StrongP4ss!\" }".formatted(email)))
+        .andExpect(status().isOk())
+        .andReturn();
+    return UUID.fromString(JsonPath.read(result.getResponse().getContentAsString(), "$.userId"));
+  }
+
+  private List<AuditLog> auditFor(UUID userId, String action) {
+    return auditLogRepository.findByUserIdAndCreatedAtAfter(userId, Instant.EPOCH).stream()
+        .filter(a -> action.equals(a.getAction()))
+        .toList();
+  }
+
+  private static void assertNoCredentials(List<AuditLog> rows, String email, String password) {
+    assertThat(rows).allSatisfy(a -> {
+      String details = a.getDetails() == null ? "" : a.getDetails();
+      assertThat(details).doesNotContainIgnoringCase(email).doesNotContain(password);
+    });
   }
 }

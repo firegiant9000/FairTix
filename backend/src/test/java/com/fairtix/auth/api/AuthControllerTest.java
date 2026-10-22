@@ -227,10 +227,22 @@ class AuthControllerTest {
         .andExpect(jsonPath("$.role").value("USER"));
   }
 
+  /**
+   * An anonymous caller is unauthenticated, not forbidden. Red on commit
+   * {@code 415adf4}: {@code @PreAuthorize} denied the anonymous principal and
+   * the advice mapped every {@code AccessDeniedException} to 403.
+   */
   @Test
-  void me_withoutCookie_returns403() throws Exception {
+  void me_withoutCookie_returns401() throws Exception {
     mockMvc.perform(get("/auth/me"))
-        .andExpect(status().isForbidden());
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+  }
+
+  @Test
+  void resendVerification_withoutCookie_returns401() throws Exception {
+    mockMvc.perform(post("/auth/resend-verification"))
+        .andExpect(status().isUnauthorized());
   }
 
   // -------------------------------------------------------------------------

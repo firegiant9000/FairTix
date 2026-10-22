@@ -2,6 +2,7 @@ package com.fairtix.config;
 
 import org.mockito.Mockito;
 import org.redisson.api.RAtomicLong;
+import org.redisson.api.RBucket;
 import org.redisson.api.RRateLimiter;
 import org.redisson.api.RSet;
 import org.redisson.api.RedissonClient;
@@ -32,6 +33,7 @@ import static org.mockito.Mockito.when;
 public class TestRedisConfig {
 
   private final ConcurrentHashMap<String, AtomicLong> atomicLongs = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, Object> buckets = new ConcurrentHashMap<>();
 
   @Bean
   @Primary
@@ -61,6 +63,20 @@ public class TestRedisConfig {
       when(atomicMock.remainTimeToLive()).thenReturn(900_000L); // 15 min in ms
       when(atomicMock.expire(Mockito.any(java.time.Duration.class))).thenReturn(true);
       return atomicMock;
+    });
+
+    // Bucket mock for StepUpGateService (step-up verified flag); the TTL is ignored
+    when(mock.getBucket(anyString())).thenAnswer(invocation -> {
+      String key = invocation.getArgument(0);
+      @SuppressWarnings("unchecked")
+      RBucket<Object> bucketMock = Mockito.mock(RBucket.class);
+      when(bucketMock.get()).thenAnswer(i -> buckets.get(key));
+      Mockito.doAnswer(i -> {
+        buckets.put(key, i.getArgument(0));
+        return null;
+      }).when(bucketMock).set(Mockito.any(), Mockito.any(java.time.Duration.class));
+      when(bucketMock.delete()).thenAnswer(i -> buckets.remove(key) != null);
+      return bucketMock;
     });
 
     // RSet mock for QueueService (admitted set per event)
