@@ -6,15 +6,24 @@ The L3 lab's infrastructure docs.
 |---|---|
 | [`teardown-design.md`](teardown-design.md) | The three-layer teardown design (TD) |
 | [`teardown-tests.md`](teardown-tests.md) | The T1–T7 test record, including the T3 runbook |
-| [`../../infra/teardown/README.md`](../../infra/teardown/README.md) | The teardown code, its tests and the bootstrap naming contract |
+| [`../../infra/teardown/README.md`](../../infra/teardown/README.md) | The teardown code (including the reaper and T5b's `teardown.simulate`), its tests and the bootstrap naming contract |
+| [`../../infra/bootstrap/README.md`](../../infra/bootstrap/README.md) | The bootstrap stack (state bucket, OIDC roles, reaper, alerts, budget): Arlo's apply runbook and the state choice |
+
+## Stacks
+
+| Stack | Applied by | State | What it is |
+|---|---|---|---|
+| `infra/bootstrap` | Arlo, locally, once | Local first, then `bootstrap/` in the state bucket | The always-on parts (TD §2). Never destroyed by teardown |
+| `infra/canary` | Arlo, locally, for T4/T5 | `canary/` | Free resources only (TD:153). `lab-teardown.yml` destroys it |
+| `infra/lab` | `lab-apply.yml` (stage B) | `lab/` | The lab itself |
 
 ## Workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/lab-teardown.yml` | Hourly at :17, plus `workflow_dispatch` (`force`) | Layer 2 (and, with `force`, layer 1): `teardown.decide`, then `terraform destroy`, `teardown.verify` and an expiry reset. On failure it opens or updates the issue "lab teardown failed" (label `lab-teardown`) |
+| `.github/workflows/lab-teardown.yml` | Hourly at :17, plus `workflow_dispatch` (`force`) | Layer 2 (and, with `force`, layer 1): `teardown.decide`, then `terraform destroy` of `infra/lab` and `infra/canary` (whichever exist), `teardown.verify` and an expiry reset. On failure it opens or updates the issue "lab teardown failed" (label `lab-teardown`) |
 | `.github/workflows/lab-apply.yml` | `workflow_dispatch` only (`ttl_hours`, default 4, maximum 12) | `teardown.preflight`, then `terraform apply`. Until FT-3 adds `infra/lab`, it fails with "lab stack not present" |
-| `.github/workflows/infra.yml` | Every PR and push to `main`/`develop` | T1 and T2 (`teardown-tests`) and `actionlint` |
+| `.github/workflows/infra.yml` | Every PR and push to `main`/`develop` | T1 and T2 (`teardown-tests`), `actionlint`, and `terraform fmt -check` plus `validate` for every stack (no credentials). **No `plan` runs or is posted on PRs:** the repo is public (FT-3; RM:210 asks for it and needs amending) |
 
 ## GitHub settings the lab depends on
 
@@ -42,10 +51,12 @@ The L3 lab's infrastructure docs.
 
 | Name | Kind | Holds |
 |---|---|---|
-| `LAB_TEARDOWN_ROLE_ARN` | Secret on `lab-teardown` | The `lab-teardown` IAM role ARN that OIDC assumes |
-| `LAB_APPLY_ROLE_ARN` | Secret on `lab-apply` | The `lab-apply` IAM role ARN |
+| `LAB_TEARDOWN_ROLE_ARN` | Secret on `lab-teardown` | The `fairtix-lab-bootstrap-lab-teardown` role ARN that OIDC assumes (`terraform -chdir=infra/bootstrap output -raw lab_teardown_role_arn`) |
+| `LAB_APPLY_ROLE_ARN` | Secret on `lab-apply` | The `fairtix-lab-bootstrap-lab-apply` role ARN (`output -raw lab_apply_role_arn`) |
 | `lab-teardown` environment | Environment | No required reviewers, no wait timer, deployment branches: custom policy `main` only |
-| `lab-apply` environment | Environment | Optional owner approval; deployment branches: `main` only |
+| `lab-apply` environment | Environment | Optional owner approval; deployment branches: `main` only. Holds `LAB_APPLY_ROLE_ARN` and `LAB_PREFLIGHT_TOKEN` |
+
+Each role's trust pins the environment (`sub`), the workflow file on `main` (`job_workflow_ref`) and the repository id. **Renaming an environment, a workflow file or the default branch breaks OIDC** for that workflow until bootstrap is re-applied (TD §7 row 4).
 
 The role ARNs are secrets rather than variables because they contain the account id and the repo is public. Secrets are masked in logs. `configure-aws-credentials` also runs with `mask-aws-account-id: true`.
 
@@ -53,5 +64,5 @@ The role ARNs are secrets rather than variables because they contain the account
 
 If `LAB_ENABLED` is set to anything other than `true` while lab resources are still up, **layer 2 stops**: every hourly run skips, and nothing tears the lab down from GitHub.
 
-- **The backstop is the layer-3 reaper** (FT-3, AWS-side). It doesn't read `LAB_ENABLED` and deletes the billable resources 2 hours past expiry.
-- **Until FT-3 builds the reaper, there is no backstop.** So: destroy first (`lab-teardown.yml` with `force: true`, then confirm that `teardown.verify` is empty), **then** turn `LAB_ENABLED` off.
+- **The backstop is the layer-3 reaper** (`infra/bootstrap`, AWS-side). It doesn't read `LAB_ENABLED` and deletes the billable resources 2 hours past expiry. It never deletes the free leftovers (VPC, ECR, secrets, logs) and says nothing about them, because they don't reach its billable census. A billable resource outside the `fairtix-lab-` prefix or tag isn't deleted either, but it keeps the reaper emailing every 30 minutes.
+- **So: destroy first** (`lab-teardown.yml` with `force: true`, then confirm that `teardown.verify` is empty), **then** turn `LAB_ENABLED` off.

@@ -185,6 +185,30 @@ def test_no_secrets_expression_inside_run(path):
             assert not SECRETS_EXPR.search(step.get("run", "")), f"secrets in run: of {step.get('name')}"
 
 
+@pytest.mark.parametrize("path", [TEARDOWN_FILE, APPLY_FILE], ids=lambda p: p.name)
+def test_pip_installs_require_hashes_from_the_lock(path):
+    # These jobs hold id-token: write, so no transitive dependency may float (FT-3 carry-in).
+    workflow = _load(path)
+    installs = [s["run"] for job in workflow["jobs"].values() for s in _steps(job)
+                if re.search(r"\bpip\b.*\binstall\b", s.get("run", ""))]
+    assert installs
+    for run in installs:
+        assert "--require-hashes" in run, run
+        assert "-r teardown/requirements.lock" in run, run
+
+
+def test_the_lock_pins_every_top_level_requirement():
+    teardown_dir = WORKFLOWS.parents[1] / "infra" / "teardown"
+    lock = (teardown_dir / "requirements.lock").read_text(encoding="utf-8")
+    pins = [line.strip() for line in (teardown_dir / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")]
+    assert pins
+    for pin in pins:
+        assert re.search(rf"^{re.escape(pin)} \\$", lock, re.MULTILINE), f"{pin} missing from the lock; regenerate it"
+    entries = re.findall(r"^\S+==\S+ \\\n\s+--hash=sha256:[0-9a-f]{64}$", lock, re.MULTILINE)
+    assert len(entries) == len(re.findall(r"^\S+==", lock, re.MULTILINE))
+
+
 def test_apply_preflight_precedes_every_terraform_step(apply_job):
     steps = _steps(apply_job)
     preflights = [i for i, s in enumerate(steps) if "teardown.preflight" in s.get("run", "")]
@@ -214,7 +238,7 @@ def test_teardown_steps_run_decide_destroy_verify_reset_and_report(teardown_job)
     joined = "\n".join(runs)
     order = [
         joined.index("python -m teardown.decide"),
-        joined.index("terraform -chdir=infra/lab destroy"),
+        joined.index('terraform -chdir="$stack" destroy'),
         joined.index("python -m teardown.verify"),
         joined.index("/fairtix-lab/expires_at"),
         joined.index("lab teardown failed"),
@@ -231,13 +255,21 @@ def test_teardown_oidc_runs_before_decide(teardown_job):
 
 
 def test_destroy_retries_once_on_dependency_violation(teardown_job):
-    step = next(s for s in _steps(teardown_job) if "terraform -chdir=infra/lab destroy" in s.get("run", ""))
+    step = next(s for s in _steps(teardown_job) if 'terraform -chdir="$stack" destroy' in s.get("run", ""))
     assert "DependencyViolation" in step["run"]
     assert "sleep 90" in step["run"]
 
 
+def test_destroy_covers_the_lab_then_the_canary(teardown_job):
+    # T4/T5 need the scheduled run to destroy infra/canary; stage B adds infra/lab.
+    step = next(s for s in _steps(teardown_job) if 'terraform -chdir="$stack" destroy' in s.get("run", ""))
+    assert "for stack in infra/lab infra/canary; do" in step["run"]
+    assert 'terraform -chdir="$stack" init -input=false -lockfile=readonly' in step["run"]
+    assert 'exit "$failed"' in step["run"]
+
+
 def test_verify_and_reset_only_after_destroy(teardown_job):
-    for marker in ("python -m teardown.verify", "/fairtix-lab/expires_at", "terraform -chdir=infra/lab destroy"):
+    for marker in ("python -m teardown.verify", "/fairtix-lab/expires_at", 'terraform -chdir="$stack" destroy'):
         step = next(s for s in _steps(teardown_job) if marker in s.get("run", ""))
         assert "steps.decide.outputs.decision == 'destroy'" in step["if"], marker
 

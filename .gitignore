@@ -16,6 +16,22 @@ infra/.venv/
 infra/**/__pycache__/
 infra/.pytest_cache/
 
+### Infra (Terraform) ###
+# State and plans can hold secret values, account ids and the operator's IP.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+**/tfplan
+crash.log
+crash.*.log
+# Real values stay local; only *.tfvars.example is committed.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+# The reaper Lambda zip that archive_file builds.
+infra/bootstrap/build/
+
 ### IDE / Editor ###
 .idea/
 *.iml
