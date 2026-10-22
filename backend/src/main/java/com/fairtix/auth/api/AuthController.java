@@ -197,7 +197,8 @@ public class AuthController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void resendVerification(@AuthenticationPrincipal CustomUserPrincipal principal) {
         userRepository.findById(principal.getUserId()).ifPresent(user -> {
-            if (!user.isEmailVerified() && !user.isDeleted()) {
+            if (!user.isEmailVerified() && !user.isDeleted()
+                    && emailVerificationService.resendAllowed(user.getId())) {
                 try {
                     emailVerificationService.sendVerificationEmail(user);
                 } catch (Exception ignored) {

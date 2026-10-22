@@ -31,7 +31,7 @@ import static org.mockito.Mockito.when;
  * Outbound mail is off unless {@code fairtix.mail.enabled=true}, SMTP calls are
  * bounded, and logs carry no recipient address (RM:323).
  *
- * <p>Red on commit {@code <red>}: {@code SmtpEmailService} was selected whenever
+ * <p>Red on commit {@code 1899c78}: {@code SmtpEmailService} was selected whenever
  * {@code spring.mail.host} had any value, and main defaults it to {@code localhost},
  * so every deploy tried to send. JavaMail's default timeouts are infinite, and every
  * send logged the recipient.

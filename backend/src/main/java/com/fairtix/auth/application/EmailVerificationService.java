@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
@@ -25,6 +26,7 @@ public class EmailVerificationService {
 
     private static final int TOKEN_EXPIRY_HOURS = 24;
     private static final int MAX_ACTIVE_TOKENS = 3;
+    private static final Duration RESEND_COOLDOWN = Duration.ofSeconds(60);
 
     private final EmailVerificationTokenRepository tokenRepository;
     private final UserRepository userRepository;
@@ -60,6 +62,17 @@ public class EmailVerificationService {
         String html = emailTemplateService.buildVerificationEmail(user.getEmail(), link);
         notificationGate.sendEmail(user.getId(), NotificationCategory.ACCOUNT_VERIFICATION,
                 user.getEmail(), "Verify your FairTix account", html);
+    }
+
+    /**
+     * False while the user's newest token is younger than {@link #RESEND_COOLDOWN}: the
+     * per-IP limit alone allows 10 mails a minute to one inbox.
+     */
+    public boolean resendAllowed(UUID userId) {
+        List<EmailVerificationToken> tokens = tokenRepository.findByUserIdOrderByCreatedAtAsc(userId);
+        return tokens.isEmpty()
+                || tokens.get(tokens.size() - 1).getCreatedAt()
+                        .isBefore(Instant.now().minus(RESEND_COOLDOWN));
     }
 
     /** Runs inside the caller's transaction; enforces the per-user token cap. */

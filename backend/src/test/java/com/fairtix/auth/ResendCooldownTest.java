@@ -22,7 +22,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * {@code POST /auth/resend-verification} sends at most one email per account per
  * 60 s; the per-IP limit alone allowed 10 a minute to the same inbox.
  *
- * <p>Red on commit {@code <red>}.
+ * <p>Red on commit {@code 1899c78}.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @Transactional

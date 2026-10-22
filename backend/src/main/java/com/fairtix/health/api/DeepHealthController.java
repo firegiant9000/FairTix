@@ -98,6 +98,7 @@ public class DeepHealthController {
   }
 
   private String checkMail() throws Exception {
+    if (!mailEnabled) return "disabled";
     JavaMailSender sender = mailSenderProvider.getIfAvailable();
     if (sender == null) return "not configured";
     if (sender instanceof JavaMailSenderImpl impl) {

@@ -10,6 +10,6 @@ public class NoOpEmailService implements EmailService {
 
     @Override
     public void sendEmail(String to, String subject, String htmlBody) {
-        log.debug("Email suppressed (no mail host configured): to={} subject=\"{}\"", to, subject);
+        log.debug("Email suppressed (fairtix.mail.enabled is off): subject=\"{}\"", subject);
     }
 }

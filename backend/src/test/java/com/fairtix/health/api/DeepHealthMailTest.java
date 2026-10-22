@@ -19,7 +19,7 @@ import static org.mockito.Mockito.when;
 /**
  * With mail switched off, {@code /_health/deep} reports {@code disabled} instead of
  * probing the SMTP host (main always sets {@code spring.mail.host}, so the sender bean
- * exists). Red on commit {@code <red>}.
+ * exists). Red on commit {@code 1899c78}.
  */
 class DeepHealthMailTest {
 
