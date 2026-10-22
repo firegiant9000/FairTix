@@ -7,8 +7,8 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Every Spring context test starts from the full Flyway schema with no rows: migrate
- * as usual, then remove the migrations' seed rows (demo venues, events and the
- * seeded admin). This replaces H2's {@code ddl-auto=create-drop}, which gave each new
+ * as usual, then remove the migrations' seed rows (demo venues and events; no migration
+ * creates a user, see {@link NoSeededAdminTest}). This replaces H2's {@code ddl-auto=create-drop}, which gave each new
  * context an empty schema.
  *
  * <p>Component-scanned into every {@code @SpringBootTest}, like

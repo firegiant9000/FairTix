@@ -45,6 +45,9 @@ All backend variables are loaded from `.env` at the project root. Frontend varia
 | `REDIS_HOST` | No | `redis` | Redis hostname | Leave default inside Docker |
 | `REDIS_PORT` | No | `6379` | Redis port | Leave default |
 | `JWT_SECRET` | Yes | — | JWT signing secret: ≥ 32 bytes and not the `.env.example` placeholder (checked at startup); use 64+ random characters | `python3 -c "import secrets; print(secrets.token_hex(48))"` |
+| `FAIRTIX_REGISTRATION_MODE` | No | `disabled` (`open` in the `dev` profile) | Who can sign up: `open`, `allowlist` or `disabled` | Leave `disabled`, or use `allowlist`, anywhere reachable from outside your machine |
+| `FAIRTIX_REGISTRATION_ALLOWLIST` | If `allowlist` | `` | Comma-separated exact email addresses allowed to sign up; they start verified | The demo accounts you intend to use |
+| `MAIL_ENABLED` | No | `false` (`true` in `dev` and `staging`) | Send email over SMTP; when off, mail is dropped | Leave `false` unless real SMTP is configured |
 | `MAIL_HOST` | No | `mailhog` | SMTP host | `mailhog` for dev; real SMTP for prod |
 | `MAIL_PORT` | No | `1025` | SMTP port | `1025` for MailHog; `587` for TLS SMTP |
 | `MAIL_USERNAME` | No | `` | SMTP username | From your mail provider |
@@ -123,6 +126,26 @@ Then re-run `docker compose up --build` to re-apply the fixed migration.
 
 ---
 
+## Accounts and the first admin
+
+No migration or startup code creates a user, so a fresh database has no logins (`NoSeededAdminTest` guards this). Sign-up is `disabled` unless the profile or `FAIRTIX_REGISTRATION_MODE` says otherwise, and email is off unless `MAIL_ENABLED=true`.
+
+To create the first admin on a non-dev deployment:
+
+1. Set `FAIRTIX_REGISTRATION_MODE=allowlist` and put the admin's address in `FAIRTIX_REGISTRATION_ALLOWLIST`. Allowlisted accounts start verified, so no email is needed.
+2. Sign up with that address through the app (`POST /auth/register`). **If sign-up returns 409, stop:** someone already registered that address. Investigate before granting anything.
+3. Log in with your own password and read your user id from `GET /auth/me` (`userId`).
+4. Grant the role by that id, not by email, so you promote the account you just proved you own:
+   ```bash
+   psql "<DATABASE_URL>" -c "UPDATE users SET role = 'ADMIN' WHERE id = '<userId from /auth/me>';"
+   ```
+5. Sign out and back in, so the new token carries the role. Later admins are promoted in the app (`PATCH /api/admin/users/{id}/promote`, audited as `USER_PROMOTED`).
+6. Remove addresses from the allowlist, or set the mode back to `disabled`, once the accounts exist.
+
+There is no env-driven admin bootstrap on purpose: it would put admin credentials in environment files and secrets. `scripts/demo-seed.sh` creates demo accounts with a fixed password and refuses any API that isn't on this machine.
+
+---
+
 ## Deploying to Netlify + Railway (Recommended for Course Demo)
 
 > **Unmaintained; see L3.** This path and its files (`railway.json`, `netlify.toml`, `frontend/webpages/public/_redirects`, and `cloudbuild.yaml` for Cloud Run) were written for the course demo and are kept for reference only. They are not tested and may not work. The planned deployment is the Terraform-defined ~~Azure Container Apps~~ AWS (ECS Fargate, changed 2026-10-18) environment in milestone L3 of [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md). Local Docker Compose above remains the supported way to run FairTix. (Marked optional 2026-09-29; unmaintained 2026-10-20.)
@@ -148,7 +171,8 @@ Browser → Netlify (static frontend) → Railway (Spring Boot API)
    - `SPRING_PROFILES_ACTIVE=prod`
    - `CORS_ALLOWED_ORIGINS=https://<your-netlify-subdomain>.netlify.app`
    - `APP_BASE_URL=https://<your-netlify-subdomain>.netlify.app`
-   - `MAIL_HOST`, `MAIL_PORT`, `MAIL_AUTH`, `MAIL_STARTTLS`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM` (use a free SMTP provider such as Brevo/Sendinblue or Gmail App Password)
+   - `MAIL_ENABLED=true` plus `MAIL_HOST`, `MAIL_PORT`, `MAIL_AUTH`, `MAIL_STARTTLS`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM` (use a free SMTP provider such as Brevo/Sendinblue or Gmail App Password). Without `MAIL_ENABLED=true`, mail is dropped.
+   - `FAIRTIX_REGISTRATION_MODE` (`disabled` by default under `prod`; see [Accounts and the first admin](#accounts-and-the-first-admin))
 6. Railway provides a public HTTPS URL for your backend (e.g. `https://fairtix-backend.up.railway.app`). Copy it.
 
 > **Note:** The `prod` Spring profile disables payment simulation and enforces HTTPS-only cookies. Flyway migrations run automatically on first deploy.
@@ -180,10 +204,7 @@ railway run psql $DATABASE_URL < seed_test_events.sql
 psql "<RAILWAY_DATABASE_URL>" < seed_test_events.sql
 ```
 
-Then create your admin user:
-```bash
-psql "<RAILWAY_DATABASE_URL>" -c "UPDATE users SET role = 'ADMIN' WHERE email = 'your@email.com';"
-```
+Then create your admin user: see [Accounts and the first admin](#accounts-and-the-first-admin).
 
 ### Step 5 — Verify
 
@@ -204,12 +225,13 @@ Open your Netlify URL in a browser, log in, and complete a purchase end-to-end.
 2. Clone the repo or copy the project directory.
 3. Populate `.env` and `frontend/webpages/.env` with production values.
 4. Update `APP_BASE_URL` to your public domain.
-5. Replace MailHog with a real SMTP provider (`MAIL_HOST`, `MAIL_AUTH=true`, `MAIL_STARTTLS=true`).
-6. Run:
+5. Replace MailHog with a real SMTP provider (`MAIL_ENABLED=true`, `MAIL_HOST`, `MAIL_AUTH=true`, `MAIL_STARTTLS=true`).
+6. **Close sign-up.** `docker-compose.yml` runs the `dev` profile, which sets registration to `open`. Add `FAIRTIX_REGISTRATION_MODE=disabled` (or `allowlist`) to `.env`; the environment variable overrides the profile.
+7. Run:
    ```bash
    docker compose up -d --build
    ```
-7. Point a reverse proxy (nginx, Caddy) at port 8080 (API) and 3000 (frontend), or serve the frontend as a static build behind the same proxy.
+8. Point a reverse proxy (nginx, Caddy) at port 8080 (API) and 3000 (frontend), or serve the frontend as a static build behind the same proxy.
 
 ### Static frontend build
 

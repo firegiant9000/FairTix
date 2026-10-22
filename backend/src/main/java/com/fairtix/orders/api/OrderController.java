@@ -1,5 +1,6 @@
 package com.fairtix.orders.api;
 
+import com.fairtix.auth.application.VerifiedEmailGuard;
 import com.fairtix.auth.domain.CustomUserPrincipal;
 import com.fairtix.orders.application.OrderService;
 import com.fairtix.orders.dto.CreateOrderRequest;
@@ -24,9 +25,11 @@ import java.util.UUID;
 public class OrderController {
 
     private final OrderService orderService;
+    private final VerifiedEmailGuard verifiedEmailGuard;
 
-    public OrderController(OrderService orderService) {
+    public OrderController(OrderService orderService, VerifiedEmailGuard verifiedEmailGuard) {
         this.orderService = orderService;
+        this.verifiedEmailGuard = verifiedEmailGuard;
     }
 
     @Operation(summary = "Create an order from confirmed holds")
@@ -37,6 +40,7 @@ public class OrderController {
     public OrderResponse createOrder(
             @AuthenticationPrincipal CustomUserPrincipal principal,
             @Valid @RequestBody CreateOrderRequest request) {
+        verifiedEmailGuard.requireVerified(principal.getUserId(), "purchasing tickets");
         return OrderResponse.from(orderService.createOrder(principal.getUserId(), request.holdIds()));
     }
 

@@ -1,5 +1,6 @@
 package com.fairtix.config;
 
+import com.fairtix.auth.application.RegistrationClosedException;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.inventory.application.DuplicateSeatException;
 import com.fairtix.inventory.application.SeatHoldConflictException;
@@ -93,6 +94,12 @@ public class GlobalExceptionHandler {
   public ResponseEntity<Map<String, Object>> handleUserFlagged(
       UserFlaggedForAbuseException ex, HttpServletRequest req) {
     return error(HttpStatus.FORBIDDEN, "USER_FLAGGED_FOR_ABUSE", ex.getMessage(), req);
+  }
+
+  @ExceptionHandler(RegistrationClosedException.class)
+  public ResponseEntity<Map<String, Object>> handleRegistrationClosed(
+      RegistrationClosedException ex, HttpServletRequest req) {
+    return error(HttpStatus.FORBIDDEN, "REGISTRATION_CLOSED", ex.getMessage(), req);
   }
 
   @ExceptionHandler(QueueConflictException.class)
@@ -401,7 +408,9 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(DataIntegrityViolationException.class)
   public ResponseEntity<Map<String, Object>> handleDataIntegrity(
       DataIntegrityViolationException ex, HttpServletRequest req) {
-    log.error("Data integrity violation on {}: {}", req.getRequestURI(), ex.getMessage());
+    // Not the message: PostgreSQL's detail quotes the conflicting key (an email, say).
+    log.error("Data integrity violation on {}: {}", req.getRequestURI(),
+        ex.getMostSpecificCause().getClass().getSimpleName());
     return error(HttpStatus.CONFLICT, "DATA_CONFLICT",
         "The request conflicts with the current state of the data", req);
   }

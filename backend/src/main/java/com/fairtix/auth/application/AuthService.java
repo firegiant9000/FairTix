@@ -3,7 +3,9 @@ package com.fairtix.auth.application;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.fairtix.audit.application.AuditService;
@@ -31,6 +33,8 @@ public class AuthService {
   private final NotificationPreferenceService notificationPreferenceService;
   private final EmailVerificationService emailVerificationService;
   private final AuditService auditService;
+  private final TransactionTemplate transactionTemplate;
+  private final RegistrationPolicy registrationPolicy;
 
   private static final Pattern UPPERCASE = Pattern.compile("[A-Z]");
   private static final Pattern LOWERCASE = Pattern.compile("[a-z]");
@@ -45,7 +49,11 @@ public class AuthService {
       RecaptchaService recaptchaService,
       NotificationPreferenceService notificationPreferenceService,
       EmailVerificationService emailVerificationService,
-      AuditService auditService) {
+      AuditService auditService,
+      PlatformTransactionManager transactionManager,
+      RegistrationPolicy registrationPolicy) {
+    this.transactionTemplate = new TransactionTemplate(transactionManager);
+    this.registrationPolicy = registrationPolicy;
     this.userRepository = userRepository;
     this.passwordEncoder = passwordEncoder;
     this.jwtService = jwtService;
@@ -56,27 +64,46 @@ public class AuthService {
     this.auditService = auditService;
   }
 
-  @Transactional
+  /**
+   * Not {@code @Transactional}: the user commits first (one connection, audit in the
+   * same transaction), and only then is the verification token written and the email
+   * sent. A token written before the commit can't see the user row (foreign key).
+   */
   public String register(RegisterRequest request) {
+    RegistrationPolicy.Decision decision = registrationPolicy.check(request.email());
+    if (!decision.allowed()) {
+      // No transaction is open, so the REQUIRES_NEW audit takes one connection.
+      // The detail names the mode only: no address from an anonymous caller.
+      tryAudit(null, "REGISTRATION_BLOCKED", "mode=" + registrationPolicy.mode());
+      throw new RegistrationClosedException();
+    }
     validatePasswordStrength(request.password());
 
-    if (userRepository.findByEmail(request.email()).isPresent()) {
+    // Case-insensitive, like the allowlist: otherwise CASE@… and Case@… each create
+    // another account (pre-verified, in allowlist mode).
+    if (userRepository.existsByEmailIgnoreCase(request.email().trim())) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "User already exists");
     }
 
-    User user = new User();
-    user.setEmail(request.email());
-    user.setPassword(passwordEncoder.encode(request.password()));
-
-    userRepository.save(user);
-    notificationPreferenceService.createDefault(user.getId());
-    auditService.log(user.getId(), "USER_REGISTERED", "USER", user.getId(), null);
+    User user = transactionTemplate.execute(status -> {
+      User created = new User();
+      created.setEmail(request.email());
+      created.setPassword(passwordEncoder.encode(request.password()));
+      created.setEmailVerified(decision.preVerified());
+      userRepository.saveAndFlush(created);
+      notificationPreferenceService.createDefault(created.getId());
+      auditService.logInCurrentTransaction(created.getId(), "USER_REGISTERED", "USER",
+          created.getId(), null);
+      return created;
+    });
 
     try {
-      emailVerificationService.sendVerificationEmail(user);
+      if (!user.isEmailVerified()) {
+        emailVerificationService.sendVerificationEmail(user);
+      }
     } catch (Exception e) {
-      log.error("Failed to send verification email to={} error={}", user.getEmail(), e.getMessage());
-      // Don't fail registration if email delivery fails
+      // Don't fail registration if email delivery fails; the user can resend.
+      log.error("Failed to send verification email userId={} error={}", user.getId(), e.getMessage());
     }
 
     return jwtService.generateToken(

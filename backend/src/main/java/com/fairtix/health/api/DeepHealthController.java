@@ -29,12 +29,15 @@ public class DeepHealthController {
   private final RedisConnectionFactory redis;
   private final ObjectProvider<JavaMailSender> mailSenderProvider;
   private final boolean stripeEnabled;
+  private final boolean mailEnabled;
 
   public DeepHealthController(
       JdbcTemplate jdbc,
       RedisConnectionFactory redis,
       ObjectProvider<JavaMailSender> mailSenderProvider,
-      @Value("${stripe.enabled:false}") boolean stripeEnabled) {
+      @Value("${stripe.enabled:false}") boolean stripeEnabled,
+      @Value("${fairtix.mail.enabled:false}") boolean mailEnabled) {
+    this.mailEnabled = mailEnabled;
     this.jdbc = jdbc;
     this.redis = redis;
     this.mailSenderProvider = mailSenderProvider;
@@ -69,7 +72,8 @@ public class DeepHealthController {
       return true;
     } catch (Exception e) {
       entry.put("status", "DOWN");
-      entry.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
+      // Type only: connection errors quote hosts, ports and sometimes users.
+      entry.put("error", e.getClass().getSimpleName());
       entry.put("latencyMs", elapsedMs(start));
       out.put(name, entry);
       return false;
@@ -95,6 +99,7 @@ public class DeepHealthController {
   }
 
   private String checkMail() throws Exception {
+    if (!mailEnabled) return "disabled";
     JavaMailSender sender = mailSenderProvider.getIfAvailable();
     if (sender == null) return "not configured";
     if (sender instanceof JavaMailSenderImpl impl) {

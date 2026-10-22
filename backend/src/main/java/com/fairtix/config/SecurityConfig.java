@@ -105,7 +105,7 @@ public class SecurityConfig {
                 PRINT_VIEWS,
                 new StaticHeadersWriter("Content-Security-Policy", PRINT_VIEW_CSP))))
         .authorizeHttpRequests(auth -> auth
-            .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+            .requestMatchers("/actuator/health").permitAll()
             .requestMatchers("/_health/deep").hasRole("ADMIN")
             .requestMatchers("/auth/**").permitAll()
             .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()

@@ -88,7 +88,8 @@ public class AuthController {
     @ApiResponse(responseCode = "409", description = "Email already in use")
     @SecurityRequirements
     @PostMapping("/register")
-    @Transactional
+    // Deliberately not @Transactional, like login: AuthService.register commits the
+    // user before the verification token and email, and anyone can call this.
     public AuthResponse register(@Valid @RequestBody RegisterRequest request, HttpServletResponse response) {
         String jwt = service.register(request);
         var claims = jwtService.extractAllClaims(jwt);
@@ -196,7 +197,8 @@ public class AuthController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void resendVerification(@AuthenticationPrincipal CustomUserPrincipal principal) {
         userRepository.findById(principal.getUserId()).ifPresent(user -> {
-            if (!user.isEmailVerified() && !user.isDeleted()) {
+            if (!user.isEmailVerified() && !user.isDeleted()
+                    && emailVerificationService.resendAllowed(user.getId())) {
                 try {
                     emailVerificationService.sendVerificationEmail(user);
                 } catch (Exception ignored) {

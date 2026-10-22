@@ -56,6 +56,8 @@ function Signup() {
         setError('Email already exists.');
       } else if (err.status === 400) {
         setError('Invalid registration details.');
+      } else if (err.status === 403) {
+        setError('Registration is closed. Contact the organiser for access.');
       } else if (err.status >= 500) {
         setError('Server error. Please try again later.');
       } else if (err.status) {

@@ -1,6 +1,7 @@
 package com.fairtix.payments.api;
 
 import com.fairtix.audit.application.AuditService;
+import com.fairtix.auth.application.VerifiedEmailGuard;
 import com.fairtix.auth.domain.CustomUserPrincipal;
 import com.fairtix.inventory.application.SeatHoldService;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
@@ -58,6 +59,7 @@ public class PaymentController {
   private final OrgSalesCapService salesCapService;
   private final SeatHoldService seatHoldService;
   private final AuditService auditService;
+  private final VerifiedEmailGuard verifiedEmailGuard;
 
   @Autowired(required = false)
   private PaymentSimulationService paymentSimulationService;
@@ -77,7 +79,9 @@ public class PaymentController {
       OrganizationRepository organizationRepository,
       OrgSalesCapService salesCapService,
       SeatHoldService seatHoldService,
-      AuditService auditService) {
+      AuditService auditService,
+      VerifiedEmailGuard verifiedEmailGuard) {
+    this.verifiedEmailGuard = verifiedEmailGuard;
     this.seatHoldService = seatHoldService;
     this.auditService = auditService;
     this.orderService = orderService;
@@ -129,6 +133,9 @@ public class PaymentController {
       @AuthenticationPrincipal CustomUserPrincipal principal,
       @Valid @RequestBody PaymentIntentRequest request) {
 
+    // Before the hold extension: an unverified account must not keep seats alive.
+    verifiedEmailGuard.requireVerified(principal.getUserId(), "purchasing tickets");
+
     if (!stripeEnabled) {
       throw new ResponseStatusException(HttpStatus.NOT_IMPLEMENTED,
           "Stripe is not enabled in this environment");
@@ -168,12 +175,7 @@ public class PaymentController {
       @AuthenticationPrincipal CustomUserPrincipal principal,
       @Valid @RequestBody PaymentRequest request) {
 
-    userRepository.findById(principal.getUserId()).ifPresent(user -> {
-      if (!user.isEmailVerified()) {
-        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-            "Email address not verified. Please verify your email before purchasing tickets.");
-      }
-    });
+    verifiedEmailGuard.requireVerified(principal.getUserId(), "purchasing tickets");
 
     request.holdIds().stream()
         .flatMap(holdId -> seatHoldRepository.findById(holdId).stream())

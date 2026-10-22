@@ -60,6 +60,8 @@ class OrderControllerTest {
     testUser = new User();
     testUser.setEmail("ordertest@example.com");
     testUser.setPassword("$2a$10$dummyhashfortest");
+    // POST /api/orders needs a verified email (VerifiedEmailGuard).
+    testUser.setEmailVerified(true);
     testUser = userRepository.save(testUser);
   }
 

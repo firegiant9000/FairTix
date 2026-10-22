@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.fairtix.auth.application.VerifiedEmailGuard;
 import com.fairtix.auth.domain.CustomUserPrincipal;
 import com.fairtix.organizations.application.OrgScoped;
 import com.fairtix.organizations.application.OrganizationService;
@@ -32,15 +33,18 @@ import com.fairtix.organizations.dto.OrganizationDtos.UpdateMemberRoleRequest;
 public class OrganizationController {
 
   private final OrganizationService service;
+  private final VerifiedEmailGuard verifiedEmailGuard;
 
-  public OrganizationController(OrganizationService service) {
+  public OrganizationController(OrganizationService service, VerifiedEmailGuard verifiedEmailGuard) {
     this.service = service;
+    this.verifiedEmailGuard = verifiedEmailGuard;
   }
 
   @PostMapping
   @PreAuthorize("isAuthenticated()")
   public OrganizationResponse create(@RequestBody CreateOrganizationRequest req,
                                      @AuthenticationPrincipal CustomUserPrincipal principal) {
+    verifiedEmailGuard.requireVerified(principal.getUserId(), "creating an organization");
     return OrganizationResponse.from(
         service.createOrganization(req.name(), req.contactEmail(), principal.getUserId()));
   }

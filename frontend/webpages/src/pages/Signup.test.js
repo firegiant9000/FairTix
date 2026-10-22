@@ -60,6 +60,16 @@ test('shows invalid details on 400', async () => {
   );
 });
 
+test('shows registration-closed message on 403', async () => {
+  const signupFn = jest.fn().mockRejectedValue(makeError(403));
+  await fillAndSubmit(signupFn);
+  await waitFor(() =>
+    expect(
+      screen.getByText('Registration is closed. Contact the organiser for access.')
+    ).toBeInTheDocument()
+  );
+});
+
 test('shows server error message on 500', async () => {
   const signupFn = jest.fn().mockRejectedValue(makeError(500));
   await fillAndSubmit(signupFn);
