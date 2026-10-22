@@ -5,6 +5,7 @@ import com.fairtix.support.PostgresIT;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -38,6 +39,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * {@code SecurityConfig} permitted it anonymously; staging showed health details to
  * any signed-in user.
  */
+// Its own context (main-file management.*): close it after the class so its pool doesn't
+// count against the shared container's max_connections for the rest of the suite.
+@DirtiesContext
 class ActuatorExposureIT extends PostgresIT {
 
   private static final Path RESOURCES = Path.of("src/main/resources");

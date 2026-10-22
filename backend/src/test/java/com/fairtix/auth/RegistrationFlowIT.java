@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -41,6 +42,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * {@code email_verification_tokens.user_id} foreign key rejected it. The failure was
  * swallowed, and no user ever got a verification email from sign-up. H2 hid this.
  */
+// The spy bean makes its own context: close it after the class so its pool doesn't
+// count against the shared container's max_connections for the rest of the suite.
+@DirtiesContext
 class RegistrationFlowIT extends PostgresIT {
 
   @Autowired private WebApplicationContext context;
