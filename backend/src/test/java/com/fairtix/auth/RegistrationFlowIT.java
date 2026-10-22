@@ -5,6 +5,9 @@ import com.fairtix.support.PostgresIT;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -100,8 +103,14 @@ class RegistrationFlowIT extends PostgresIT {
     assertThat(txAtSend).containsExactly(false);
   }
 
+  /**
+   * The loser gets 409, and the error log doesn't carry the address (PostgreSQL's
+   * {@code Key (email)=(…)} detail). The log check is a guard, not a reliable red: the
+   * race may also end at the pre-insert lookup, which logs nothing.
+   */
   @Test
-  void concurrentSameEmail_one409() throws Exception {
+  @ExtendWith(OutputCaptureExtension.class)
+  void concurrentSameEmail_one409(CapturedOutput output) throws Exception {
     String email = "race-" + UUID.randomUUID() + "@test.com";
     ExecutorService pool = Executors.newFixedThreadPool(2);
     CountDownLatch start = new CountDownLatch(1);
@@ -120,6 +129,7 @@ class RegistrationFlowIT extends PostgresIT {
       }
       assertThat(statuses).containsExactlyInAnyOrder(200, 409);
       assertThat(tokensFor(email)).isEqualTo(1);
+      assertThat(output.getAll()).doesNotContain(email);
     } finally {
       pool.shutdownNow();
     }

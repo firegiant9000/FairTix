@@ -96,6 +96,22 @@ class VerifiedEmailGuardTest {
             "Email address not verified. Please verify your email before creating an organization."));
   }
 
+  /**
+   * {@code POST /api/orders} turns confirmed holds into tickets, so it needs the same
+   * gate. Red on commit {@code <red2>}: it had none (found in review).
+   */
+  @Test
+  void unverified_order_403() throws Exception {
+    User u = user(false);
+    mockMvc.perform(post("/api/orders")
+            .with(WithMockPrincipal.user(u.getId(), u.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"holdIds\":[\"%s\"]}".formatted(UUID.randomUUID())))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.message").value(
+            "Email address not verified. Please verify your email before purchasing tickets."));
+  }
+
   @Test
   void verified_paths_unchanged() throws Exception {
     User u = user(true);

@@ -12,7 +12,6 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.time.Instant;
@@ -80,9 +79,26 @@ class RegistrationModeTest {
   @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
   @TestPropertySource(properties = {
       "fairtix.registration.mode=allowlist",
-      "fairtix.registration.allowlist=Vetted@FairTix.demo"})
-  @Transactional
+      "fairtix.registration.allowlist=Vetted@FairTix.demo,case@fairtix.demo"})
+  // Not @Transactional: register must commit through its own transaction, as in production.
   class Allowlist extends Base {
+
+    /**
+     * One allowlisted address must yield one account. Red on commit {@code <red2>}: the
+     * policy compared case-insensitively but the duplicate check didn't, so
+     * {@code CASE@…}, {@code Case@…} each created another pre-verified account.
+     */
+    @Test
+    void allowlist_caseVariant_409() throws Exception {
+      register("case@fairtix.demo").andExpect(status().isOk());
+
+      register("CASE@fairtix.demo").andExpect(status().isConflict());
+      register(" Case@FairTix.demo").andExpect(status().is4xxClientError());
+
+      assertThat(userRepository.findAll().stream()
+          .filter(u -> u.getEmail().trim().equalsIgnoreCase("case@fairtix.demo")))
+          .hasSize(1);
+    }
 
     @Test
     void allowlist_match_createsVerifiedUser() throws Exception {
