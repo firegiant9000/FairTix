@@ -53,7 +53,10 @@ public class RegistrationPolicy {
       case DISABLED -> BLOCKED;
       case ALLOWLIST -> {
         String normalised = normalise(email);
-        yield !normalised.isEmpty() && allowlist.contains(normalised)
+        // ASCII only, checked before folding: Java folds lookalikes such as the Kelvin
+        // sign to 'k', and the database's case-insensitive duplicate check may not.
+        boolean ascii = email != null && email.chars().allMatch(c -> c < 128);
+        yield ascii && !normalised.isEmpty() && allowlist.contains(normalised)
             ? new Decision(true, true)
             : BLOCKED;
       }

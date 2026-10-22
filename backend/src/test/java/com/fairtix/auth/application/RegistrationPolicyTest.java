@@ -67,7 +67,7 @@ class RegistrationPolicyTest {
   /**
    * Java folds the Kelvin sign (U+212A) to {@code k}; PostgreSQL's case-insensitive
    * duplicate check may not, so a lookalike would get a second pre-verified account.
-   * Red on commit {@code <red3>} (review round 2).
+   * Red on commit {@code 51c8932} (review round 2).
    */
   @Test
   void allowlist_nonAscii_isBlocked() {
