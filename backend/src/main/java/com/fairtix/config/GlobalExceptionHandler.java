@@ -408,7 +408,9 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(DataIntegrityViolationException.class)
   public ResponseEntity<Map<String, Object>> handleDataIntegrity(
       DataIntegrityViolationException ex, HttpServletRequest req) {
-    log.error("Data integrity violation on {}: {}", req.getRequestURI(), ex.getMessage());
+    // Not the message: PostgreSQL's detail quotes the conflicting key (an email, say).
+    log.error("Data integrity violation on {}: {}", req.getRequestURI(),
+        ex.getMostSpecificCause().getClass().getSimpleName());
     return error(HttpStatus.CONFLICT, "DATA_CONFLICT",
         "The request conflicts with the current state of the data", req);
   }

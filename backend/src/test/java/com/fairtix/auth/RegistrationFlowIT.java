@@ -103,6 +103,18 @@ class RegistrationFlowIT extends PostgresIT {
     assertThat(txAtSend).containsExactly(false);
   }
 
+  /** The deployed setting behind {@link #concurrentSameEmail_one409}'s log check. */
+  @Test
+  void mainFile_hidesServerErrorDetail() throws Exception {
+    var props = new java.util.Properties();
+    try (var reader = java.nio.file.Files.newBufferedReader(
+        java.nio.file.Path.of("src/main/resources/application.properties"))) {
+      props.load(reader);
+    }
+    assertThat(props.getProperty("spring.datasource.hikari.data-source-properties.logServerErrorDetail"))
+        .isEqualTo("false");
+  }
+
   /**
    * The loser gets 409, and the error log doesn't carry the address (PostgreSQL's
    * {@code Key (email)=(…)} detail). The log check is a guard, not a reliable red: the

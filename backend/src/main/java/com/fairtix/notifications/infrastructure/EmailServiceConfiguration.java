@@ -1,6 +1,7 @@
 package com.fairtix.notifications.infrastructure;
 
 import com.fairtix.notifications.application.EmailService;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -26,6 +27,9 @@ public class EmailServiceConfiguration {
     @Bean
     @ConditionalOnMissingBean(EmailService.class)
     public EmailService noOpEmailService() {
+        // Once at startup: verification, reset and order emails are all dropped.
+        LoggerFactory.getLogger(EmailServiceConfiguration.class)
+                .warn("Outbound email is disabled (fairtix.mail.enabled is not true); emails are dropped");
         return new NoOpEmailService();
     }
 }

@@ -98,7 +98,7 @@ class VerifiedEmailGuardTest {
 
   /**
    * {@code POST /api/orders} turns confirmed holds into tickets, so it needs the same
-   * gate. Red on commit {@code <red2>}: it had none (found in review).
+   * gate. Red on commit {@code 42aa05c}: it had none (found in review).
    */
   @Test
   void unverified_order_403() throws Exception {

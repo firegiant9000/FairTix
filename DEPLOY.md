@@ -133,13 +133,14 @@ No migration or startup code creates a user, so a fresh database has no logins (
 To create the first admin on a non-dev deployment:
 
 1. Set `FAIRTIX_REGISTRATION_MODE=allowlist` and put the admin's address in `FAIRTIX_REGISTRATION_ALLOWLIST`. Allowlisted accounts start verified, so no email is needed.
-2. Sign up with that address through the app (`POST /auth/register`).
-3. Grant the role with one SQL statement on the database:
+2. Sign up with that address through the app (`POST /auth/register`). **If sign-up returns 409, stop:** someone already registered that address. Investigate before granting anything.
+3. Log in with your own password and read your user id from `GET /auth/me` (`userId`).
+4. Grant the role by that id, not by email, so you promote the account you just proved you own:
    ```bash
-   psql "<DATABASE_URL>" -c "UPDATE users SET role = 'ADMIN' WHERE email = '<admin address>';"
+   psql "<DATABASE_URL>" -c "UPDATE users SET role = 'ADMIN' WHERE id = '<userId from /auth/me>';"
    ```
-4. Sign out and back in, so the new token carries the role. Later admins are promoted in the app (`PATCH /api/admin/users/{id}/promote`, audited as `USER_PROMOTED`).
-5. Remove addresses from the allowlist, or set the mode back to `disabled`, once the accounts exist.
+5. Sign out and back in, so the new token carries the role. Later admins are promoted in the app (`PATCH /api/admin/users/{id}/promote`, audited as `USER_PROMOTED`).
+6. Remove addresses from the allowlist, or set the mode back to `disabled`, once the accounts exist.
 
 There is no env-driven admin bootstrap on purpose: it would put admin credentials in environment files and secrets. `scripts/demo-seed.sh` creates demo accounts with a fixed password and refuses any API that isn't on this machine.
 
@@ -170,7 +171,8 @@ Browser → Netlify (static frontend) → Railway (Spring Boot API)
    - `SPRING_PROFILES_ACTIVE=prod`
    - `CORS_ALLOWED_ORIGINS=https://<your-netlify-subdomain>.netlify.app`
    - `APP_BASE_URL=https://<your-netlify-subdomain>.netlify.app`
-   - `MAIL_HOST`, `MAIL_PORT`, `MAIL_AUTH`, `MAIL_STARTTLS`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM` (use a free SMTP provider such as Brevo/Sendinblue or Gmail App Password)
+   - `MAIL_ENABLED=true` plus `MAIL_HOST`, `MAIL_PORT`, `MAIL_AUTH`, `MAIL_STARTTLS`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_FROM` (use a free SMTP provider such as Brevo/Sendinblue or Gmail App Password). Without `MAIL_ENABLED=true`, mail is dropped.
+   - `FAIRTIX_REGISTRATION_MODE` (`disabled` by default under `prod`; see [Accounts and the first admin](#accounts-and-the-first-admin))
 6. Railway provides a public HTTPS URL for your backend (e.g. `https://fairtix-backend.up.railway.app`). Copy it.
 
 > **Note:** The `prod` Spring profile disables payment simulation and enforces HTTPS-only cookies. Flyway migrations run automatically on first deploy.
@@ -223,12 +225,13 @@ Open your Netlify URL in a browser, log in, and complete a purchase end-to-end.
 2. Clone the repo or copy the project directory.
 3. Populate `.env` and `frontend/webpages/.env` with production values.
 4. Update `APP_BASE_URL` to your public domain.
-5. Replace MailHog with a real SMTP provider (`MAIL_HOST`, `MAIL_AUTH=true`, `MAIL_STARTTLS=true`).
-6. Run:
+5. Replace MailHog with a real SMTP provider (`MAIL_ENABLED=true`, `MAIL_HOST`, `MAIL_AUTH=true`, `MAIL_STARTTLS=true`).
+6. **Close sign-up.** `docker-compose.yml` runs the `dev` profile, which sets registration to `open`. Add `FAIRTIX_REGISTRATION_MODE=disabled` (or `allowlist`) to `.env`; the environment variable overrides the profile.
+7. Run:
    ```bash
    docker compose up -d --build
    ```
-7. Point a reverse proxy (nginx, Caddy) at port 8080 (API) and 3000 (frontend), or serve the frontend as a static build behind the same proxy.
+8. Point a reverse proxy (nginx, Caddy) at port 8080 (API) and 3000 (frontend), or serve the frontend as a static build behind the same proxy.
 
 ### Static frontend build
 

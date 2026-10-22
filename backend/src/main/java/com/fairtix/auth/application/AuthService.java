@@ -79,7 +79,9 @@ public class AuthService {
     }
     validatePasswordStrength(request.password());
 
-    if (userRepository.findByEmail(request.email()).isPresent()) {
+    // Case-insensitive, like the allowlist: otherwise CASE@… and Case@… each create
+    // another account (pre-verified, in allowlist mode).
+    if (userRepository.existsByEmailIgnoreCase(request.email().trim())) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "User already exists");
     }
 

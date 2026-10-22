@@ -84,7 +84,7 @@ class RegistrationModeTest {
   class Allowlist extends Base {
 
     /**
-     * One allowlisted address must yield one account. Red on commit {@code <red2>}: the
+     * One allowlisted address must yield one account. Red on commit {@code 42aa05c}: the
      * policy compared case-insensitively but the duplicate check didn't, so
      * {@code CASE@…}, {@code Case@…} each created another pre-verified account.
      */
