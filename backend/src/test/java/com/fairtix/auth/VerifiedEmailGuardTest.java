@@ -25,7 +25,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * A verified email is required to create a payment intent, start a ticket transfer
  * or create an organization (RM:323). Checkout already required one.
  *
- * <p>Red on commit {@code <red>}: only checkout checked, so an unverified account
+ * <p>Red on commit {@code b0a5238}: only checkout checked, so an unverified account
  * could extend holds through the intent, mail transfer offers and open organizations.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)

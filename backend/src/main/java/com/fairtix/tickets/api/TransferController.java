@@ -1,5 +1,6 @@
 package com.fairtix.tickets.api;
 
+import com.fairtix.auth.application.VerifiedEmailGuard;
 import com.fairtix.auth.domain.CustomUserPrincipal;
 import com.fairtix.tickets.application.TransferService;
 import com.fairtix.tickets.dto.TransferRequestResponse;
@@ -22,9 +23,11 @@ import java.util.UUID;
 public class TransferController {
 
     private final TransferService transferService;
+    private final VerifiedEmailGuard verifiedEmailGuard;
 
-    public TransferController(TransferService transferService) {
+    public TransferController(TransferService transferService, VerifiedEmailGuard verifiedEmailGuard) {
         this.transferService = transferService;
+        this.verifiedEmailGuard = verifiedEmailGuard;
     }
 
     public record InitiateTransferRequest(
@@ -37,6 +40,7 @@ public class TransferController {
             @AuthenticationPrincipal CustomUserPrincipal principal,
             @PathVariable UUID ticketId,
             @Valid @RequestBody InitiateTransferRequest body) {
+        verifiedEmailGuard.requireVerified(principal.getUserId(), "transferring tickets");
         return TransferRequestResponse.from(
                 transferService.createTransferRequest(ticketId, principal.getUserId(), body.toEmail()));
     }
