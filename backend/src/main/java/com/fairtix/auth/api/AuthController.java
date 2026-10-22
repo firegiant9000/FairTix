@@ -88,7 +88,8 @@ public class AuthController {
     @ApiResponse(responseCode = "409", description = "Email already in use")
     @SecurityRequirements
     @PostMapping("/register")
-    @Transactional
+    // Deliberately not @Transactional, like login: AuthService.register commits the
+    // user before the verification token and email, and anyone can call this.
     public AuthResponse register(@Valid @RequestBody RegisterRequest request, HttpServletResponse response) {
         String jwt = service.register(request);
         var claims = jwtService.extractAllClaims(jwt);

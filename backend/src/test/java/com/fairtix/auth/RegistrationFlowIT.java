@@ -36,7 +36,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * Registration on PostgreSQL commits the new user before it writes the verification
  * token or sends the email, and never needs a second pooled connection.
  *
- * <p>Red on commit {@code <red>}: the token was inserted in a {@code REQUIRES_NEW}
+ * <p>Red on commit {@code 36d0c23}: the token was inserted in a {@code REQUIRES_NEW}
  * transaction while the user row was still uncommitted in the outer one, so the
  * {@code email_verification_tokens.user_id} foreign key rejected it. The failure was
  * swallowed, and no user ever got a verification email from sign-up. H2 hid this.
