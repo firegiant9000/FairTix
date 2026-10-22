@@ -72,7 +72,8 @@ public class DeepHealthController {
       return true;
     } catch (Exception e) {
       entry.put("status", "DOWN");
-      entry.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
+      // Type only: connection errors quote hosts, ports and sometimes users.
+      entry.put("error", e.getClass().getSimpleName());
       entry.put("latencyMs", elapsedMs(start));
       out.put(name, entry);
       return false;

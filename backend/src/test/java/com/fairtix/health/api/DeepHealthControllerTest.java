@@ -62,7 +62,7 @@ class DeepHealthControllerTest {
 
   /**
    * A failing dependency reports its exception type only: connection errors quote
-   * hosts, ports and sometimes users. Red on commit {@code <red>}.
+   * hosts, ports and sometimes users. Red on commit {@code f1bfff8}.
    */
   @Test
   void deepHealth_errorHasNoMessage() {

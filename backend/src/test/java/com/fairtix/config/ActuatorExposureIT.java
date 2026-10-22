@@ -34,7 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * application.properties} on disk. A second check scans every profile file. Runs on the
  * container suite, so the health status reflects real PostgreSQL and Redis.
  *
- * <p>Red on commit {@code <red>}: main and staging exposed {@code info} and
+ * <p>Red on commit {@code f1bfff8}: main and staging exposed {@code info} and
  * {@code SecurityConfig} permitted it anonymously; staging showed health details to
  * any signed-in user.
  */
