@@ -542,7 +542,8 @@ def test_mutating_actions_name_lab_scoped_resources():
         assert "fairtix-lab-" in resource or resource.endswith("/*") or resource.endswith(":*"), action
     tag_scoped = {a for a, r in {**reaper.MUTATING_ACTIONS, **reaper.TEST_MODE_ACTIONS}.items()
                   if "fairtix-lab-" not in r}
-    assert tag_scoped == set(reaper.TAG_SCOPED_ACTIONS) | {"rds:DeleteDBInstanceAutomatedBackup"}
+    # Every grant is either name-scoped or tag-scoped; nothing is open across the account.
+    assert tag_scoped == set(reaper.TAG_SCOPED_ACTIONS)
 
 
 # --- The Lambda handler and the CLI -------------------------------------------------------

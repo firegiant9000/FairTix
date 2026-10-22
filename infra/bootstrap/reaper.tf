@@ -164,14 +164,6 @@ data "aws_iam_policy_document" "reaper" {
     resources = ["${local.arn.rds}:db:fairtix-lab-*"]
   }
 
-  # DeleteDBInstance with DeleteAutomatedBackups may authorise against the backups, whose
-  # ARNs carry no name. The reaper never calls this action on its own.
-  statement {
-    sid       = "RdsAutomatedBackups"
-    actions   = ["rds:DeleteDBInstanceAutomatedBackup"]
-    resources = ["${local.arn.rds}:auto-backup:*"]
-  }
-
   # NAT gateways, VPC endpoints and Elastic IPs have no name: the tag is the scope.
   statement {
     sid     = "TaggedNetworkBillables"

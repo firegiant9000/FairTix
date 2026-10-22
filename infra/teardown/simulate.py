@@ -51,6 +51,11 @@ CENSUS_READ_ACTIONS = (
 
 PROJECT_TAG = {"aws:ResourceTag/project": "fairtix-lab"}
 CANARY_TAGS = {**PROJECT_TAG, "aws:ResourceTag/role": "canary"}
+# S3 ARNs carry no account id, so the state grants require the bucket to be in this account.
+OWN_BUCKET = {"s3:ResourceAccount": "{account}"}
+FOREIGN_BUCKET = {"s3:ResourceAccount": "111122223333"}  # an AWS documentation account
+REAPER_FUNCTION = "arn:aws:lambda:{region}:{account}:function:fairtix-lab-bootstrap-reaper"
+ALERTS_TOPIC = "arn:aws:sns:{region}:{account}:fairtix-lab-bootstrap-alerts"
 
 
 @dataclass(frozen=True)
@@ -61,7 +66,7 @@ class Case:
     context: tuple[tuple[str, str], ...] = ()
 
     def describe(self) -> str:
-        tags = "".join(f" [{k.split('/')[-1]}={v}]" for k, v in self.context)
+        tags = "".join(f" [{k.split('/')[-1]}={v.replace('{account}', '<account>')}]" for k, v in self.context)
         return f"{self.action} on {self.resource.replace('{region}', HOME_REGION).replace('{account}', '<account>')}{tags}"
 
 
@@ -101,6 +106,21 @@ def _state(key: str) -> str:
     return f"arn:aws:s3:::{STATE_BUCKET}/{key}"
 
 
+def _state_cases(prefixes: tuple[str, ...]) -> list[Case]:
+    """Read/write on each prefix's state and lock file in this account; the same bucket name in
+    another account denied; the bootstrap state denied."""
+    own, foreign = _ctx(OWN_BUCKET), _ctx(FOREIGN_BUCKET)
+    cases = [Case("s3:ListBucket", f"arn:aws:s3:::{STATE_BUCKET}", True, own),
+             Case("s3:ListBucket", f"arn:aws:s3:::{STATE_BUCKET}", False, foreign)]
+    for prefix in prefixes:
+        for key in (f"{prefix}/terraform.tfstate", f"{prefix}/terraform.tfstate.tflock"):
+            cases += [Case(a, _state(key), True, own) for a in ("s3:GetObject", "s3:PutObject", "s3:DeleteObject")]
+        cases += [Case(a, _state(f"{prefix}/terraform.tfstate"), False, foreign)
+                  for a in ("s3:GetObject", "s3:PutObject")]
+    cases += [Case(a, _state("bootstrap/terraform.tfstate"), False, own) for a in ("s3:GetObject", "s3:PutObject")]
+    return cases
+
+
 def teardown_cases() -> list[Case]:
     vpc = "arn:aws:ec2:{region}:{account}:vpc/vpc-sim"
     group = "arn:aws:ec2:{region}:{account}:security-group/sg-sim"
@@ -108,11 +128,7 @@ def teardown_cases() -> list[Case]:
     parameter = "arn:aws:ssm:{region}:{account}:parameter/fairtix-lab/canary"
     cases = [Case(a, "*", True) for a in CENSUS_READ_ACTIONS]
     cases += [Case("ssm:GetParameter", EXPIRES_AT, True), Case("ssm:PutParameter", EXPIRES_AT, True)]
-    cases.append(Case("s3:ListBucket", f"arn:aws:s3:::{STATE_BUCKET}", True))
-    for key in ("lab/terraform.tfstate", "lab/terraform.tfstate.tflock",
-                "canary/terraform.tfstate", "canary/terraform.tfstate.tflock"):
-        cases += [Case(a, _state(key), True) for a in ("s3:GetObject", "s3:PutObject", "s3:DeleteObject")]
-    cases += [Case(a, _state("bootstrap/terraform.tfstate"), False) for a in ("s3:GetObject", "s3:PutObject")]
+    cases += _state_cases(("lab", "canary"))
     for action, resource in (("ec2:DeleteVpc", vpc), ("ec2:DeleteSecurityGroup", group)):
         cases.append(Case(action, resource, True, _ctx(CANARY_TAGS)))
         cases.append(Case(action, resource, False, _ctx(PROJECT_TAG)))
@@ -126,12 +142,13 @@ def teardown_cases() -> list[Case]:
 def apply_cases() -> list[Case]:
     cases = [Case(a, "*", True) for a in CENSUS_READ_ACTIONS]
     cases += [Case("scheduler:GetSchedule", REAPER_SCHEDULE, True),
-              Case("ssm:GetParameter", EXPIRES_AT, True), Case("ssm:PutParameter", EXPIRES_AT, True),
-              Case("s3:ListBucket", f"arn:aws:s3:::{STATE_BUCKET}", True)]
-    for key in ("lab/terraform.tfstate", "lab/terraform.tfstate.tflock"):
-        cases += [Case(a, _state(key), True) for a in ("s3:GetObject", "s3:PutObject", "s3:DeleteObject")]
-    cases += [Case("s3:PutObject", _state("bootstrap/terraform.tfstate"), False),
-              Case("s3:PutObject", _state("canary/terraform.tfstate"), False),
+              Case("lambda:GetFunctionConfiguration", REAPER_FUNCTION, True),
+              Case("sns:ListSubscriptionsByTopic", ALERTS_TOPIC, True),
+              Case("lambda:UpdateFunctionConfiguration", REAPER_FUNCTION, False),
+              Case("sns:Unsubscribe", ALERTS_TOPIC, False),
+              Case("ssm:GetParameter", EXPIRES_AT, True), Case("ssm:PutParameter", EXPIRES_AT, True)]
+    cases += _state_cases(("lab",))
+    cases += [Case("s3:PutObject", _state("canary/terraform.tfstate"), False, _ctx(OWN_BUCKET)),
               Case("ssm:PutParameter", "arn:aws:ssm:{region}:{account}:parameter/fairtix-lab/other", False),
               Case("scheduler:UpdateSchedule", REAPER_SCHEDULE, False),
               Case("iam:PutRolePolicy", "arn:aws:iam::{account}:role/fairtix-lab-bootstrap-lab-apply", False)]
@@ -156,8 +173,8 @@ def simulate(iam, role_arn: str, cases: list[Case], account: str) -> dict[Case, 
         kwargs = {"PolicySourceArn": role_arn, "ActionNames": sorted({c.action for c in group}),
                   "ResourceArns": [resource]}
         if context:
-            kwargs["ContextEntries"] = [{"ContextKeyName": k, "ContextKeyValues": [v], "ContextKeyType": "string"}
-                                        for k, v in context]
+            kwargs["ContextEntries"] = [{"ContextKeyName": k, "ContextKeyValues": [v.format(account=account)],
+                                         "ContextKeyType": "string"} for k, v in context]
         results = {}
         for page in iam.get_paginator("simulate_principal_policy").paginate(**kwargs):
             for result in page["EvaluationResults"]:

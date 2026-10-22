@@ -100,9 +100,6 @@ MUTATING_ACTIONS = {
     "elasticache:DeleteServerlessCache": _ARN.format(service="elasticache", resource=f"serverlesscache:{LAB_PREFIX}*"),
     "rds:ModifyDBInstance": _ARN.format(service="rds", resource=f"db:{LAB_PREFIX}*"),
     "rds:DeleteDBInstance": _ARN.format(service="rds", resource=f"db:{LAB_PREFIX}*"),
-    # DeleteDBInstance with DeleteAutomatedBackups may also authorize against the backup,
-    # whose ARN carries no name. The reaper never calls this action directly.
-    "rds:DeleteDBInstanceAutomatedBackup": _ARN.format(service="rds", resource="auto-backup:*"),
     # No name to match: allowed only under aws:ResourceTag/project = fairtix-lab.
     "ec2:DeleteNatGateway": _ARN.format(service="ec2", resource="natgateway/*"),
     "ec2:DeleteVpcEndpoints": _ARN.format(service="ec2", resource="vpc-endpoint/*"),

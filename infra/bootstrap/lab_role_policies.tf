@@ -1,5 +1,5 @@
-# What the two lab roles may do in stage A: state, the expiry, the census, and (teardown
-# only) destroying the canary. Stage B adds what creating and destroying infra/lab needs.
+# What the two lab roles may do in stage A: state (in this account only), the expiry, the
+# census, the preflight's reads (apply), and destroying the canary (teardown). Stage B adds what creating and destroying infra/lab needs.
 # T5b checks every action here with simulate-principal-policy.
 
 locals {
@@ -20,12 +20,25 @@ data "aws_iam_policy_document" "lab_teardown" {
     sid       = "StateBucketList"
     actions   = ["s3:ListBucket"]
     resources = [aws_s3_bucket.state.arn]
+
+    # S3 ARNs carry no account id: without this, a same-named bucket elsewhere would match.
+    condition {
+      test     = "StringEquals"
+      variable = "s3:ResourceAccount"
+      values   = [local.account]
+    }
   }
 
   statement {
     sid       = "StateObjects"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = [local.state_objects.lab, local.state_objects.canary]
+
+    condition {
+      test     = "StringEquals"
+      variable = "s3:ResourceAccount"
+      values   = [local.account]
+    }
   }
 
   # teardown.decide reads it; the workflow resets it to "none" after a clean teardown.
@@ -96,12 +109,24 @@ data "aws_iam_policy_document" "lab_apply" {
     sid       = "StateBucketList"
     actions   = ["s3:ListBucket"]
     resources = [aws_s3_bucket.state.arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "s3:ResourceAccount"
+      values   = [local.account]
+    }
   }
 
   statement {
     sid       = "StateObjects"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = [local.state_objects.lab]
+
+    condition {
+      test     = "StringEquals"
+      variable = "s3:ResourceAccount"
+      values   = [local.account]
+    }
   }
 
   # teardown.preflight: the reaper schedule must be ENABLED, then it writes the expiry.
@@ -109,6 +134,20 @@ data "aws_iam_policy_document" "lab_apply" {
     sid       = "ReaperSchedule"
     actions   = ["scheduler:GetSchedule"]
     resources = ["arn:aws:scheduler:${local.region}:${local.account}:schedule/default/${local.reaper_name}"]
+  }
+
+  # teardown.preflight: the reaper is out of test mode, and its alerts have a confirmed
+  # subscriber. Read-only.
+  statement {
+    sid       = "ReaperSettings"
+    actions   = ["lambda:GetFunctionConfiguration"]
+    resources = ["arn:aws:lambda:${local.region}:${local.account}:function:${local.reaper_name}"]
+  }
+
+  statement {
+    sid       = "AlertSubscriptions"
+    actions   = ["sns:ListSubscriptionsByTopic"]
+    resources = ["arn:aws:sns:${local.region}:${local.account}:${local.topic_name}"]
   }
 
   statement {

@@ -30,6 +30,24 @@ resource "aws_cloudwatch_metric_alarm" "reaper_errors" {
   ok_actions          = [aws_sns_topic.alerts.arn]
 }
 
+# The reaper should run twice an hour. No invocation in an hour (the schedule disabled,
+# the scheduler role broken, throttling) means layer 3 is silently gone: email.
+resource "aws_cloudwatch_metric_alarm" "reaper_not_running" {
+  alarm_name          = "${local.reaper_name}-not-running"
+  alarm_description   = "The FairTix lab reaper hasn't run for an hour. Check the schedule ${local.reaper_name} and its role; layer 3 is down."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Invocations"
+  dimensions          = { FunctionName = aws_lambda_function.reaper.function_name }
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+}
+
 # Notifications, NOT a cap (TD §8): Budgets data updates up to three times a day, and
 # budget actions can't stop Fargate, an ALB or ElastiCache. Teardown is the cost control.
 # One budget with four notifications rather than three budgets. Credits and refunds are

@@ -13,6 +13,7 @@ from teardown import census, simulate, verify
 from teardown.tests.conftest import ACCOUNT_ID, EMPTY_BILLABLE, EMPTY_FREE, stub_client
 from teardown.tests.test_reaper import Recorder
 
+ROLE = f"arn:aws:iam::{ACCOUNT_ID}:role/fairtix-lab-bootstrap-lab-apply"
 LOCALS_TF = Path(__file__).resolve().parents[2] / "bootstrap" / "locals.tf"
 
 
@@ -69,6 +70,29 @@ def test_test_mode_actions_are_expected_denied_outside_test_mode():
 
     cases = [c for c in simulate.reaper_cases(test_mode=False) if c.action in reaper.TEST_MODE_ACTIONS]
     assert cases and not any(c.allowed for c in cases)
+
+
+@pytest.mark.parametrize("build", [simulate.teardown_cases, simulate.apply_cases], ids=["teardown", "apply"])
+def test_state_grants_are_checked_in_this_account_and_denied_in_another(build):
+    s3 = [c for c in build() if c.action.startswith("s3:")]
+    assert s3 and all(dict(c.context).get("s3:ResourceAccount") for c in s3)
+    assert any(not c.allowed and dict(c.context)["s3:ResourceAccount"] == "111122223333" for c in s3)
+    assert all(c.allowed for c in s3 if dict(c.context)["s3:ResourceAccount"] == "{account}"
+               and "/lab/" in c.resource)
+
+
+def test_the_account_is_filled_into_context_values():
+    iam, iam_stub = stub_client("iam")
+    case = simulate.Case("s3:GetObject", f"arn:aws:s3:::{simulate.STATE_BUCKET}/lab/terraform.tfstate", True,
+                         (("s3:ResourceAccount", "{account}"),))
+    iam_stub.add_response("simulate_principal_policy", {"EvaluationResults": [
+        {"EvalActionName": "s3:GetObject", "EvalDecision": "allowed"}], "IsTruncated": False},
+        {"PolicySourceArn": ROLE, "ActionNames": ["s3:GetObject"], "ResourceArns": [case.resource],
+         "ContextEntries": [{"ContextKeyName": "s3:ResourceAccount", "ContextKeyValues": [ACCOUNT_ID],
+                             "ContextKeyType": "string"}]})
+
+    assert simulate.simulate(iam, ROLE, [case], ACCOUNT_ID) == {case: "allowed"}
+    assert ACCOUNT_ID not in case.describe()
 
 
 def test_no_sampled_resource_is_a_bare_word():

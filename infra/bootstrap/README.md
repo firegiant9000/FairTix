@@ -8,7 +8,7 @@ The always-on part of the L3 lab ([`docs/infra/teardown-design.md`](../../docs/i
 | `github_oidc.tf` | The GitHub OIDC provider and the roles `fairtix-lab-bootstrap-lab-apply` and `-lab-teardown`. Each trust pins `aud`, `sub` (the environment), `job_workflow_ref` (the workflow file on `main`) and `repository_id`, all with `StringEquals` |
 | `lab_role_policies.tf` | What those roles may do in stage A: state (`lab/`, plus `canary/` for teardown), the expiry parameter, the census, and destroying the canary. Stage B adds what `infra/lab` needs |
 | `reaper.tf` | The reaper Lambda `fairtix-lab-bootstrap-reaper` (Python 3.12, `teardown.reaper.handler`), its role (TD:90-95), its log group (14 days), and the EventBridge Scheduler schedule `fairtix-lab-bootstrap-reaper` (every 30 minutes, `ENABLED`, `default` group) |
-| `alerts.tf` | The SNS topic `fairtix-lab-bootstrap-alerts` with an email subscription, the alarm on the reaper's `Errors`, and the monthly budget with alerts at $5, $15 and $20 actual and $20 forecast |
+| `alerts.tf` | The SNS topic `fairtix-lab-bootstrap-alerts` with an email subscription, two alarms (the reaper failed: `Errors ≥ 1`; the reaper hasn't run for an hour: `Invocations < 1`, missing data counts), and the monthly budget with alerts at $5, $15 and $20 actual and $20 forecast |
 | `expiry.tf` | The SSM parameter `/fairtix-lab/expires_at` (Standard tier), created as `none`. Terraform then ignores its value: `teardown.preflight` writes it before each apply, and `lab-teardown` resets it |
 | `variables.tf` | `alert_email` (sensitive), `reaper_test_mode` and `reaper_grace_minutes` (T5 only) |
 
@@ -36,7 +36,7 @@ terraform -chdir=infra/bootstrap apply bootstrap.tfplan
 ```
 
 Then:
-1. Confirm the SNS subscription from the email AWS sends.
+1. Confirm the SNS subscription from the email AWS sends (the link expires after 3 days). `teardown.preflight` refuses any lab apply until a confirmed subscription exists.
 2. Check the budget exists: `aws budgets describe-budgets --account-id <id> --query "Budgets[].BudgetName"` (don't paste the id anywhere).
 3. Run T5b: `python -m teardown.simulate` from `infra/` (see `docs/infra/teardown-tests.md`).
 4. Set the GitHub settings in [`docs/infra/README.md`](../../docs/infra/README.md#github-settings-the-lab-depends-on). Copy the role ARNs with `terraform -chdir=infra/bootstrap output -raw lab_teardown_role_arn | Set-Clipboard` (and `lab_apply_role_arn`) straight into the environment secrets.
@@ -72,7 +72,7 @@ The bucket policy denies every principal except the two lab roles and **the iden
 terraform -chdir=infra/bootstrap apply -var reaper_test_mode=true -var reaper_grace_minutes=5
 ```
 
-The reaper then also counts the canary VPC and may delete it and its security groups (both tags required). **Re-apply without the variables straight after T5.** The variables' validation refuses a grace below 120 minutes outside test mode.
+The reaper then also counts the canary VPC and may delete it and its security groups (both tags required). **Re-apply without the variables straight after T5.** The variables' validation refuses a grace below 120 minutes outside test mode, and `teardown.preflight` refuses every lab apply while the reaper is in test mode or its grace is under 120 minutes.
 
 ## Changing it
 
