@@ -1,8 +1,8 @@
 # Layer 2 of the lab's cost control (docs/infra/teardown-design.md §3). Also layer 1: a
 # workflow_dispatch run with force=true destroys without asking teardown.decide.
 #
-# Skipped until the repository variable LAB_ENABLED is 'true' (FT-7). The scheduled run
-# protects nothing until FT-3 builds the AWS side (roles, bootstrap, infra/lab).
+# Skipped until the repository variable LAB_ENABLED is 'true' (FT-7). It destroys
+# infra/lab and infra/canary (the T4/T5 canary), whichever exist.
 name: Lab teardown
 
 on:
@@ -50,11 +50,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: infra/teardown/requirements.txt
+          cache-dependency-path: infra/teardown/requirements.lock
 
       - name: Install pinned dependencies
         working-directory: infra
-        run: python -m pip install -r teardown/requirements.txt
+        run: python -m pip install --require-hashes -r teardown/requirements.lock
 
       # Trust (FT-3): sub = repo:firegiant9000/FairTix:environment:lab-teardown AND
       # job_workflow_ref = firegiant9000/FairTix/.github/workflows/lab-teardown.yml@refs/heads/main
@@ -97,30 +97,45 @@ jobs:
       - name: Terraform destroy
         if: steps.decide.outputs.decision == 'destroy'
         shell: bash
+        # Every stack that exists: the lab, then the canary (T4/T5). Destroying an empty
+        # state is a no-op. All are attempted; any failure fails the step.
         run: |
-          if [ ! -d infra/lab ]; then
-            echo "::error::lab stack not present (infra/lab arrives with FT-3); nothing to run destroy against"
+          stacks=""
+          for stack in infra/lab infra/canary; do
+            if [ -d "$stack" ]; then stacks="$stacks $stack"; fi
+          done
+          if [ -z "$stacks" ]; then
+            echo "::error::no stack present (infra/lab or infra/canary); nothing to run destroy against"
             exit 1
           fi
-          terraform -chdir=infra/lab init -input=false -lockfile=readonly -no-color
           # The plan stays out of the public log (endpoints, the ALB's /32 ingress); only
           # the summary and errors are printed.
           run_destroy() {
-            local status=0
-            terraform -chdir=infra/lab destroy -auto-approve -input=false -lock-timeout=15m -no-color > "$RUNNER_TEMP/destroy.log" 2>&1 || status=$?
+            local stack="$1" status=0
+            terraform -chdir="$stack" destroy -auto-approve -input=false -lock-timeout=15m -no-color > "$RUNNER_TEMP/destroy.log" 2>&1 || status=$?
             grep -E -A4 'Destroy complete|Error:' "$RUNNER_TEMP/destroy.log" || true
             return "$status"
           }
-          if run_destroy; then
-            exit 0
-          fi
-          if grep -q DependencyViolation "$RUNNER_TEMP/destroy.log"; then
-            echo "DependencyViolation (Fargate ENIs still releasing): waiting 90 s, then retrying once"
-            sleep 90
-            run_destroy
-          else
-            exit 1
-          fi
+          failed=0
+          for stack in $stacks; do
+            echo "destroying $stack"
+            if ! terraform -chdir="$stack" init -input=false -lockfile=readonly -no-color > "$RUNNER_TEMP/init.log" 2>&1; then
+              grep -E -A4 'Error:' "$RUNNER_TEMP/init.log" || true
+              failed=1
+              continue
+            fi
+            if run_destroy "$stack"; then
+              continue
+            fi
+            if grep -q DependencyViolation "$RUNNER_TEMP/destroy.log"; then
+              echo "DependencyViolation (Fargate ENIs still releasing): waiting 90 s, then retrying once"
+              sleep 90
+              run_destroy "$stack" || failed=1
+            else
+              failed=1
+            fi
+          done
+          exit "$failed"
 
       # Doesn't trust Terraform state or tags. Exits 1 on any leftover, 2 on any error.
       - name: teardown.verify

@@ -22,6 +22,8 @@ POLICIES = f"{ENV}/deployment-branch-policies"
 WORKFLOW = f"repos/{REPO}/actions/workflows/lab-teardown.yml"
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
 SENTINEL = "sentinel-response-body-7f3a"  # must never be printed
+TOPIC = "arn:aws:sns:us-east-1:123456789012:fairtix-lab-bootstrap-alerts"
+CONFIRMED = f"{TOPIC}:0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
 
 
 def env_response(rules=None, policy="custom"):
@@ -72,14 +74,16 @@ class FakeGh:
 
 
 class Aws:
-    """Stubbed scheduler + ssm clients that record every attempted call."""
+    """Stubbed scheduler, lambda, sns and ssm clients that record every attempted call."""
 
     def __init__(self):
         self.scheduler, self.scheduler_stub = stub_client("scheduler")
+        self.lambda_, self.lambda_stub = stub_client("lambda")
+        self.sns, self.sns_stub = stub_client("sns")
         self.ssm, self.ssm_stub = stub_client("ssm")
         self.calls = []
         self.factory_calls = 0
-        for client in (self.scheduler, self.ssm):
+        for client in (self.scheduler, self.lambda_, self.sns, self.ssm):
             client.meta.events.register("before-parameter-build", self._record)
 
     def _record(self, model, **_kwargs):
@@ -87,9 +91,10 @@ class Aws:
 
     def factory(self):
         self.factory_calls += 1
-        return preflight.AwsClients(scheduler=self.scheduler, ssm=self.ssm)
+        return preflight.AwsClients(scheduler=self.scheduler, ssm=self.ssm, lambda_=self.lambda_, sns=self.sns)
 
-    def expect_reaper(self, state="ENABLED"):
+    def expect_reaper(self, state="ENABLED", test_mode="false", grace="120", subscription=CONFIRMED):
+        """The schedule; when it's ENABLED, also the reaper's settings and the alert subscriptions."""
         self.scheduler_stub.add_response(
             "get_schedule",
             {"Name": "fairtix-lab-bootstrap-reaper", "State": state, "ScheduleExpression": "rate(30 minutes)",
@@ -98,6 +103,25 @@ class Aws:
              "FlexibleTimeWindow": {"Mode": "OFF"}},
             {"Name": "fairtix-lab-bootstrap-reaper", "GroupName": "default"},
         )
+        if state != "ENABLED":
+            return
+        self.expect_reaper_settings(test_mode, grace)
+        if test_mode == "false" and grace.isdigit() and int(grace) >= 120:
+            self.expect_subscriptions(subscription)
+
+    def expect_reaper_settings(self, test_mode="false", grace="120"):
+        self.lambda_stub.add_response(
+            "get_function_configuration",
+            {"FunctionName": "fairtix-lab-bootstrap-reaper",
+             "Environment": {"Variables": {"REAPER_TEST_MODE": test_mode, "REAPER_GRACE_MINUTES": grace,
+                                           "REAPER_SNS_TOPIC_ARN": TOPIC}}},
+            {"FunctionName": "fairtix-lab-bootstrap-reaper"},
+        )
+
+    def expect_subscriptions(self, subscription_arn):
+        subs = [] if subscription_arn is None else [
+            {"SubscriptionArn": subscription_arn, "Protocol": "email", "TopicArn": TOPIC}]
+        self.sns_stub.add_response("list_subscriptions_by_topic", {"Subscriptions": subs}, {"TopicArn": TOPIC})
 
     def expect_expiry_write(self, value="2026-10-20T16:00:00Z"):
         self.ssm_stub.add_response(
@@ -110,8 +134,8 @@ class Aws:
         assert self.factory_calls == 0
 
     def close(self):
-        self.scheduler_stub.deactivate()
-        self.ssm_stub.deactivate()
+        for stub in (self.scheduler_stub, self.lambda_stub, self.sns_stub, self.ssm_stub):
+            stub.deactivate()
 
 
 @pytest.fixture
@@ -148,7 +172,7 @@ def test_happy_path_writes_expiry_then_passes(aws):
     aws.expect_expiry_write()
     code, out, err = run(aws)
     assert code == 0, err
-    assert aws.calls == ["GetSchedule", "PutParameter"]
+    assert aws.calls == ["GetSchedule", "GetFunctionConfiguration", "ListSubscriptionsByTopic", "PutParameter"]
     aws.scheduler_stub.assert_no_pending_responses()
     aws.ssm_stub.assert_no_pending_responses()
     assert out.strip().endswith("preflight passed: expires_at = 2026-10-20T16:00:00Z")
@@ -375,6 +399,43 @@ def test_reaper_missing_fails_and_ssm_untouched(aws):
     assert_failed(result, "reaper schedule")
     assert "ResourceNotFoundException" in result[2]
     assert aws.calls == ["GetSchedule"]
+
+
+# --- step 5b: the reaper is out of test mode; step 5c: its alerts reach someone ---------
+
+@pytest.mark.parametrize("test_mode,grace", [("true", "120"), ("false", "5"), ("false", "119"),
+                                             ("TRUE", "120"), ("false", "two"), ("", "120")])
+def test_reaper_in_test_mode_or_short_grace_fails_and_ssm_untouched(aws, test_mode, grace):
+    # A forgotten T5 setting would reap a real lab 5 minutes after expiry, before layer 2.
+    aws.expect_reaper(test_mode=test_mode, grace=grace)
+    assert_failed(run(aws), "reaper settings")
+    assert aws.calls == ["GetSchedule", "GetFunctionConfiguration"]
+
+
+def test_reaper_settings_unreadable_fails(aws):
+    aws.expect_reaper(state="DISABLED")  # queue only the schedule, then make it ENABLED by hand
+    aws.scheduler_stub._queue[0]["response"][1]["State"] = "ENABLED"
+    aws.lambda_stub.add_client_error("get_function_configuration", service_error_code="AccessDeniedException",
+                                     service_message=SENTINEL, http_status_code=403)
+    result = run(aws)
+    assert_failed(result, "reaper settings")
+    assert "AccessDeniedException" in result[2]
+
+
+@pytest.mark.parametrize("subscription", [None, "PendingConfirmation", "Deleted"])
+def test_no_confirmed_alert_subscription_fails_and_ssm_untouched(aws, subscription):
+    aws.expect_reaper(subscription=subscription)
+    assert_failed(run(aws), "alert subscription")
+    assert "PutParameter" not in aws.calls
+
+
+def test_alert_subscription_unreadable_fails(aws):
+    aws.expect_reaper(state="DISABLED")
+    aws.scheduler_stub._queue[0]["response"][1]["State"] = "ENABLED"
+    aws.expect_reaper_settings()
+    aws.sns_stub.add_client_error("list_subscriptions_by_topic", service_error_code="AuthorizationError",
+                                  service_message=SENTINEL, http_status_code=403)
+    assert_failed(run(aws), "alert subscription")
 
 
 # --- step 6: the TTL ------------------------------------------------------------------

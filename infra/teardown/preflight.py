@@ -9,6 +9,8 @@ In order; the first failure exits 1, and every GitHub check runs before any AWS 
   3. lab-teardown.yml is re-enabled and reports state 'active'.
   4. No lab-teardown run is queued or in progress.
   5. The reaper's EventBridge schedule is ENABLED.
+     5b. The reaper is out of test mode, with a grace of at least 120 minutes.
+     5c. Its alert topic has a confirmed subscription, so its emails reach someone.
   6. SSM /fairtix-lab/expires_at = now + TTL (default 4 h, at most 12 h). Only then does
      it report success, so the expiry exists before Terraform creates anything.
 
@@ -37,6 +39,8 @@ TEARDOWN_WORKFLOW = "lab-teardown.yml"
 # Bootstrap naming contract (teardown/README.md): FT-3 creates the schedule with this name.
 REAPER_SCHEDULE = "fairtix-lab-bootstrap-reaper"
 REAPER_SCHEDULE_GROUP = "default"
+REAPER_FUNCTION = REAPER_SCHEDULE  # the Lambda has the same name
+MIN_REAPER_GRACE_MINUTES = 120
 DEFAULT_TTL_HOURS = 4.0
 GH_TIMEOUT_SECONDS = 60
 
@@ -78,6 +82,8 @@ class GhClient:
 class AwsClients:
     scheduler: object
     ssm: object
+    lambda_: object
+    sns: object
 
 
 def make_aws_clients(session=None) -> AwsClients:
@@ -87,6 +93,8 @@ def make_aws_clients(session=None) -> AwsClients:
     return AwsClients(
         scheduler=session.client("scheduler", region_name=HOME_REGION),
         ssm=session.client("ssm", region_name=HOME_REGION),
+        lambda_=session.client("lambda", region_name=HOME_REGION),
+        sns=session.client("sns", region_name=HOME_REGION),
     )
 
 
@@ -194,6 +202,44 @@ def check_reaper_enabled(scheduler) -> None:
         raise PreflightFailed(check, f"{REAPER_SCHEDULE} is {state!r}, not 'ENABLED'")
 
 
+def check_reaper_settings(lambda_) -> str:
+    """The reaper is out of T5's test mode, with the full grace. Returns its alert topic ARN.
+
+    A forgotten `reaper_test_mode` would reap a real lab 5 minutes after expiry, before
+    layer 2 gets its turn (TD:81).
+    """
+    check = "reaper settings"
+    try:
+        config = lambda_.get_function_configuration(FunctionName=REAPER_FUNCTION)
+    except Exception as exc:  # noqa: BLE001 - unreadable means not proven safe
+        raise PreflightFailed(check, f"{REAPER_FUNCTION} unreadable ({_describe(exc)})") from None
+    variables = (config.get("Environment") or {}).get("Variables") or {}
+    if variables.get("REAPER_TEST_MODE") != "false":
+        raise PreflightFailed(check, "the reaper is in test mode; re-apply infra/bootstrap without reaper_test_mode")
+    grace = variables.get("REAPER_GRACE_MINUTES", "")
+    if not grace.isdigit() or int(grace) < MIN_REAPER_GRACE_MINUTES:
+        raise PreflightFailed(check, f"the reaper's grace is under {MIN_REAPER_GRACE_MINUTES} minutes")
+    topic = variables.get("REAPER_SNS_TOPIC_ARN")
+    if not topic:
+        raise PreflightFailed(check, "the reaper has no alert topic")
+    return topic
+
+
+def check_alerts_confirmed(sns, topic_arn: str) -> None:
+    """Someone receives the reaper's email and the Errors alarm: a confirmed subscription exists."""
+    check = "alert subscription"
+    try:
+        subscriptions = [
+            s for page in sns.get_paginator("list_subscriptions_by_topic").paginate(TopicArn=topic_arn)
+            for s in page["Subscriptions"]
+        ]
+    except Exception as exc:  # noqa: BLE001
+        raise PreflightFailed(check, f"the alert topic's subscriptions are unreadable ({_describe(exc)})") from None
+    # Unconfirmed and removed subscriptions report a placeholder instead of an ARN.
+    if not any(str(s.get("SubscriptionArn", "")).startswith("arn:") for s in subscriptions):
+        raise PreflightFailed(check, "no confirmed subscription on the alert topic; confirm the email from AWS")
+
+
 def write_expiry(ssm, now: datetime, ttl: timedelta) -> str:
     value = (now + ttl).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
@@ -220,6 +266,10 @@ def run(*, repo, lab_enabled, gh_env, gh_actions, ttl_raw, github_only, aws_clie
     clients = aws_clients()
     check_reaper_enabled(clients.scheduler)
     print(f"preflight: [5] {REAPER_SCHEDULE} is ENABLED", file=out)
+    topic = check_reaper_settings(clients.lambda_)
+    print("preflight: [5b] the reaper is out of test mode, with the full grace", file=out)
+    check_alerts_confirmed(clients.sns, topic)
+    print("preflight: [5c] the alert topic has a confirmed subscription", file=out)
     expires_at = write_expiry(clients.ssm, now() if callable(now) else now, ttl)
     print(f"preflight passed: expires_at = {expires_at}", file=out)
 

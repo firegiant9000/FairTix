@@ -158,6 +158,10 @@ def decide_for_layer2(now: datetime, expires_at_raw, census_fn: Callable[[], Cen
         return DESTROY
 
 
-def decide_for_reaper(now: datetime, expires_at_raw, census_fn: Callable[[], Census]) -> str:
-    """Layer 3 (the reaper, FT-3): billable census, 2 h grace. Errors raise to trip its alarm."""
-    return decide(now, expires_at_raw, census_fn().billable_only(), grace=REAPER_GRACE)
+def decide_for_reaper(now: datetime, expires_at_raw, census_fn: Callable[[], Census],
+                      grace: timedelta = REAPER_GRACE) -> str:
+    """Layer 3 (the reaper): billable census, 2 h grace. Errors raise to trip its alarm.
+
+    `grace` is lowered only in test mode (T5 uses 5 minutes).
+    """
+    return decide(now, expires_at_raw, census_fn().billable_only(), grace=grace)

@@ -46,6 +46,42 @@ jobs:
       - name: Run teardown tests
         run: python -m pytest teardown/tests -q
 
+  terraform:
+    name: Terraform fmt and validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: infra
+
+    # No AWS credentials: `-backend=false` and `validate` never call AWS. The plan is never
+    # run or posted on a PR; the repo is public (FT-3 ruling on RM:210).
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.6
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -no-color
+
+      # The committed lock file must cover linux_amd64 (-lockfile=readonly).
+      - name: terraform validate (every stack)
+        shell: bash
+        run: |
+          for stack in bootstrap canary lab; do
+            if [ ! -d "$stack" ]; then continue; fi
+            echo "validating infra/$stack"
+            terraform -chdir="$stack" init -backend=false -input=false -lockfile=readonly -no-color
+            terraform -chdir="$stack" validate -no-color
+          done
+
   actionlint:
     name: Workflow lint (actionlint, T2)
     runs-on: ubuntu-latest

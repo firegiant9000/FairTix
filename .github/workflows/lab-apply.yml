@@ -58,11 +58,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: infra/teardown/requirements.txt
+          cache-dependency-path: infra/teardown/requirements.lock
 
       - name: Install pinned dependencies
         working-directory: infra
-        run: python -m pip install -r teardown/requirements.txt
+        run: python -m pip install --require-hashes -r teardown/requirements.lock
 
       # The GitHub checks run first and without AWS credentials, so a blocked apply
       # makes no AWS call at all.
