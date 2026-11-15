@@ -14,7 +14,7 @@ webhooks.
 >
 > **Direction (2026-09):** FairTix is a technical showcase, not a business. It
 > is being used as a distributed-systems and production-backend laboratory
-> (real-Postgres contention tests, Terraform-defined Azure environment,
+> (real-Postgres contention tests, Terraform-defined AWS lab environment,
 > multi-instance correctness, OpenTelemetry and SLOs, k6 load and failure
 > drills). See the 2026-09 revision at the top of
 > [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md) and the audit in
@@ -193,9 +193,10 @@ Trivy image scan.
   instance only.
 - Refund webhooks are verified but not deduplicated. A redelivered
   `charge.refunded` event can re-run refund completion.
-- Backend tests run on H2 with Flyway disabled, so the 45 migrations and the
-  row-locking behaviour have never been exercised against PostgreSQL by an
-  automated test.
+- The PostgreSQL test suites run a single application instance with the
+  `@Scheduled` jobs off, so multi-instance behaviour is untested.
+- The AWS lab is not built: `infra/` holds the bootstrap, canary and teardown
+  code only (see [docs/infra/README.md](docs/infra/README.md)).
 - Ten `@Scheduled` jobs run on every replica; there is no leader election.
 - Stripe calls carry no idempotency keys and run inside database transactions.
 - With Redis down, the rate limiter fails closed (503) on the credential
