@@ -1,6 +1,7 @@
 package com.fairtix.config;
 
 import com.fairtix.auth.application.RegistrationClosedException;
+import com.fairtix.common.LockBusyException;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.inventory.application.DuplicateSeatException;
 import com.fairtix.inventory.application.SeatHoldConflictException;
@@ -403,6 +404,13 @@ public class GlobalExceptionHandler {
     log.warn("Optimistic lock conflict on {}: {}", req.getRequestURI(), ex.getMessage());
     return error(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
         "The resource was modified by another request; reload and try again", req);
+  }
+
+  @ExceptionHandler(LockBusyException.class)
+  public ResponseEntity<Map<String, Object>> handleLockBusy(
+      LockBusyException ex, HttpServletRequest req) {
+    log.warn("Transaction lock wait timed out on {}", req.getRequestURI());
+    return error(HttpStatus.CONFLICT, "REQUEST_IN_PROGRESS", ex.getMessage(), req);
   }
 
   @ExceptionHandler(DataIntegrityViolationException.class)
