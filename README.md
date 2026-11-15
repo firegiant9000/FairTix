@@ -80,7 +80,7 @@ The backend is organised by domain (`events`, `inventory`, `queue`, `orders`,
 `analytics`, `audit`, `support`, `notifications`), each split into `api`,
 `application`, `domain` and `infrastructure` layers. Schema changes are
 forward-only Flyway migrations under
-`backend/src/main/resources/db/migration` (28 so far).
+`backend/src/main/resources/db/migration` (47 so far).
 
 ## Tech stack
 
