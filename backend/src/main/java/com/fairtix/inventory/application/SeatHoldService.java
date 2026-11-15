@@ -10,8 +10,7 @@ import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.queue.application.QueueService;
-import com.fairtix.tickets.domain.TicketStatus;
-import com.fairtix.tickets.infrastructure.TicketRepository;
+import com.fairtix.tickets.application.PurchaseCapGuard;
 import jakarta.transaction.Transactional;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -32,7 +31,7 @@ public class SeatHoldService {
   private final EventRepository eventRepository;
   private final AuditService auditService;
   private final QueueService queueService;
-  private final TicketRepository ticketRepository;
+  private final PurchaseCapGuard purchaseCapGuard;
 
   @Value("${holds.duration-minutes:10}")
   private int defaultDurationMinutes;
@@ -51,13 +50,13 @@ public class SeatHoldService {
       EventRepository eventRepository,
       AuditService auditService,
       QueueService queueService,
-      TicketRepository ticketRepository) {
+      PurchaseCapGuard purchaseCapGuard) {
     this.seatRepository = seatRepository;
     this.seatHoldRepository = seatHoldRepository;
     this.eventRepository = eventRepository;
     this.auditService = auditService;
     this.queueService = queueService;
-    this.ticketRepository = ticketRepository;
+    this.purchaseCapGuard = purchaseCapGuard;
   }
 
   /**
@@ -92,13 +91,15 @@ public class SeatHoldService {
       throw new SeatHoldConflictException("Queue admission required to hold seats for this event");
     }
 
-    // Purchase-cap hold gate: count tickets already purchased + active holds for this event
+    // Purchase-cap hold gate: active tickets + live holds for this event, counted
+    // under the (event, user) lock so an overlapping request from the same user
+    // waits here and then sees this one's holds.
     Integer cap = event.getMaxTicketsPerUser();
     if (cap != null) {
+      purchaseCapGuard.lock(eventId, ownerId);
       long requested = seatIds.stream().distinct().count();
-      long purchased = ticketRepository.countByUser_IdAndEvent_IdAndStatusNotIn(ownerId, eventId,
-          List.of(TicketStatus.CANCELLED, TicketStatus.REFUNDED));
-      long heldAlready = seatHoldRepository.countByOwnerIdAndSeat_Event_IdAndStatus(ownerId, eventId, HoldStatus.ACTIVE);
+      long purchased = purchaseCapGuard.activeTickets(ownerId, eventId);
+      long heldAlready = purchaseCapGuard.liveHolds(ownerId, eventId);
       if (purchased + heldAlready + requested > cap) {
         throw new SeatHoldConflictException(
             "Purchase cap of " + cap + " ticket(s) per user exceeded for event: " + event.getTitle()

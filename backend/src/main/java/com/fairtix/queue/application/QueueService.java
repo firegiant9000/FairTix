@@ -12,8 +12,7 @@ import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.queue.domain.QueueEntry;
 import com.fairtix.queue.domain.QueueStatus;
 import com.fairtix.queue.infrastructure.QueueRepository;
-import com.fairtix.tickets.domain.TicketStatus;
-import com.fairtix.tickets.infrastructure.TicketRepository;
+import com.fairtix.tickets.application.PurchaseCapGuard;
 import jakarta.transaction.Transactional;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RSet;
@@ -38,7 +37,7 @@ public class QueueService {
     private final QueueRepository queueRepository;
     private final EventRepository eventRepository;
     private final SeatRepository seatRepository;
-    private final TicketRepository ticketRepository;
+    private final PurchaseCapGuard purchaseCapGuard;
     private final RedissonClient redissonClient;
     private final AuditService auditService;
     private final RiskScoringService riskScoringService;
@@ -52,14 +51,14 @@ public class QueueService {
     public QueueService(QueueRepository queueRepository,
                         EventRepository eventRepository,
                         SeatRepository seatRepository,
-                        TicketRepository ticketRepository,
+                        PurchaseCapGuard purchaseCapGuard,
                         RedissonClient redissonClient,
                         AuditService auditService,
                         RiskScoringService riskScoringService) {
         this.queueRepository = queueRepository;
         this.eventRepository = eventRepository;
         this.seatRepository = seatRepository;
-        this.ticketRepository = ticketRepository;
+        this.purchaseCapGuard = purchaseCapGuard;
         this.redissonClient = redissonClient;
         this.auditService = auditService;
         this.riskScoringService = riskScoringService;
@@ -79,8 +78,7 @@ public class QueueService {
         }
 
         if (event.getMaxTicketsPerUser() != null) {
-            long owned = ticketRepository.countByUser_IdAndEvent_IdAndStatusNot(
-                    userId, eventId, TicketStatus.CANCELLED);
+            long owned = purchaseCapGuard.activeTickets(userId, eventId);
             if (owned >= event.getMaxTicketsPerUser()) {
                 throw new QueueConflictException(
                         "You have already purchased the maximum number of tickets for this event");
