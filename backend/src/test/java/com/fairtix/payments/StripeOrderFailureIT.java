@@ -79,7 +79,7 @@ class StripeOrderFailureIT extends PostgresIT {
     doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(eq(INTENT), anyLong());
     doThrow(new IllegalStateException("simulated failure while recording the payment"))
         .when(stripePaymentService)
-        .recordStripePayment(anyString(), any(), any(), any(), anyString());
+        .recordStripePaymentInOrderTransaction(anyString(), any(), any(), any(), anyString());
 
     mockMvc.perform(post("/api/payments/checkout")
             .with(WithMockPrincipal.user(buyer.getId(), buyer.getEmail()))

@@ -3,6 +3,7 @@ package com.fairtix.payments.api;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.auth.application.VerifiedEmailGuard;
 import com.fairtix.auth.domain.CustomUserPrincipal;
+import com.fairtix.common.LockBusyException;
 import com.fairtix.inventory.application.SeatHoldService;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.orders.application.OrderService;
@@ -48,6 +49,9 @@ import java.util.stream.Collectors;
 @RestController
 @PreAuthorize("isAuthenticated()")
 public class PaymentController {
+
+  /** Attempts to create the order for a succeeded charge while the cap lock is busy. */
+  private static final int STRIPE_ORDER_ATTEMPTS = 3;
 
   private final OrderService orderService;
   private final PaymentRecordRepository paymentRecordRepository;
@@ -121,6 +125,25 @@ public class PaymentController {
         org.getStripeConnectAccountId(),
         feeCents,
         org.getName());
+  }
+
+  /**
+   * Creates the order for a charge that has already succeeded. If the purchase-cap
+   * lock is busy (another request from the same user for the same event is still
+   * running), nothing was written and the attempt is simply repeated: the customer
+   * has paid, so a "try again" answer is the last resort, not the first. Each
+   * attempt is a transaction of its own and waits up to the lock's wait limit.
+   */
+  private Order createStripeOrder(UUID userId, java.util.List<UUID> holdIds, String paymentIntentId) {
+    for (int attempt = 1; ; attempt++) {
+      try {
+        return orderService.createOrderWithStripePayment(userId, holdIds, paymentIntentId);
+      } catch (LockBusyException ex) {
+        if (attempt == STRIPE_ORDER_ATTEMPTS) {
+          throw ex;
+        }
+      }
+    }
   }
 
   @Operation(summary = "Create Stripe PaymentIntent",
@@ -212,8 +235,7 @@ public class PaymentController {
       }
       Order order;
       try {
-        order = orderService.createOrderWithStripePayment(
-            principal.getUserId(), request.holdIds(), paymentIntentId);
+        order = createStripeOrder(principal.getUserId(), request.holdIds(), paymentIntentId);
       } catch (RuntimeException ex) {
         // The charge succeeded but the order rolled back. This row is written in its
         // own transaction after that rollback, so the captured charge stays on record

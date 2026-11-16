@@ -41,7 +41,9 @@ public class TicketService {
             hold.getSeat().getPrice()))
         .toList();
     ticketRepository.saveAll(tickets);
-    auditService.log(order.getUser().getId(), "TICKETS_ISSUED", "TICKET", order.getId(),
+    // In the order's transaction, on its connection: checkout must not need a second
+    // pooled connection, and a rolled-back order must not leave a TICKETS_ISSUED row.
+    auditService.logInCurrentTransaction(order.getUser().getId(), "TICKETS_ISSUED", "TICKET", order.getId(),
         "count=" + tickets.size());
   }
 

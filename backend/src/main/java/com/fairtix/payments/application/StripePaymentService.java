@@ -283,6 +283,27 @@ public class StripePaymentService {
     return stripeEnabled;
   }
 
+  /**
+   * Records the payment for an online checkout, with the audit row in the order's
+   * own transaction and on its connection. Online checkout runs many at a time; a
+   * {@code REQUIRES_NEW} audit here needs a second pooled connection while the
+   * first is held, and at twice the pool size every checkout waits for a
+   * connection that none can release, after the customer has paid.
+   *
+   * <p>If the order rolls back, this row goes with it. The captured charge is
+   * still on record: {@code PaymentController} then writes
+   * {@code STRIPE_ORDER_FAILED} with the PaymentIntent id in a transaction of its
+   * own.
+   */
+  public PaymentRecord recordStripePaymentInOrderTransaction(String paymentIntentId, UUID orderId,
+      UUID userId, BigDecimal amount, String currency) {
+    PaymentRecord saved = paymentRecordRepository.save(new PaymentRecord(
+        orderId, userId, amount, currency, PaymentStatus.SUCCESS, paymentIntentId, null));
+    auditService.logInCurrentTransaction(userId, "PAYMENT_PROCESSED", "PAYMENT", saved.getId(),
+        "stripe_intent=" + paymentIntentId);
+    return saved;
+  }
+
   public PaymentRecord recordStripePayment(String paymentIntentId, UUID orderId, UUID userId,
       BigDecimal amount, String currency) {
     PaymentRecord record = new PaymentRecord(
