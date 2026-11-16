@@ -53,6 +53,16 @@ public class TransactionLock {
    */
   @Transactional(propagation = Propagation.MANDATORY)
   public void acquire(String key) {
+    acquire(key, waitMillis);
+  }
+
+  /**
+   * As {@link #acquire(String)}, with a wait limit of the caller's choosing: a
+   * path where many requests queue on one key keeps the wait short, so the
+   * waiters give their pooled connections back quickly.
+   */
+  @Transactional(propagation = Propagation.MANDATORY)
+  public void acquire(String key, long waitMillis) {
     // lock_timeout is put back afterwards so that the bound applies to this wait
     // only, not to the row locks the rest of the transaction takes.
     String previousTimeout = (String) entityManager
@@ -73,6 +83,21 @@ public class TransactionLock {
       throw ex;
     }
     setLockTimeout(previousTimeout);
+  }
+
+  /**
+   * Takes the lock on {@code key} only if it is free, without waiting. For work
+   * that should be skipped, not queued, when another transaction is already
+   * doing it.
+   *
+   * @return whether this transaction now holds the lock
+   */
+  @Transactional(propagation = Propagation.MANDATORY)
+  public boolean tryAcquire(String key) {
+    return (Boolean) entityManager
+        .createNativeQuery("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))")
+        .setParameter("key", key)
+        .getSingleResult();
   }
 
   private void setLockTimeout(String value) {

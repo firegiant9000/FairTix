@@ -141,13 +141,13 @@ class RedisBackedFeaturesIT extends PostgresIT {
   }
 
   /**
-   * Pins current behaviour, finding F-4.1 (not fixed in this slice):
-   * {@code admitNextBatch} adds to the Redis set before its transaction commits, so a
-   * rolled-back admission leaves the user admitted in Redis while the database still
-   * says {@code WAITING}, and {@code isAdmitted} trusts Redis first.
+   * Finding F-4.1, fixed: {@code admitNextBatch} adds to the Redis set only after
+   * its transaction commits, so a rolled-back admission leaves the user
+   * {@code WAITING} in the database and not admitted in Redis. Before, the add came
+   * first and {@code isAdmitted}, which trusts Redis first, said admitted.
    */
   @Test
-  void queueAdmission_rollback_leavesUserAdmittedInRedis() {
+  void queueAdmission_rollback_leavesUserNotAdmitted() {
     Event event = queueEvent();
     UUID user = newUser("rollback@test.com");
     queueService.joinQueue(event.getId(), user);
@@ -160,7 +160,8 @@ class RedisBackedFeaturesIT extends PostgresIT {
     assertThat(jdbcTemplate.queryForObject(
         "SELECT status FROM queue_entries WHERE event_id = ? AND user_id = ?",
         String.class, event.getId(), user)).isEqualTo("WAITING");
-    assertThat(queueService.isAdmitted(event.getId(), user)).as("F-4.1: Redis outlives the rollback").isTrue();
+    assertThat(admittedInRedis(event, user)).as("Redis after the rollback").isFalse();
+    assertThat(queueService.isAdmitted(event.getId(), user)).isFalse();
   }
 
   private Event queueEvent() {
