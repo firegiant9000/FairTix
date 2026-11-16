@@ -144,6 +144,10 @@ public class PaymentController {
     // Keeps the CONFIRMED-hold sweep from freeing these seats while the customer pays.
     seatHoldService.extendConfirmedHoldsForPayment(request.holdIds(), principal.getUserId());
 
+    // Before any charge: checkout validates the purchase cap after the payment has
+    // succeeded, so an order that is already over the cap is refused here instead.
+    orderService.assertWithinPurchaseCaps(principal.getUserId(), request.holdIds());
+
     BigDecimal total = request.holdIds().stream()
         .map(id -> seatHoldRepository.findByIdAndOwnerId(id, principal.getUserId())
             .map(h -> h.getSeat().getPrice())

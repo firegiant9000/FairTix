@@ -329,6 +329,17 @@ public class OrderService {
     return holds;
   }
 
+  /**
+   * The checkout cap check on its own, for use before a charge is taken: fails
+   * with {@link PurchaseCapExceededException} if an order for these holds would
+   * be refused. Checkout checks again; this only keeps a refusal that is already
+   * certain from happening after the customer has paid.
+   */
+  @Transactional
+  public void assertWithinPurchaseCaps(UUID userId, List<UUID> holdIds) {
+    validatePurchaseCaps(userId, validateHolds(userId, holdIds.stream().distinct().toList()));
+  }
+
   private void validatePurchaseCaps(UUID userId, List<SeatHold> holds) {
     // Group by event ID (UUID) to avoid JPA proxy identity issues
     Map<UUID, Long> newTicketsByEventId = holds.stream()
