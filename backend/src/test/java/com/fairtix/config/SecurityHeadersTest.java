@@ -6,6 +6,7 @@ import static org.springframework.security.test.web.servlet.setup.SecurityMockMv
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -57,6 +58,16 @@ class SecurityHeadersTest {
     mockMvc.perform(get("/v3/api-docs"))
         .andExpect(header().doesNotExist("Content-Security-Policy"))
         .andExpect(header().string("Referrer-Policy", "strict-origin-when-cross-origin"));
+  }
+
+  /**
+   * pom.xml pins the swagger-ui webjar above the version springdoc brings in; the
+   * page and its script bundle must still resolve.
+   */
+  @Test
+  void swaggerUi_isServedFromThePinnedWebjar() throws Exception {
+    mockMvc.perform(get("/swagger-ui/index.html")).andExpect(status().isOk());
+    mockMvc.perform(get("/swagger-ui/swagger-ui-bundle.js")).andExpect(status().isOk());
   }
 
   /** Lookalike prefixes are not the API. */
