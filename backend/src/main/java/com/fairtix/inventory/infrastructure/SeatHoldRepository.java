@@ -65,6 +65,7 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, UUID> {
   /** Cancel cascade: find all active holds for seats belonging to a given event. */
   List<SeatHold> findAllBySeat_Event_IdAndStatus(UUID eventId, HoldStatus status);
 
-  /** Purchase-cap hold gate: count active holds a user already has for a specific event. */
-  long countByOwnerIdAndSeat_Event_IdAndStatus(UUID ownerId, UUID eventId, HoldStatus status);
+  /** Purchase cap: use it through {@code PurchaseCapGuard}, which owns the statuses. */
+  long countByOwnerIdAndSeat_Event_IdAndStatusIn(UUID ownerId, UUID eventId,
+      Collection<HoldStatus> statuses);
 }
