@@ -250,7 +250,8 @@ public class OrderService {
     Order order = new Order(user, holdIds, totalAmount, "USD", OrderStatus.PENDING);
     order = orderRepository.save(order);
 
-    stripePaymentService.recordStripePayment(paymentIntentId, order.getId(), userId, totalAmount, "USD");
+    stripePaymentService.recordStripePaymentInOrderTransaction(
+        paymentIntentId, order.getId(), userId, totalAmount, "USD");
 
     order.setStatus(OrderStatus.COMPLETED);
     orderRepository.save(order);

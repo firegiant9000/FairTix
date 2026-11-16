@@ -1,0 +1,167 @@
+package com.fairtix.payments;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doCallRealMethod;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.fairtix.auth.WithMockPrincipal;
+import com.fairtix.common.LockBusyException;
+import com.fairtix.events.domain.Event;
+import com.fairtix.events.infrastructure.EventRepository;
+import com.fairtix.inventory.application.SeatHoldService;
+import com.fairtix.inventory.domain.Seat;
+import com.fairtix.inventory.domain.SeatHold;
+import com.fairtix.inventory.infrastructure.SeatRepository;
+import com.fairtix.orders.application.OrderService;
+import com.fairtix.payments.application.StripePaymentService;
+import com.fairtix.support.PostgresIT;
+import com.fairtix.users.domain.User;
+import com.fairtix.users.infrastructure.UserRepository;
+import com.zaxxer.hikari.HikariDataSource;
+import java.math.BigDecimal;
+import java.sql.Connection;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import javax.sql.DataSource;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.context.WebApplicationContext;
+
+/**
+ * Stripe checkout once the charge has succeeded: the two ways the order could
+ * still fail for reasons that have nothing to do with the order itself.
+ *
+ * <p>Stripe is never called: verification is stubbed on a spy.
+ */
+@TestPropertySource(properties = "stripe.enabled=true")
+class StripeCheckoutAfterChargeIT extends PostgresIT {
+
+  static final String INTENT = "pi_test_after_charge";
+
+  @Autowired private WebApplicationContext context;
+  @Autowired private UserRepository userRepository;
+  @Autowired private EventRepository eventRepository;
+  @Autowired private SeatRepository seatRepository;
+  @Autowired private SeatHoldService seatHoldService;
+  @Autowired private JdbcTemplate jdbcTemplate;
+  @Autowired private DataSource dataSource;
+
+  @MockitoSpyBean private StripePaymentService stripePaymentService;
+  @MockitoSpyBean private OrderService orderService;
+
+  private User buyer;
+  private SeatHold hold;
+
+  @BeforeEach
+  void setUp() {
+    User user = new User();
+    user.setEmail("aftercharge@test.com");
+    user.setPassword("$2a$10$dummyhashfortest");
+    user.setEmailVerified(true);
+    buyer = userRepository.save(user);
+    Event event = eventRepository.save(
+        new Event("After Charge Concert", null, Instant.now().plusSeconds(86400), (UUID) null));
+    Seat seat = seatRepository.save(new Seat(event, "A", "1", "1", new BigDecimal("40.00")));
+    hold = seatHoldService.createHold(event.getId(), List.of(seat.getId()), buyer.getId(), 10).get(0);
+    seatHoldService.confirmHold(hold.getId(), buyer.getId());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(eq(INTENT), anyLong());
+  }
+
+  /**
+   * The purchase-cap lock is busy on the first two attempts (another request from
+   * the same user is still running). The customer has paid, so checkout tries
+   * again instead of answering "try again": the third attempt creates the order.
+   */
+  @Test
+  void capLockBusyAfterTheCharge_isRetried_andTheOrderCompletes() throws Exception {
+    doThrow(new LockBusyException("busy", null))
+        .doThrow(new LockBusyException("busy", null))
+        .doCallRealMethod()
+        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+
+    checkout().andExpect(status().isCreated());
+
+    verify(orderService, times(3)).createOrderWithStripePayment(any(), any(), anyString());
+    assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM tickets")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED'")).isZero();
+  }
+
+  /**
+   * A lock that stays busy for every attempt ends in the retryable 409, and the
+   * captured charge is on record for a refund like any other failed order.
+   */
+  @Test
+  void capLockBusyOnEveryAttempt_endsIn409_withTheChargeOnRecord() throws Exception {
+    doThrow(new LockBusyException("busy", null))
+        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+
+    checkout().andExpect(status().isConflict());
+
+    verify(orderService, times(3)).createOrderWithStripePayment(any(), any(), anyString());
+    assertThat(count("SELECT COUNT(*) FROM orders")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED'")).isEqualTo(1);
+  }
+
+  /**
+   * Checkout runs on one pooled connection. Every other connection in the pool is
+   * taken; the order still completes, and its audit rows are written. With an
+   * audit write in a transaction of its own, checkout needed a second connection
+   * here and waited for Hikari's connection timeout (30 s) before failing.
+   */
+  @Test
+  @Timeout(20)
+  void checkout_needsOnlyOnePooledConnection() throws Exception {
+    int poolSize = dataSource.unwrap(HikariDataSource.class).getMaximumPoolSize();
+    List<Connection> taken = new ArrayList<>();
+    try {
+      for (int i = 0; i < poolSize - 1; i++) {
+        taken.add(dataSource.getConnection());
+      }
+
+      orderService.createOrderWithStripePayment(buyer.getId(), List.of(hold.getId()), INTENT);
+    } finally {
+      for (Connection connection : taken) {
+        connection.close();
+      }
+    }
+
+    assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'PAYMENT_PROCESSED'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'TICKETS_ISSUED'")).isEqualTo(1);
+  }
+
+  private org.springframework.test.web.servlet.ResultActions checkout() throws Exception {
+    MockMvc mockMvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
+    return mockMvc.perform(post("/api/payments/checkout")
+        .with(WithMockPrincipal.user(buyer.getId(), buyer.getEmail()))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("""
+            { "holdIds": ["%s"], "paymentIntentId": "%s" }
+            """.formatted(hold.getId(), INTENT)));
+  }
+
+  private int count(String sql) {
+    return jdbcTemplate.queryForObject(sql, Integer.class);
+  }
+}
