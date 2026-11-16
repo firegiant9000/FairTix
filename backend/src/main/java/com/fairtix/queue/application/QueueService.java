@@ -2,6 +2,7 @@ package com.fairtix.queue.application;
 
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.common.ResourceNotFoundException;
+import com.fairtix.common.TransactionLock;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.fraud.domain.RiskTier;
@@ -15,7 +16,6 @@ import com.fairtix.queue.infrastructure.QueueRepository;
 import com.fairtix.tickets.domain.TicketStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import jakarta.transaction.Transactional;
-import org.redisson.api.RAtomicLong;
 import org.redisson.api.RSet;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Value;
@@ -42,6 +42,7 @@ public class QueueService {
     private final RedissonClient redissonClient;
     private final AuditService auditService;
     private final RiskScoringService riskScoringService;
+    private final TransactionLock transactionLock;
 
     @Value("${queue.admission-window-minutes:15}")
     private int admissionWindowMinutes;
@@ -55,7 +56,9 @@ public class QueueService {
                         TicketRepository ticketRepository,
                         RedissonClient redissonClient,
                         AuditService auditService,
-                        RiskScoringService riskScoringService) {
+                        RiskScoringService riskScoringService,
+                        TransactionLock transactionLock) {
+        this.transactionLock = transactionLock;
         this.queueRepository = queueRepository;
         this.eventRepository = eventRepository;
         this.seatRepository = seatRepository;
@@ -87,14 +90,29 @@ public class QueueService {
             }
         }
 
+        // Taken before the capacity lock, so that the lock covers database work only:
+        // a slow Redis must not hold up every other join to this event. A join that
+        // is rejected below leaves a gap; positions only order the queue.
+        long position = redissonClient.getAtomicLong(POSITION_KEY + eventId).incrementAndGet();
+
+        // Capacity is count-then-insert, so joins to a capped queue run one at a time
+        // per event: this lock is held until the transaction ends, and the next join
+        // then counts this one's entry. Taken before any row is written.
+        if (event.getQueueCapacity() != null) {
+            transactionLock.acquire("queue-capacity:" + eventId);
+        }
+
         Optional<QueueEntry> existing = queueRepository.findByEventIdAndUserId(eventId, userId);
         if (existing.isPresent()) {
             QueueStatus existingStatus = existing.get().getStatus();
             if (existingStatus == QueueStatus.WAITING || existingStatus == QueueStatus.ADMITTED) {
                 throw new QueueConflictException("You are already in the queue for this event");
             }
-            // EXPIRED or COMPLETED (hold was released) — delete old entry so the user can rejoin
+            // EXPIRED or COMPLETED (hold was released) — delete old entry so the user can rejoin.
+            // Flushed now: Hibernate writes inserts before deletes, so the new entry
+            // would otherwise hit uq_queue_event_user while the old row is still there.
             queueRepository.delete(existing.get());
+            queueRepository.flush();
         }
 
         if (event.getQueueCapacity() != null) {
@@ -105,12 +123,11 @@ public class QueueService {
             }
         }
 
-        RAtomicLong counter = redissonClient.getAtomicLong(POSITION_KEY + eventId);
-        long position = counter.incrementAndGet();
-
         QueueEntry entry = new QueueEntry(eventId, userId, UUID.randomUUID().toString(), (int) position);
         QueueEntry saved = queueRepository.save(entry);
-        auditService.log(userId, "QUEUE_JOINED", "QUEUE", eventId, null);
+        // Same connection as the join: a REQUIRES_NEW audit would need a second
+        // pooled connection while joins waiting on the capacity lock hold the others.
+        auditService.logInCurrentTransaction(userId, "QUEUE_JOINED", "QUEUE", eventId, null);
         return saved;
     }
 
