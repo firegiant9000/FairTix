@@ -8,6 +8,7 @@ import com.fairtix.fraud.domain.RiskTier;
 import com.fairtix.notifications.application.EmailTemplateService;
 import com.fairtix.notifications.application.NotificationGate;
 import com.fairtix.notifications.domain.NotificationCategory;
+import com.fairtix.orders.application.PurchaseCapExceededException;
 import com.fairtix.tickets.domain.TicketStatus;
 import com.fairtix.tickets.domain.TicketTransferRequest;
 import com.fairtix.tickets.domain.TransferStatus;
@@ -45,6 +46,7 @@ public class TransferService {
     private final EmailTemplateService emailTemplateService;
     private final RedissonClient redissonClient;
     private final RiskScoringService riskScoringService;
+    private final PurchaseCapGuard purchaseCapGuard;
 
     @Value("${fairtix.transfer.velocity.max-per-window:5}")
     private int velocityMaxPerWindow;
@@ -59,7 +61,9 @@ public class TransferService {
                            NotificationGate notificationGate,
                            EmailTemplateService emailTemplateService,
                            RedissonClient redissonClient,
-                           RiskScoringService riskScoringService) {
+                           RiskScoringService riskScoringService,
+                           PurchaseCapGuard purchaseCapGuard) {
+        this.purchaseCapGuard = purchaseCapGuard;
         this.ticketRepository = ticketRepository;
         this.transferRepository = transferRepository;
         this.userRepository = userRepository;
@@ -108,7 +112,7 @@ public class TransferService {
         var request = new TicketTransferRequest(ticket, ticket.getUser(), toUser, expiresAt);
         transferRepository.save(request);
 
-        auditService.log(fromUserId, "TRANSFER_REQUESTED", "TICKET", ticketId,
+        auditService.logInCurrentTransaction(fromUserId, "TRANSFER_REQUESTED", "TICKET", ticketId,
                 "to=" + toEmail);
 
         String seatDesc = seatDesc(request);
@@ -140,6 +144,25 @@ public class TransferService {
         }
 
         var ticket = request.getTicket();
+
+        // An accepted ticket counts toward the recipient's purchase cap like one they
+        // bought. Checked under the same (event, user) lock as the hold gate and
+        // checkout, and before anything is written, so an acceptance cannot overlap
+        // the recipient's own hold or checkout and end over the cap.
+        var event = ticket.getEvent();
+        Integer cap = event.getMaxTicketsPerUser();
+        if (cap != null) {
+            purchaseCapGuard.lock(event.getId(), toUserId);
+            long owned = purchaseCapGuard.activeTickets(toUserId, event.getId());
+            long held = purchaseCapGuard.liveHolds(toUserId, event.getId());
+            if (owned + held + 1 > cap) {
+                throw new PurchaseCapExceededException(
+                        "Purchase cap of " + cap + " ticket(s) per user exceeded for event: "
+                                + event.getTitle() + " (already purchased: " + owned
+                                + ", held: " + held + ", transferred: 1)");
+            }
+        }
+
         ticket.setUser(request.getToUser());
         ticket.setStatus(TicketStatus.VALID);
         ticketRepository.save(ticket);
@@ -148,7 +171,7 @@ public class TransferService {
         request.setResolvedAt(Instant.now());
         transferRepository.save(request);
 
-        auditService.log(toUserId, "TRANSFER_ACCEPTED", "TICKET", ticket.getId(),
+        auditService.logInCurrentTransaction(toUserId, "TRANSFER_ACCEPTED", "TICKET", ticket.getId(),
                 "from=" + request.getFromUser().getEmail());
 
         String seatDesc = seatDesc(request);
@@ -176,7 +199,7 @@ public class TransferService {
         request.setResolvedAt(Instant.now());
         transferRepository.save(request);
 
-        auditService.log(toUserId, "TRANSFER_REJECTED", "TICKET", request.getTicket().getId(),
+        auditService.logInCurrentTransaction(toUserId, "TRANSFER_REJECTED", "TICKET", request.getTicket().getId(),
                 "from=" + request.getFromUser().getEmail());
 
         String seatDesc = seatDesc(request);
@@ -213,7 +236,7 @@ public class TransferService {
         request.setResolvedAt(Instant.now());
         transferRepository.save(request);
 
-        auditService.log(fromUserId, "TRANSFER_CANCELLED", "TICKET", request.getTicket().getId(),
+        auditService.logInCurrentTransaction(fromUserId, "TRANSFER_CANCELLED", "TICKET", request.getTicket().getId(),
                 "to=" + request.getToUser().getEmail());
 
         return request;
@@ -255,7 +278,7 @@ public class TransferService {
                 request.setResolvedAt(Instant.now());
                 transferRepository.save(request);
 
-                auditService.log(request.getFromUser().getId(), "TRANSFER_EXPIRED", "TICKET",
+                auditService.logInCurrentTransaction(request.getFromUser().getId(), "TRANSFER_EXPIRED", "TICKET",
                         request.getTicket().getId(), "to=" + request.getToUser().getEmail());
 
                 String seatDesc = seatDesc(request);
