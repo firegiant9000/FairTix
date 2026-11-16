@@ -54,7 +54,8 @@ class TransferServiceTest {
                 mock(NotificationGate.class),
                 mock(EmailTemplateService.class),
                 redissonClient,
-                riskScoringService);
+                riskScoringService,
+                mock(PurchaseCapGuard.class));
 
         ReflectionTestUtils.setField(transferService, "velocityMaxPerWindow", 5);
         ReflectionTestUtils.setField(transferService, "velocityWindowHours", 24);
