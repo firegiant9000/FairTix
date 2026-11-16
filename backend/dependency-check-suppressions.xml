@@ -32,14 +32,4 @@
     <filePath regex="true">.*jodd-(core|bean)-[0-9][^/]*\.jar</filePath>
     <cve>CVE-2022-29631</cve>
   </suppress>
-
-  <suppress until="2027-01-20Z">
-    <notes><![CDATA[
-      CVE-2026-65898 (DOMPurify < 3.4.11 bundled in swagger-ui). Exploiting it needs an
-      attacker-registered uponSanitizeAttribute hook, which swagger-ui does not expose, so it is
-      not reachable. Fix by bumping springdoc (follow-up); expires so it gets re-triaged.
-    ]]></notes>
-    <filePath regex="true">.*swagger-ui-.*\.jar.*</filePath>
-    <cve>CVE-2026-65898</cve>
-  </suppress>
 </suppressions>
