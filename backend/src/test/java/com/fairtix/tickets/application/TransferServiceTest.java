@@ -7,14 +7,14 @@ import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.fraud.domain.RiskTier;
 import com.fairtix.notifications.application.EmailTemplateService;
 import com.fairtix.notifications.application.NotificationGate;
+import com.fairtix.tickets.domain.Ticket;
+import com.fairtix.tickets.domain.TicketStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
+import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.redisson.api.RScoredSortedSet;
-import org.redisson.api.RedissonClient;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -25,40 +25,36 @@ import static org.mockito.Mockito.*;
 
 class TransferServiceTest {
 
-    private RedissonClient redissonClient;
-    private RScoredSortedSet<String> velocitySet;
+    private TransferVelocityLimiter velocityLimiter;
     private RiskScoringService riskScoringService;
     private AuditService auditService;
     private TicketRepository ticketRepository;
+    private UserRepository userRepository;
     private TransferService transferService;
 
     private static final UUID USER_ID = UUID.randomUUID();
     private static final UUID TICKET_ID = UUID.randomUUID();
 
-    @SuppressWarnings("unchecked")
     @BeforeEach
     void setUp() {
-        redissonClient = mock(RedissonClient.class);
-        velocitySet = mock(RScoredSortedSet.class);
+        velocityLimiter = mock(TransferVelocityLimiter.class);
         riskScoringService = mock(RiskScoringService.class);
         auditService = mock(AuditService.class);
         ticketRepository = mock(TicketRepository.class);
-
-        doReturn(velocitySet).when(redissonClient).getScoredSortedSet(anyString());
+        userRepository = mock(UserRepository.class);
 
         transferService = new TransferService(
                 ticketRepository,
                 mock(TicketTransferRequestRepository.class),
-                mock(UserRepository.class),
+                userRepository,
                 auditService,
                 mock(NotificationGate.class),
                 mock(EmailTemplateService.class),
-                redissonClient,
+                velocityLimiter,
                 riskScoringService,
                 mock(PurchaseCapGuard.class));
 
-        ReflectionTestUtils.setField(transferService, "velocityMaxPerWindow", 5);
-        ReflectionTestUtils.setField(transferService, "velocityWindowHours", 24);
+        when(riskScoringService.getTier(USER_ID)).thenReturn(RiskTier.LOW);
     }
 
     @Test
@@ -71,34 +67,86 @@ class TransferServiceTest {
 
         verify(auditService).log(eq(USER_ID), eq("TRANSFER_BLOCKED_FRAUD_RISK"),
                 anyString(), any(), anyString());
-        verifyNoInteractions(velocitySet);
+        verifyNoInteractions(velocityLimiter);
     }
 
     @Test
-    void velocityLimitAtMax_throwsVelocityException() {
-        when(riskScoringService.getTier(USER_ID)).thenReturn(RiskTier.LOW);
-        when(velocitySet.removeRangeByScore(anyDouble(), anyBoolean(), anyDouble(), anyBoolean()))
-                .thenReturn(0);
-        when(velocitySet.size()).thenReturn(5);
+    void velocityLimitReached_throwsBeforeTheRecipientLookup() {
+        ownedValidTicket();
+        doThrow(new TransferVelocityExceededException(5, 24))
+                .when(velocityLimiter).acquire(USER_ID);
 
         assertThatThrownBy(() ->
                 transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com"))
                 .isInstanceOf(TransferVelocityExceededException.class)
                 .hasMessageContaining("Transfer limit exceeded");
+
+        verify(userRepository, never()).findByEmail(anyString());
     }
 
+    /** A mistake about the sender's own ticket reveals nothing, so it uses no slot. */
     @Test
-    void velocityUnderLimit_recordsEntryAndProceedsToTicketLookup() {
-        when(riskScoringService.getTier(USER_ID)).thenReturn(RiskTier.LOW);
-        when(velocitySet.removeRangeByScore(anyDouble(), anyBoolean(), anyDouble(), anyBoolean()))
-                .thenReturn(0);
-        when(velocitySet.size()).thenReturn(3);
+    void unknownTicket_usesNoSlot() {
         when(ticketRepository.findById(TICKET_ID)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() ->
                 transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com"))
                 .isInstanceOf(ResourceNotFoundException.class);
 
-        verify(velocitySet).add(anyDouble(), anyString());
+        verifyNoInteractions(velocityLimiter);
+    }
+
+    @Test
+    void someoneElsesTicket_usesNoSlot() {
+        Ticket ticket = ticketOwnedBy(UUID.randomUUID(), TicketStatus.VALID);
+        when(ticketRepository.findById(TICKET_ID)).thenReturn(Optional.of(ticket));
+
+        assertThatThrownBy(() ->
+                transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com"))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verifyNoInteractions(velocityLimiter);
+    }
+
+    @Test
+    void ticketNotValid_usesNoSlot() {
+        Ticket ticket = ticketOwnedBy(USER_ID, TicketStatus.CANCELLED);
+        when(ticketRepository.findById(TICKET_ID)).thenReturn(Optional.of(ticket));
+
+        assertThatThrownBy(() ->
+                transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com"))
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(velocityLimiter);
+    }
+
+    /**
+     * A 404 for an unknown email reveals whether an account exists, so every
+     * recipient lookup uses a slot, found or not.
+     */
+    @Test
+    void unknownRecipient_usesASlot() {
+        ownedValidTicket();
+        when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() ->
+                transferService.createTransferRequest(TICKET_ID, USER_ID, "nobody@example.com"))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verify(velocityLimiter).acquire(USER_ID);
+    }
+
+    private void ownedValidTicket() {
+        Ticket ticket = ticketOwnedBy(USER_ID, TicketStatus.VALID);
+        when(ticketRepository.findById(TICKET_ID)).thenReturn(Optional.of(ticket));
+    }
+
+    private static Ticket ticketOwnedBy(UUID ownerId, TicketStatus status) {
+        User owner = mock(User.class);
+        when(owner.getId()).thenReturn(ownerId);
+        Ticket ticket = mock(Ticket.class);
+        when(ticket.getUser()).thenReturn(owner);
+        when(ticket.getStatus()).thenReturn(status);
+        return ticket;
     }
 }

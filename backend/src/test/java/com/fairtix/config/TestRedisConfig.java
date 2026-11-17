@@ -4,9 +4,10 @@ import org.mockito.Mockito;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RBucket;
 import org.redisson.api.RRateLimiter;
-import org.redisson.api.RScoredSortedSet;
+import org.redisson.api.RScript;
 import org.redisson.api.RSet;
 import org.redisson.api.RedissonClient;
+import org.redisson.client.codec.Codec;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -91,17 +92,12 @@ public class TestRedisConfig {
       return setMock;
     });
 
-    // Scored sorted set mock for TransferService's transfer-velocity window: always
-    // empty, so the velocity limit never trips in mock-Redis tests (TransferServiceTest
-    // covers the limit with its own mock).
-    when(mock.getScoredSortedSet(anyString())).thenAnswer(invocation -> {
-      @SuppressWarnings("unchecked")
-      RScoredSortedSet<String> sortedSetMock = Mockito.mock(RScoredSortedSet.class);
-      when(sortedSetMock.size()).thenReturn(0);
-      when(sortedSetMock.add(Mockito.anyDouble(), Mockito.any())).thenReturn(true);
-      when(sortedSetMock.expire(Mockito.any(java.time.Duration.class))).thenReturn(true);
-      return sortedSetMock;
-    });
+    // Script mock for TransferVelocityLimiter's acquire script: always takes a slot,
+    // so the velocity limit never trips in mock-Redis tests (TransferVelocityLimiterIT
+    // covers the script against a real Redis).
+    RScript scriptMock = Mockito.mock(RScript.class,
+        invocation -> "eval".equals(invocation.getMethod().getName()) ? 1L : null);
+    when(mock.getScript(Mockito.any(Codec.class))).thenReturn(scriptMock);
 
     return mock;
   }
