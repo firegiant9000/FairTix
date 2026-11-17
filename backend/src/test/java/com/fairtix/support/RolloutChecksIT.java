@@ -43,8 +43,33 @@ class RolloutChecksIT extends PostgresIT {
     assertThat(checks).containsKeys(
         "postgres_version", "users_over_cap", "queues_over_capacity",
         "duplicate_queue_positions", "lock_waiters", "connections_by_state", "advisory_locks_held",
-        "stripe_orders_failed_by_day");
+        "stripe_charges_without_order");
     checks.forEach((name, sql) -> jdbcTemplate.queryForList(sql));
+  }
+
+  @Test
+  void stripeChargesWithoutOrder_leavesOutIntentsThatGotAnOrderLater() throws Exception {
+    UUID user = newUser("paid@test.com");
+    // Two failed attempts for an intent whose order was never created.
+    failedStripeOrder(user, "pi_orphan");
+    failedStripeOrder(user, "pi_orphan");
+    // A failed attempt for an intent that a later attempt turned into an order.
+    failedStripeOrder(user, "pi_fulfilled");
+    UUID order = UUID.randomUUID();
+    jdbcTemplate.update(
+        "INSERT INTO orders (id, user_id, status, total_amount, currency, created_at)"
+            + " VALUES (?, ?, 'COMPLETED', 10.00, 'USD', now())",
+        order, user);
+    jdbcTemplate.update(
+        "INSERT INTO payment_records (id, order_id, user_id, amount, currency, status, transaction_id, created_at)"
+            + " VALUES (?, ?, ?, 10.00, 'USD', 'SUCCESS', 'pi_fulfilled', now())",
+        UUID.randomUUID(), order, user);
+
+    List<Map<String, Object>> rows =
+        jdbcTemplate.queryForList(checks().get("stripe_charges_without_order"));
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0)).containsEntry("payment_intent", "pi_orphan");
+    assertThat(((Number) rows.get(0).get("failed_attempts")).intValue()).isEqualTo(2);
   }
 
   @Test
@@ -93,7 +118,7 @@ class RolloutChecksIT extends PostgresIT {
     for (String line : Files.readAllLines(CHECKS)) {
       if (line.startsWith("-- name:")) {
         if (name != null) {
-          checks.put(name, strip(sql));
+          put(checks, name, sql);
         }
         name = line.substring("-- name:".length()).trim();
         sql.setLength(0);
@@ -102,9 +127,25 @@ class RolloutChecksIT extends PostgresIT {
       }
     }
     if (name != null) {
-      checks.put(name, strip(sql));
+      put(checks, name, sql);
     }
     return checks;
+  }
+
+  private static void put(Map<String, String> checks, String name, StringBuilder sql) {
+    if (checks.put(name, strip(sql)) != null) {
+      throw new IllegalStateException("Duplicate check name in " + CHECKS + ": " + name);
+    }
+  }
+
+  private void failedStripeOrder(UUID user, String paymentIntentId) {
+    // Same details format as PaymentController.checkout writes.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), user,
+        "Charge succeeded but order creation failed: stripe_intent=" + paymentIntentId
+            + ", holdIds=[" + UUID.randomUUID() + "], error=LockBusyException");
   }
 
   private static String strip(StringBuilder sql) {

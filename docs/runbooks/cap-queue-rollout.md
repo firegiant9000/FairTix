@@ -16,7 +16,7 @@ The SQL lives in [cap-queue-checks.sql](cap-queue-checks.sql). Every query in it
 | Accepting a ticket transfer | No cap check | Refused if it would put the recipient over the cap |
 | Stripe checkout over the cap | Refused after the charge | Refused when the PaymentIntent is created, before any charge |
 | Overlapping joins to a capped queue | Could exceed `queue_capacity` | Run one at a time per event |
-| A request that waits too long for one of these locks | n/a | 409 `REQUEST_IN_PROGRESS`, nothing written; the frontend retries twice |
+| A request that waits too long for one of these locks | n/a | 409 `REQUEST_IN_PROGRESS`; the locked work is rolled back (Stripe checkout still logs `STRIPE_ORDER_FAILED`, see below). With PR #279 the frontend retries it twice, except on checkout and queue join |
 
 ## Settings
 
@@ -26,7 +26,7 @@ The SQL lives in [cap-queue-checks.sql](cap-queue-checks.sql). Every query in it
 | `queue.join-lock-wait-ms` | 500 | Wait for the per-event lock when joining a capped queue |
 | `spring.datasource.hikari.maximum-pool-size` | 10 (Hikari default; not set) | Connections per instance; every request waiting on a lock holds one |
 
-Stripe checkout retries order creation 3 times on a busy lock (constant in `PaymentController`), so a customer who has paid can wait up to about 9 seconds before a 409.
+Stripe checkout retries order creation 3 times on a busy lock (constant in `PaymentController`), so a customer who has paid can wait up to about 9 seconds before a 409. The frontend does not retry checkout on top of that. When those 3 attempts fail, `PaymentController` writes a `STRIPE_ORDER_FAILED` audit row before answering 409. The customer's holds stay confirmed, so trying again can still create the order. That is why `stripe_charges_without_order` checks for a payment record instead of counting audit rows.
 
 ## Before deploying
 
@@ -59,11 +59,11 @@ Daily, or after any on-sale:
 | Cap invariant | `users_over_cap` | No rows beyond the ones found before deploy | A new row appears: find how (transfer, box office, lowered cap) from `audit_logs` for that user and event |
 | Queue invariant | `queues_over_capacity` | No rows | Rows that are not explained by recent hold releases |
 | Positions | `duplicate_queue_positions` | No rows | Any row |
-| Paid but no order | `stripe_orders_failed_by_day` | 0, or the same as before deploy | Any increase; each row needs a manual refund |
+| Paid but no order | `stripe_charges_without_order` | No rows | Any row: confirm in Stripe that the intent succeeded and has no order, then refund it. Do not refund from `STRIPE_ORDER_FAILED` audit rows alone: a later attempt may have fulfilled the order |
 | Lock timeouts | Application log: `WARN ... Transaction lock wait timed out on <uri>` | Rare | Sustained on `/queue/join` during an on-sale: see below |
 | Pool exhaustion | Application log: Hikari `Connection is not available, request timed out` | Never | Any occurrence; most likely during a burst of queue joins (see below) |
 
-During an on-sale, watch `lock_waiters`, `connections_by_state` and `advisory_locks_held` live. Short waits are normal. Many sessions waiting for close to the limit, or active connections at 10 per instance, mean the pool is the bottleneck.
+During an on-sale, watch `lock_waiters`, `connections_by_state` and `advisory_locks_held`, polling every 10 to 30 seconds. Run them with the session settings at the top of the SQL file and autocommit on. Short waits are normal. Many sessions waiting for close to the limit, or active connections at 10 per instance, mean the pool is the bottleneck.
 
 ### What a burst of joins to a capped queue looks like
 
@@ -89,13 +89,13 @@ If joins are slow or failing during an on-sale:
 - The per-event ceiling is fixed by the locked section. If an on-sale needs more than about 100 joins per second into one capped queue, the remedy is a code change (for example a capacity counter that does not serialise every join), not configuration.
 - More instances spread the waiting and keep holds and checkout responsive, but past about 6 instances at pool 10 they turn waits into 409s. Raising `queue.join-lock-wait-ms` then trades those 409s for longer waits, each holding a connection.
 - Raising `spring.datasource.hikari.maximum-pool-size` lets more joins wait in the database instead of in the pool. Check the database's `max_connections` against instances × pool size first.
-- The frontend retries a 409 `REQUEST_IN_PROGRESS` twice with a short backoff, so a 409 the user sees has failed three times. It does not retry a 500.
+- The frontend does not retry a 409 `REQUEST_IN_PROGRESS` on queue join, because a retry would add load to the saturated per-event lock. So each 409 here is one refused attempt, and users see it directly. It does not retry a 500 either. (With PR #279 it does retry the per-user purchase-cap paths twice: holds, PaymentIntent creation and transfers.)
 
 Not measured: more than one instance, a real network between app and database, and joins competing with holds and checkout for the pool.
 
 ## Rollback
 
-1. Redeploy the previous image, or revert the merge commits of #271 to #278 and deploy. No schema or data changes to undo; advisory locks disappear with the transactions that held them.
+1. Redeploy the previous image. That is the rollback path. If a code revert is unavoidable, revert only #271, #273, #274, #276, #277 and #278 (newest first). **Do not revert #275**: it pins the swagger-ui fix for CVE-2026-116803, and reverting it brings the vulnerable DOMPurify back and fails the Trivy and OWASP gates. #272 is docs only. No schema or data changes to undo; advisory locks disappear with the transactions that held them.
 2. Without a redeploy, `fairtix.transaction-lock.wait-ms` and `queue.join-lock-wait-ms` can be raised to trade 409s for longer waits. There is no switch that turns the locks off.
 3. After a rollback the old rules return: a refunded ticket blocks checkout and queue join again, and a confirmed hold stops counting at the hold gate. Users who rebought after a refund keep their tickets.
 
@@ -103,6 +103,7 @@ Not measured: more than one instance, a real network between app and database, a
 
 - Releasing a hold puts the user's queue entry back to `ADMITTED` without the capacity check, so a capped queue can briefly exceed its capacity by the number of users who released holds.
 - Box-office card sales still write `PAYMENT_PROCESSED` in a separate transaction (a second pooled connection). This is deliberate: it keeps a record of a captured card-present charge if the sale rolls back. Many box-office terminals confirming card sales at the same moment could still exhaust the pool; online checkout no longer can.
+- `STRIPE_ORDER_FAILED` is written for any checkout failure after the charge, including a busy lock or a double submit whose order the other request created. So the audit action alone over-reports charges that need a refund. `stripe_charges_without_order` corrects for this. The follow-up is for the backend not to log a retryable busy failure as a failed order.
 - `admitNextBatch` skips (returns nothing) when another admission for the same event is in progress. The admin "admit" endpoint cannot tell that apart from "nobody to admit".
 - Everything was tested on one application instance. Cross-instance behaviour rests on PostgreSQL advisory locks, which `TransactionLockIT` exercises with a second raw connection.
 - The swagger-ui pin in `backend/pom.xml` should be removed once a springdoc release ships swagger-ui 5.35.0 or later.

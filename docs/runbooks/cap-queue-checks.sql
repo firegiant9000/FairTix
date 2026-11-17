@@ -4,7 +4,16 @@
 -- Read-only. Every query is executed against the migrated schema by
 -- backend/src/test/java/com/fairtix/support/RolloutChecksIT.java, so a schema
 -- change that breaks one fails the build. Keep the "-- name:" lines: the test
--- splits the file on them.
+-- splits the file on them, and ignores everything above the first one.
+--
+-- Run these with autocommit on, after the session settings below. They stop a
+-- slow query from running on during an on-sale and refuse any write, and
+-- autocommit stops a GUI client from leaving the session idle in a transaction
+-- that holds locks on tickets, seat_holds or queue_entries. Prefer a read
+-- replica for users_over_cap and queues_over_capacity during an on-sale.
+
+SET statement_timeout = '5s';
+SET default_transaction_read_only = on;
 
 -- name: postgres_version
 -- Needs 11 or later (hashtextextended). Expect 16.x.
@@ -92,18 +101,36 @@ ORDER BY connections DESC;
 -- name: advisory_locks_held
 -- Transaction-level advisory locks held or awaited now. They are released at
 -- commit, so this should be near zero outside a burst; a count that stays up
--- points at a long-running transaction holding one.
+-- points at a long-running transaction holding one. Reading pg_locks briefly
+-- takes every lock-manager partition lock, so poll it every 10 to 30 seconds at
+-- most during an on-sale, not in a tight loop.
 SELECT granted, COUNT(*) AS locks
 FROM pg_locks
 WHERE locktype = 'advisory'
 GROUP BY granted;
 
--- name: stripe_orders_failed_by_day
--- Charges that succeeded but whose order rolled back, per day. Each one needs a
--- manual refund. Expect zero or near zero; compare with the days before deploy.
-SELECT date_trunc('day', created_at) AS day, COUNT(*) AS failed_orders
-FROM audit_logs
-WHERE action = 'STRIPE_ORDER_FAILED'
-  AND created_at > now() - interval '14 days'
-GROUP BY 1
-ORDER BY 1 DESC;
+-- name: stripe_charges_without_order
+-- PaymentIntents that succeeded at Stripe but never got an order, last 14 days.
+-- Each row needs a manual refund. A STRIPE_ORDER_FAILED audit row alone is not
+-- enough: it is also written when a later attempt with the same intent created
+-- the order (busy lock, then the customer tried again; or a double submit that
+-- lost the race). Those intents have a payment_records row (transaction_id is
+-- the intent id) and are left out here. Expect no rows.
+SELECT f.payment_intent,
+       f.user_id,
+       MIN(f.created_at) AS first_failed_at,
+       MAX(f.created_at) AS last_failed_at,
+       COUNT(*)          AS failed_attempts
+FROM (
+  SELECT substring(a.details from 'stripe_intent=([^,]+)') AS payment_intent,
+         a.user_id,
+         a.created_at
+  FROM audit_logs a
+  WHERE a.action = 'STRIPE_ORDER_FAILED'
+    AND a.created_at > now() - interval '14 days'
+) f
+WHERE NOT EXISTS (
+  SELECT 1 FROM payment_records p WHERE p.transaction_id = f.payment_intent
+)
+GROUP BY f.payment_intent, f.user_id
+ORDER BY first_failed_at DESC;
