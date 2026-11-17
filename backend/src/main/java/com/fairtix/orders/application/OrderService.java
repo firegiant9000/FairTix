@@ -273,6 +273,17 @@ public class OrderService {
   }
 
   /**
+   * The order with this id, if it was created for exactly these holds. Used to
+   * answer a resubmitted Stripe checkout whose first response was lost.
+   */
+  @Transactional(readOnly = true)
+  public Optional<Order> findOrderForHolds(UUID orderId, List<UUID> holdIds) {
+    return orderRepository.findById(orderId)
+        .filter(order -> new java.util.HashSet<>(order.getHoldIds())
+            .equals(new java.util.HashSet<>(holdIds)));
+  }
+
+  /**
    * Defers email sending to after the transaction commits so that SMTP latency
    * or failures never block or roll back the order creation.
    */

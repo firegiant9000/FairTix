@@ -226,6 +226,38 @@ public class PaymentController {
     }
   }
 
+  /**
+   * Answers a checkout whose intent already has an order: the first response was
+   * lost (dropped connection, gateway timeout) and the customer pressed Complete
+   * Order again. Without this, every resubmit fails on the holds the order already
+   * released and writes a false {@code STRIPE_ORDER_FAILED} row.
+   *
+   * <p>Returns null when the intent has no payment record yet. Returns the existing
+   * order when the record belongs to this user and the order covers exactly the
+   * requested holds. Any other match is refused with a 409 that names neither the
+   * order nor its owner.
+   */
+  private PaymentResponse replayStripeCheckout(UUID userId, java.util.List<UUID> holdIds,
+      String paymentIntentId) {
+    if (paymentIntentId == null || paymentIntentId.isBlank()) {
+      return null;
+    }
+    var record = paymentRecordRepository.findByTransactionId(paymentIntentId).orElse(null);
+    if (record == null) {
+      return null;
+    }
+    Order order = userId.equals(record.getUserId())
+        ? orderService.findOrderForHolds(record.getOrderId(), holdIds).orElse(null)
+        : null;
+    if (order == null) {
+      log.warn("Checkout refused: stripe_intent={} already paid for a different order"
+          + " (requesting user {})", paymentIntentId, userId);
+      throw new ResponseStatusException(HttpStatus.CONFLICT,
+          "This payment has already been used for a different order");
+    }
+    return PaymentResponse.from(record, order.getStatus());
+  }
+
   @Operation(summary = "Create Stripe PaymentIntent",
       description = "Calculates total for the given holds and returns a Stripe client secret. "
           + "Only available when stripe.enabled=true.")
@@ -283,6 +315,16 @@ public class PaymentController {
       @Valid @RequestBody PaymentRequest request) {
 
     verifiedEmailGuard.requireVerified(principal.getUserId(), "purchasing tickets");
+
+    // Before the queue check: creating the order completes the queue entry, so a
+    // resubmit after a lost response would otherwise be refused there.
+    if (stripeEnabled) {
+      PaymentResponse replay = replayStripeCheckout(
+          principal.getUserId(), request.holdIds(), request.paymentIntentId());
+      if (replay != null) {
+        return replay;
+      }
+    }
 
     request.holdIds().stream()
         .flatMap(holdId -> seatHoldRepository.findById(holdId).stream())

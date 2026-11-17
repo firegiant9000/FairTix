@@ -36,6 +36,8 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -231,5 +233,111 @@ class StripePaymentControllerTest {
     org.assertj.core.api.Assertions.assertThat(
         seatHoldRepository.findById(confirmedHold.getId()).orElseThrow().getStatus())
         .isEqualTo(HoldStatus.CONFIRMED);
+  }
+
+  /** A lost response: the order was created, then the client resubmits the same intent. */
+  @Test
+  void checkout_replayedIntent_returnsExistingOrderWithoutFailureAudit() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    String body = checkoutBody(confirmedHold.getId(), "pi_replay");
+
+    String first = mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isCreated())
+        .andReturn().getResponse().getContentAsString();
+    String orderId = com.jayway.jsonpath.JsonPath.read(first, "$.orderId");
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.orderId").value(orderId))
+        .andExpect(jsonPath("$.paymentStatus").value("SUCCESS"))
+        .andExpect(jsonPath("$.orderStatus").value("COMPLETED"));
+
+    // The replay is answered from the payment record, not a second verification.
+    verify(stripePaymentService, times(1)).verifyPaymentSucceeded(anyString(), anyLong());
+    Integer orders = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM orders WHERE user_id = ?", Integer.class, user.getId());
+    org.assertj.core.api.Assertions.assertThat(orders).isEqualTo(1);
+    Integer notCreatedRows = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')"
+            + " AND user_id = ?",
+        Integer.class, user.getId());
+    org.assertj.core.api.Assertions.assertThat(notCreatedRows).isZero();
+  }
+
+  @Test
+  void checkout_intentUsedByAnotherUser_isRejectedWithoutLeakingOrder() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    String first = mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_shared")))
+        .andExpect(status().isCreated())
+        .andReturn().getResponse().getContentAsString();
+    String orderId = com.jayway.jsonpath.JsonPath.read(first, "$.orderId");
+
+    User other = new User();
+    other.setEmail("stripetest-other@test.com");
+    other.setPassword(passwordEncoder.encode("Test1234!"));
+    other.setEmailVerified(true);
+    other = userRepository.save(other);
+    SeatHold otherHold = confirmedHoldFor(other, "4");
+
+    String response = mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(other.getId(), other.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(otherHold.getId(), "pi_shared")))
+        .andExpect(status().isConflict())
+        .andReturn().getResponse().getContentAsString();
+
+    org.assertj.core.api.Assertions.assertThat(response).doesNotContain(orderId);
+    org.assertj.core.api.Assertions.assertThat(
+        seatHoldRepository.findById(otherHold.getId()).orElseThrow().getStatus())
+        .isEqualTo(HoldStatus.CONFIRMED);
+  }
+
+  @Test
+  void checkout_intentReplayedForDifferentHolds_isRejected() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_other_holds")))
+        .andExpect(status().isCreated());
+
+    SeatHold secondHold = confirmedHoldFor(user, "5");
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(secondHold.getId(), "pi_other_holds")))
+        .andExpect(status().isConflict());
+
+    org.assertj.core.api.Assertions.assertThat(
+        seatHoldRepository.findById(secondHold.getId()).orElseThrow().getStatus())
+        .isEqualTo(HoldStatus.CONFIRMED);
+  }
+
+  private SeatHold confirmedHoldFor(User owner, String seatNumber) {
+    Event event = confirmedHold.getSeat().getEvent();
+    Seat seat = new Seat(event, "B", "2", seatNumber, new BigDecimal("50.00"));
+    seat.setStatus(SeatStatus.BOOKED);
+    seat = seatRepository.save(seat);
+    SeatHold hold = new SeatHold(seat, owner.getId(), Instant.now().plusSeconds(600));
+    hold.setStatus(HoldStatus.CONFIRMED);
+    return seatHoldRepository.save(hold);
+  }
+
+  private static String checkoutBody(java.util.UUID holdId, String paymentIntentId) {
+    return """
+        {
+          "holdIds": ["%s"],
+          "paymentIntentId": "%s"
+        }
+        """.formatted(holdId, paymentIntentId);
   }
 }
