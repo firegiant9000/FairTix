@@ -2,6 +2,7 @@ package com.fairtix.payments.api;
 
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.payments.infrastructure.PaymentRecordRepository;
+import com.fairtix.refunds.domain.RefundRequest;
 import com.fairtix.refunds.domain.RefundStatus;
 import com.fairtix.refunds.infrastructure.RefundRepository;
 import com.stripe.exception.SignatureVerificationException;
@@ -23,7 +24,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -105,22 +108,60 @@ public class StripeWebhookController {
     getObject(event, Charge.class).ifPresent(charge -> {
       String piId = charge.getPaymentIntent();
       if (piId == null) return;
-      paymentRecordRepository.findByTransactionId(piId).ifPresent(record ->
-          refundRepository.findAllByOrderId(record.getOrderId()).stream()
-              .filter(r -> r.getStatus() == RefundStatus.APPROVED
-                  || r.getStatus() == RefundStatus.REQUESTED
-                  || r.getStatus() == RefundStatus.PENDING_MANUAL)
-              .findFirst()
-              .ifPresent(refundRequest -> {
-                // Conditional update, not save(): finalise may hold this row and be
-                // writing stripe_refund_id, which a full-row save would wipe.
-                if (refundRepository.completeIfActive(refundRequest.getId(), Instant.now()) == 1) {
-                  auditService.log(SYSTEM_ACTOR, "REFUND_COMPLETED", "REFUND", refundRequest.getId(),
-                      "Completed via Stripe charge.refunded for paymentIntent=" + piId);
-                }
-              })
-      );
+      paymentRecordRepository.findByTransactionId(piId).ifPresent(record -> {
+        List<RefundRequest> requests = refundRepository.findAllByOrderId(record.getOrderId());
+        Optional<RefundRequest> active = requests.stream()
+            .filter(r -> r.getStatus() == RefundStatus.APPROVED
+                || r.getStatus() == RefundStatus.REQUESTED
+                || r.getStatus() == RefundStatus.PENDING_MANUAL)
+            .findFirst();
+        if (active.isPresent()) {
+          RefundRequest refundRequest = active.get();
+          // Conditional update, not save(): finalise may hold this row and be
+          // writing stripe_refund_id, which a full-row save would wipe.
+          if (refundRepository.completeIfActive(refundRequest.getId(), Instant.now()) == 1) {
+            auditService.log(SYSTEM_ACTOR, "REFUND_COMPLETED", "REFUND", refundRequest.getId(),
+                "Completed via Stripe charge.refunded for paymentIntent=" + piId);
+          }
+          return;
+        }
+        alertIfRefundUnaccounted(charge, piId, record.getOrderId(), requests);
+      });
     });
+  }
+
+  /**
+   * A refund with no active refund request behind it: made in the Stripe
+   * Dashboard, or landing while checkout was creating the order (checkout's
+   * refunded-intent check runs once, before the order is written). The order is
+   * live but its money is gone, so it is logged at ERROR and audited as
+   * {@code REFUND_ON_LIVE_ORDER} for the runbook.
+   *
+   * <p>Stripe's {@code amount_refunded} is cumulative and this event can arrive
+   * after our own refund flow has completed its request, so the refund is
+   * unaccounted only when Stripe has refunded more than the completed requests
+   * for this order add up to.
+   */
+  private void alertIfRefundUnaccounted(Charge charge, String piId, UUID orderId,
+      List<RefundRequest> requests) {
+    long refundedCents = charge.getAmountRefunded() == null ? 0L : charge.getAmountRefunded();
+    long accountedCents = requests.stream()
+        .filter(r -> r.getStatus() == RefundStatus.COMPLETED)
+        .map(RefundRequest::getAmount)
+        .reduce(BigDecimal.ZERO, BigDecimal::add)
+        .movePointRight(2)
+        .longValue();
+    if (refundedCents <= accountedCents) {
+      return;
+    }
+    log.error("Stripe refunded a live order with no refund request: stripe_intent={}, charge={},"
+        + " order={}, amount_refunded_cents={}, accounted_cents={}",
+        piId, charge.getId(), orderId, refundedCents, accountedCents);
+    auditService.log(SYSTEM_ACTOR, "REFUND_ON_LIVE_ORDER", "ORDER", orderId,
+        "Stripe refund with no refund request: stripe_intent=" + piId
+            + ", charge=" + charge.getId()
+            + ", amount_refunded_cents=" + refundedCents
+            + ", accounted_cents=" + accountedCents);
   }
 
   private void handlePaymentIntentFailed(Event event) {

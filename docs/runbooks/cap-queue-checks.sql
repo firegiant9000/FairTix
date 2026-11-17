@@ -180,3 +180,23 @@ WHERE NOT EXISTS (
 )
 GROUP BY f.payment_intent, f.user_id
 ORDER BY first_failed_at DESC;
+
+-- name: refunds_on_live_orders
+-- Stripe charge.refunded events for an order with a payment record but no
+-- active refund request, where Stripe has refunded more than the order's
+-- completed refund requests add up to: a Dashboard refund, or one that landed
+-- while checkout was creating the order. The order is live and its money is
+-- gone. Webhook redeliveries can repeat a row; group by order. Expect no rows.
+SELECT a.resource_id                                                 AS order_id,
+       o.status                                                      AS order_status,
+       substring(a.details from 'stripe_intent=([^,]+)')             AS payment_intent,
+       MAX(substring(a.details from 'amount_refunded_cents=([0-9]+)')::bigint)
+                                                                     AS amount_refunded_cents,
+       MIN(a.created_at)                                             AS first_seen_at,
+       COUNT(*)                                                      AS events
+FROM audit_logs a
+LEFT JOIN orders o ON o.id = a.resource_id
+WHERE a.action = 'REFUND_ON_LIVE_ORDER'
+  AND a.created_at > now() - interval '14 days'
+GROUP BY a.resource_id, o.status, substring(a.details from 'stripe_intent=([^,]+)')
+ORDER BY first_seen_at DESC;

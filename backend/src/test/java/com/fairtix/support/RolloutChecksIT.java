@@ -43,8 +43,38 @@ class RolloutChecksIT extends PostgresIT {
     assertThat(checks).containsKeys(
         "postgres_version", "users_over_cap", "queues_over_capacity",
         "duplicate_queue_positions", "lock_waiters", "connections_by_state", "advisory_locks_held",
-        "stripe_charges_without_order");
+        "stripe_charges_without_order", "refunds_on_live_orders");
     checks.forEach((name, sql) -> jdbcTemplate.queryForList(sql));
+  }
+
+  /** Webhook redeliveries of one refund are one row, with the order's status. */
+  @Test
+  void refundsOnLiveOrders_groupsRedeliveriesPerOrder() throws Exception {
+    UUID user = newUser("refunded@test.com");
+    UUID order = UUID.randomUUID();
+    jdbcTemplate.update(
+        "INSERT INTO orders (id, user_id, status, total_amount, currency, created_at)"
+            + " VALUES (?, ?, 'COMPLETED', 50.00, 'USD', now())",
+        order, user);
+    for (int i = 0; i < 2; i++) {
+      // Same details format as StripeWebhookController writes.
+      jdbcTemplate.update(
+          "INSERT INTO audit_logs (id, user_id, action, resource_type, resource_id, details, created_at)"
+              + " VALUES (?, ?, 'REFUND_ON_LIVE_ORDER', 'ORDER', ?, ?, now())",
+          UUID.randomUUID(), new UUID(0L, 0L), order,
+          "Stripe refund with no refund request: stripe_intent=pi_live, charge=ch_live,"
+              + " amount_refunded_cents=5000, accounted_cents=0");
+    }
+
+    List<Map<String, Object>> rows =
+        jdbcTemplate.queryForList(checks().get("refunds_on_live_orders"));
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0))
+        .containsEntry("order_id", order)
+        .containsEntry("order_status", "COMPLETED")
+        .containsEntry("payment_intent", "pi_live");
+    assertThat(((Number) rows.get(0).get("amount_refunded_cents")).longValue()).isEqualTo(5000L);
+    assertThat(((Number) rows.get(0).get("events")).intValue()).isEqualTo(2);
   }
 
   @Test

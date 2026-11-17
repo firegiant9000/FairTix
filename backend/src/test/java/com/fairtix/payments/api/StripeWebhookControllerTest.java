@@ -97,6 +97,10 @@ class StripeWebhookControllerTest {
   }
 
   private static String chargeRefundedEvent(String piId) {
+    return chargeRefundedEvent(piId, 5000);
+  }
+
+  private static String chargeRefundedEvent(String piId, long amountRefundedCents) {
     return """
         {
           "id": "evt_test_charge",
@@ -109,11 +113,27 @@ class StripeWebhookControllerTest {
               "object": "charge",
               "payment_intent": "%s",
               "refunded": true,
-              "amount_refunded": 5000
+              "amount_refunded": %d
             }
           }
         }
-        """.formatted(Stripe.API_VERSION, piId);
+        """.formatted(Stripe.API_VERSION, piId, amountRefundedCents);
+  }
+
+  private void postSigned(String payload) throws Exception {
+    mockMvc.perform(post("/api/webhooks/stripe")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header("Stripe-Signature", stripeSignature(payload, WEBHOOK_SECRET))
+            .content(payload))
+        .andExpect(status().isOk());
+  }
+
+  private static RefundRequest completedRefund(UUID orderId, String amount) {
+    RefundRequest refund = new RefundRequest(orderId, UUID.randomUUID(),
+        new BigDecimal(amount), "Event cancelled");
+    refund.approve(UUID.randomUUID(), "Approved");
+    refund.complete();
+    return refund;
   }
 
   // --- tests ---
@@ -249,5 +269,64 @@ class StripeWebhookControllerTest {
         .andExpect(status().isOk());
 
     verify(auditService, never()).log(any(), eq("REFUND_COMPLETED"), any(), any(), anyString());
+    verify(auditService, never()).log(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
+  }
+
+  /** A refund nobody requested (Dashboard, or one landing during order creation). */
+  @Test
+  void chargeRefunded_withoutRefundRequest_alertsRefundOnLiveOrder() throws Exception {
+    String piId = "pi_live_order_refund";
+    UUID orderId = UUID.randomUUID();
+    when(paymentRecordRepository.findByTransactionId(piId)).thenReturn(Optional.of(new PaymentRecord(
+        orderId, UUID.randomUUID(), new BigDecimal("50.00"), "usd", PaymentStatus.SUCCESS, piId, null)));
+    when(refundRepository.findAllByOrderId(orderId)).thenReturn(List.of());
+
+    postSigned(chargeRefundedEvent(piId));
+
+    verify(auditService).log(eq(new UUID(0L, 0L)), eq("REFUND_ON_LIVE_ORDER"), eq("ORDER"),
+        eq(orderId), contains("stripe_intent=" + piId));
+    verify(refundRepository, never()).completeIfActive(any(), any());
+  }
+
+  /** Our own refund flow completed the request before Stripe's event arrived. */
+  @Test
+  void chargeRefunded_coveredByCompletedRefundRequest_isNotAlerted() throws Exception {
+    String piId = "pi_our_refund";
+    UUID orderId = UUID.randomUUID();
+    when(paymentRecordRepository.findByTransactionId(piId)).thenReturn(Optional.of(new PaymentRecord(
+        orderId, UUID.randomUUID(), new BigDecimal("50.00"), "usd", PaymentStatus.SUCCESS, piId, null)));
+    when(refundRepository.findAllByOrderId(orderId))
+        .thenReturn(List.of(completedRefund(orderId, "50.00")));
+
+    postSigned(chargeRefundedEvent(piId, 5000));
+
+    verify(auditService, never()).log(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
+  }
+
+  /** Stripe refunded more than our completed requests account for. */
+  @Test
+  void chargeRefunded_beyondCompletedRefundRequests_alerts() throws Exception {
+    String piId = "pi_extra_refund";
+    UUID orderId = UUID.randomUUID();
+    when(paymentRecordRepository.findByTransactionId(piId)).thenReturn(Optional.of(new PaymentRecord(
+        orderId, UUID.randomUUID(), new BigDecimal("50.00"), "usd", PaymentStatus.SUCCESS, piId, null)));
+    when(refundRepository.findAllByOrderId(orderId))
+        .thenReturn(List.of(completedRefund(orderId, "20.00")));
+
+    postSigned(chargeRefundedEvent(piId, 5000));
+
+    verify(auditService).log(eq(new UUID(0L, 0L)), eq("REFUND_ON_LIVE_ORDER"), eq("ORDER"),
+        eq(orderId), contains("amount_refunded_cents=5000"));
+  }
+
+  /** No order for the intent: stripe_charges_without_order covers it, not this alert. */
+  @Test
+  void chargeRefunded_withoutPaymentRecord_isNotAlerted() throws Exception {
+    String piId = "pi_no_order";
+    when(paymentRecordRepository.findByTransactionId(piId)).thenReturn(Optional.empty());
+
+    postSigned(chargeRefundedEvent(piId));
+
+    verify(auditService, never()).log(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
   }
 }
