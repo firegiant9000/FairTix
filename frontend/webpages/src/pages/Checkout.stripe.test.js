@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AuthContext } from '../auth/AuthContext';
 import api from '../api/client';
@@ -134,6 +134,41 @@ test('a busy 409 after payment says the charge went through and offers no Cancel
   expect(screen.getByRole('button', { name: /complete order/i })).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+});
+
+test('a paid resubmit that fails with a server error stays on the paid screen', async () => {
+  mockPost(busyError, { status: 500, message: 'Order could not be created.' });
+  mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
+
+  renderCheckout();
+  await clickPay();
+  fireEvent.click(await screen.findByRole('button', { name: /complete order/i }));
+
+  expect(await screen.findByText('Order could not be created.')).toBeInTheDocument();
+  expect(screen.getByText(/your payment went through/i)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /complete order/i })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument();
+});
+
+test('cancelling step-up after a paid checkout goes to the paid screen, not the card form', async () => {
+  mockPost({ status: 428, code: 'STEP_UP_REQUIRED' }, { orderId: 'order-4' });
+  mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
+
+  renderCheckout();
+  await clickPay();
+  await waitFor(() => expect(checkoutCalls()).toHaveLength(1));
+  act(() => {
+    window.dispatchEvent(new CustomEvent('auth:step-up-required', { detail: { action: 'CHECKOUT' } }));
+  });
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: /cancel/i }));
+
+  expect(await screen.findByText(/your payment went through/i)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /pay \$50\.00/i })).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: /complete order/i }));
+  expect(await screen.findByText('Order Confirmed!')).toBeInTheDocument();
+  expect(mockConfirmCardPayment).toHaveBeenCalledTimes(1);
 });
 
 test('Complete Order after a second busy 409 can be clicked again', async () => {
