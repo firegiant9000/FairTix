@@ -111,22 +111,27 @@ GROUP BY granted;
 
 -- name: stripe_charges_without_order
 -- PaymentIntents that succeeded at Stripe but never got an order, last 14 days.
--- Each row needs a manual refund. A STRIPE_ORDER_FAILED audit row alone is not
--- enough: it is also written when a later attempt with the same intent created
--- the order (busy lock, then the customer tried again; or a double submit that
--- lost the race). Those intents have a payment_records row (transaction_id is
--- the intent id) and are left out here. Expect no rows.
+-- Each row needs a manual refund. Checkout writes STRIPE_ORDER_FAILED when the
+-- order failed, and STRIPE_ORDER_BUSY when the purchase-cap lock stayed busy.
+-- After a busy row the holds stay confirmed, so the customer's next attempt can
+-- still create the order. Intents that got an order on a later attempt have a
+-- payment_records row (transaction_id is the intent id) and are left out here.
+-- busy_only = true means only busy attempts so far. If last_failed_at is recent,
+-- the customer may still complete it: wait until their holds have expired
+-- before refunding. Expect no rows.
 SELECT f.payment_intent,
        f.user_id,
-       MIN(f.created_at) AS first_failed_at,
-       MAX(f.created_at) AS last_failed_at,
-       COUNT(*)          AS failed_attempts
+       MIN(f.created_at)             AS first_failed_at,
+       MAX(f.created_at)             AS last_failed_at,
+       COUNT(*)                      AS failed_attempts,
+       bool_and(f.action = 'STRIPE_ORDER_BUSY') AS busy_only
 FROM (
   SELECT substring(a.details from 'stripe_intent=([^,]+)') AS payment_intent,
          a.user_id,
+         a.action,
          a.created_at
   FROM audit_logs a
-  WHERE a.action = 'STRIPE_ORDER_FAILED'
+  WHERE a.action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')
     AND a.created_at > now() - interval '14 days'
 ) f
 WHERE NOT EXISTS (

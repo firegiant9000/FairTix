@@ -50,11 +50,13 @@ class RolloutChecksIT extends PostgresIT {
   @Test
   void stripeChargesWithoutOrder_leavesOutIntentsThatGotAnOrderLater() throws Exception {
     UUID user = newUser("paid@test.com");
-    // Two failed attempts for an intent whose order was never created.
-    failedStripeOrder(user, "pi_orphan");
-    failedStripeOrder(user, "pi_orphan");
-    // A failed attempt for an intent that a later attempt turned into an order.
-    failedStripeOrder(user, "pi_fulfilled");
+    // A busy attempt then a failed one for an intent whose order was never created.
+    failedStripeOrder(user, "pi_orphan", "STRIPE_ORDER_BUSY");
+    failedStripeOrder(user, "pi_orphan", "STRIPE_ORDER_FAILED");
+    // Only busy attempts so far, and still no order.
+    failedStripeOrder(user, "pi_busy", "STRIPE_ORDER_BUSY");
+    // A busy attempt for an intent that a later attempt turned into an order.
+    failedStripeOrder(user, "pi_fulfilled", "STRIPE_ORDER_BUSY");
     UUID order = UUID.randomUUID();
     jdbcTemplate.update(
         "INSERT INTO orders (id, user_id, status, total_amount, currency, created_at)"
@@ -67,9 +69,15 @@ class RolloutChecksIT extends PostgresIT {
 
     List<Map<String, Object>> rows =
         jdbcTemplate.queryForList(checks().get("stripe_charges_without_order"));
-    assertThat(rows).hasSize(1);
-    assertThat(rows.get(0)).containsEntry("payment_intent", "pi_orphan");
-    assertThat(((Number) rows.get(0).get("failed_attempts")).intValue()).isEqualTo(2);
+    assertThat(rows).extracting(row -> row.get("payment_intent"))
+        .containsExactlyInAnyOrder("pi_orphan", "pi_busy");
+    Map<String, Object> orphan = rows.stream()
+        .filter(row -> "pi_orphan".equals(row.get("payment_intent"))).findFirst().orElseThrow();
+    assertThat(((Number) orphan.get("failed_attempts")).intValue()).isEqualTo(2);
+    assertThat(orphan).containsEntry("busy_only", false);
+    Map<String, Object> busy = rows.stream()
+        .filter(row -> "pi_busy".equals(row.get("payment_intent"))).findFirst().orElseThrow();
+    assertThat(busy).containsEntry("busy_only", true);
   }
 
   @Test
@@ -138,14 +146,14 @@ class RolloutChecksIT extends PostgresIT {
     }
   }
 
-  private void failedStripeOrder(UUID user, String paymentIntentId) {
-    // Same details format as PaymentController.checkout writes.
+  private void failedStripeOrder(UUID user, String paymentIntentId, String action) {
+    // Same details format as PaymentController writes.
     jdbcTemplate.update(
         "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
-            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
-        UUID.randomUUID(), user,
+            + " VALUES (?, ?, ?, 'PAYMENT', ?, now())",
+        UUID.randomUUID(), user, action,
         "Charge succeeded but order creation failed: stripe_intent=" + paymentIntentId
-            + ", holdIds=[" + UUID.randomUUID() + "], error=LockBusyException");
+            + ", holdIds=[" + UUID.randomUUID() + "], error=RuntimeException");
   }
 
   private static String strip(StringBuilder sql) {

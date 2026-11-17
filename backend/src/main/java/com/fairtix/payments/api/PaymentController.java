@@ -146,6 +146,37 @@ public class PaymentController {
     }
   }
 
+  /**
+   * Puts a succeeded charge whose order was not created on record, after the
+   * order's rollback, so it can be refunded (refund-on-failure is not automated
+   * yet). The runbook check {@code stripe_charges_without_order} reads both actions.
+   *
+   * <ul>
+   *   <li>The intent already has a payment record: another request with the same
+   *       intent created the order (a double submit that lost the race). Nothing is
+   *       owed, so nothing is written.
+   *   <li>The purchase-cap lock stayed busy: {@code STRIPE_ORDER_BUSY}. The holds
+   *       are still confirmed and the answer is a retryable 409, so the customer's
+   *       next attempt can still create the order. This charge needs a refund only
+   *       if no attempt ever does.
+   *   <li>Anything else: {@code STRIPE_ORDER_FAILED}.
+   * </ul>
+   */
+  private void auditStripeOrderNotCreated(UUID userId, java.util.List<UUID> holdIds,
+      String paymentIntentId, RuntimeException ex) {
+    if (paymentRecordRepository.findByTransactionId(paymentIntentId).isPresent()) {
+      return;
+    }
+    boolean busy = ex instanceof LockBusyException;
+    String details = (busy
+        ? "Charge succeeded, order not created yet (purchase-cap lock busy; a retry can complete it): "
+        : "Charge succeeded but order creation failed: ")
+        + "stripe_intent=" + paymentIntentId
+        + ", holdIds=" + holdIds + ", error=" + ex.getClass().getSimpleName();
+    auditService.log(userId, busy ? "STRIPE_ORDER_BUSY" : "STRIPE_ORDER_FAILED", "PAYMENT", null,
+        details);
+  }
+
   @Operation(summary = "Create Stripe PaymentIntent",
       description = "Calculates total for the given holds and returns a Stripe client secret. "
           + "Only available when stripe.enabled=true.")
@@ -237,12 +268,7 @@ public class PaymentController {
       try {
         order = createStripeOrder(principal.getUserId(), request.holdIds(), paymentIntentId);
       } catch (RuntimeException ex) {
-        // The charge succeeded but the order rolled back. This row is written in its
-        // own transaction after that rollback, so the captured charge stays on record
-        // for a refund (refund-on-failure is not automated yet).
-        auditService.log(principal.getUserId(), "STRIPE_ORDER_FAILED", "PAYMENT", null,
-            "Charge succeeded but order creation failed: stripe_intent=" + paymentIntentId
-                + ", holdIds=" + request.holdIds() + ", error=" + ex.getClass().getSimpleName());
+        auditStripeOrderNotCreated(principal.getUserId(), request.holdIds(), paymentIntentId, ex);
         throw ex;
       }
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();
