@@ -112,7 +112,12 @@ GROUP BY granted;
 -- name: stripe_charges_without_order
 -- PaymentIntents that succeeded at Stripe but never got an order, last 14 days.
 -- Checkout writes STRIPE_ORDER_FAILED when the order failed, and
--- STRIPE_ORDER_BUSY when the purchase-cap lock stayed busy. Intents that got an
+-- STRIPE_ORDER_BUSY when the purchase-cap lock stayed busy. STRIPE_ORDER_FAILED
+-- with error=PaymentNotVerified in its details means checkout answered 402
+-- because verification failed: almost always a paid intent whose amount no
+-- longer matches the holds (a seat price changed, or a hold was swapped). For
+-- those, open the intent in Stripe first: if it never succeeded there is
+-- nothing to refund. Intents that got an
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --

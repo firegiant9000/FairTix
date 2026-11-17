@@ -163,6 +163,13 @@ public class PaymentController {
    *       are still confirmed and the answer is a retryable 409, so the customer's
    *       next attempt can still create the order. This charge needs a refund only
    *       if no attempt ever does.
+   *   <li>Verification returned false: {@code STRIPE_ORDER_FAILED} with
+   *       {@code error=PaymentNotVerified}. The client submits only after Stripe
+   *       reports the intent succeeded, so this is almost always an amount
+   *       mismatch (a seat price changed, or the holds changed after the intent was
+   *       created) and the customer has paid. A direct API call with an intent that
+   *       never succeeded lands here too; the runbook checks the intent in Stripe
+   *       before refunding.
    *   <li>Anything else: {@code STRIPE_ORDER_FAILED}.
    * </ul>
    */
@@ -172,13 +179,48 @@ public class PaymentController {
       return;
     }
     boolean busy = ex instanceof LockBusyException;
-    String details = (busy
-        ? "Charge succeeded, order not created yet (purchase-cap lock busy; a retry can complete it): "
-        : "Charge succeeded but order creation failed: ")
+    String summary;
+    String error;
+    if (busy) {
+      summary = "Charge succeeded, order not created yet (purchase-cap lock busy; a retry can complete it): ";
+      error = ex.getClass().getSimpleName();
+    } else if (ex instanceof PaymentNotVerifiedException) {
+      summary = "Payment not verified (amount_received differs from the holds' total,"
+          + " or the intent has not succeeded); order not created: ";
+      error = "PaymentNotVerified";
+    } else {
+      summary = "Charge succeeded but order creation failed: ";
+      error = ex.getClass().getSimpleName();
+    }
+    String details = summary
         + "stripe_intent=" + paymentIntentId
-        + ", holdIds=" + holdIds + ", error=" + ex.getClass().getSimpleName();
+        + ", holdIds=" + holdIds + ", error=" + error;
     auditService.log(userId, busy ? "STRIPE_ORDER_BUSY" : "STRIPE_ORDER_FAILED", "PAYMENT", null,
         details);
+  }
+
+  /**
+   * {@link #auditStripeOrderNotCreated}, never throwing: pool exhaustion or a
+   * database outage can fail the audit too. The charge then stays traceable in
+   * the log, and the caller answers with the original error.
+   */
+  private void auditStripeOrderNotCreatedSafely(UUID userId, java.util.List<UUID> holdIds,
+      String paymentIntentId, RuntimeException ex) {
+    try {
+      auditStripeOrderNotCreated(userId, holdIds, paymentIntentId, ex);
+    } catch (RuntimeException auditFailure) {
+      log.error("Charge succeeded, order not created, and the audit row could not be written:"
+          + " stripe_intent={}, holdIds={}, error={}", paymentIntentId, holdIds,
+          ex.getClass().getSimpleName(), auditFailure);
+      ex.addSuppressed(auditFailure);
+    }
+  }
+
+  /** Verification returned false; answered as 402 like before. */
+  private static final class PaymentNotVerifiedException extends ResponseStatusException {
+    PaymentNotVerifiedException() {
+      super(HttpStatus.PAYMENT_REQUIRED, "Stripe payment has not succeeded");
+    }
   }
 
   @Operation(summary = "Create Stripe PaymentIntent",
@@ -265,23 +307,19 @@ public class PaymentController {
           .reduce(BigDecimal.ZERO, BigDecimal::add);
       long expectedAmountCents = expectedTotal.multiply(BigDecimal.valueOf(100)).longValue();
       if (!stripePaymentService.verifyPaymentSucceeded(paymentIntentId, expectedAmountCents)) {
-        throw new ResponseStatusException(HttpStatus.PAYMENT_REQUIRED,
-            "Stripe payment has not succeeded");
+        // Almost always a paid charge whose amount no longer matches the holds, so
+        // it goes on record for stripe_charges_without_order like a failed order.
+        var notVerified = new PaymentNotVerifiedException();
+        auditStripeOrderNotCreatedSafely(
+            principal.getUserId(), request.holdIds(), paymentIntentId, notVerified);
+        throw notVerified;
       }
       Order order;
       try {
         order = createStripeOrder(principal.getUserId(), request.holdIds(), paymentIntentId);
       } catch (RuntimeException ex) {
-        try {
-          auditStripeOrderNotCreated(principal.getUserId(), request.holdIds(), paymentIntentId, ex);
-        } catch (RuntimeException auditFailure) {
-          // Pool exhaustion or a database outage can fail the audit too. Keep the
-          // charge traceable in the log and answer with the original error.
-          log.error("Charge succeeded, order not created, and the audit row could not be written:"
-              + " stripe_intent={}, holdIds={}, error={}", paymentIntentId, request.holdIds(),
-              ex.getClass().getSimpleName(), auditFailure);
-          ex.addSuppressed(auditFailure);
-        }
+        auditStripeOrderNotCreatedSafely(
+            principal.getUserId(), request.holdIds(), paymentIntentId, ex);
         throw ex;
       }
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();
