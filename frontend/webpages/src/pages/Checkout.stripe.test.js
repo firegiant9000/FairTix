@@ -123,14 +123,42 @@ test('confirm error without a succeeded PaymentIntent shows the error and does n
   expect(checkoutCalls()).toHaveLength(0);
 });
 
-test('Try Again after a busy 409 resubmits the paid checkout without asking for the card again', async () => {
+test('a busy 409 after payment says the charge went through and offers no Cancel', async () => {
+  mockPost(busyError);
+  mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
+
+  renderCheckout();
+  await clickPay();
+
+  expect(await screen.findByText(/your payment went through/i)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /complete order/i })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+});
+
+test('Complete Order after a second busy 409 can be clicked again', async () => {
+  mockPost(busyError, busyError, { orderId: 'order-3' });
+  mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
+
+  renderCheckout();
+  await clickPay();
+
+  fireEvent.click(await screen.findByRole('button', { name: /complete order/i }));
+  fireEvent.click(await screen.findByRole('button', { name: /complete order/i }));
+
+  expect(await screen.findByText('Order Confirmed!')).toBeInTheDocument();
+  expect(mockConfirmCardPayment).toHaveBeenCalledTimes(1);
+  expect(checkoutCalls()).toHaveLength(3);
+});
+
+test('Complete Order after a busy 409 resubmits the paid checkout without asking for the card again', async () => {
   mockPost(busyError, { orderId: 'order-2' });
   mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
 
   renderCheckout();
   await clickPay();
 
-  fireEvent.click(await screen.findByRole('button', { name: /try again/i }));
+  fireEvent.click(await screen.findByRole('button', { name: /complete order/i }));
 
   expect(await screen.findByText('Order Confirmed!')).toBeInTheDocument();
   expect(mockConfirmCardPayment).toHaveBeenCalledTimes(1);

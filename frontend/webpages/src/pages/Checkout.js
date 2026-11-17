@@ -82,7 +82,9 @@ function Checkout() {
   const stepUpCaptchaRef = useRef(null);
   const stepUpModalRef = useRef(null);
   const pendingPayloadRef = useRef(null);
-  const busyRetryPayloadRef = useRef(null);
+  // Set when a paid Stripe checkout got 409 REQUEST_IN_PROGRESS: the card was
+  // charged and the holds kept, so the order only needs resubmitting.
+  const [busyRetryPayload, setBusyRetryPayload] = useState(null);
   const [, setTick] = useState(0);
   const tickRef = useRef(null);
   const holdIdsRef = useRef(location.state?.holdIds || []);
@@ -199,10 +201,8 @@ function Checkout() {
         pendingPayloadRef.current = payload;
         return;
       }
-      // The card was charged but the server was busy and kept the holds: "Try Again"
-      // resubmits this payload instead of asking for the card again.
       const paidButBusy = err.status === 409 && err.code === 'REQUEST_IN_PROGRESS' && payload.paymentIntentId;
-      busyRetryPayloadRef.current = paidButBusy ? payload : null;
+      setBusyRetryPayload(paidButBusy ? payload : null);
       setPaymentState('failed');
       setPaymentError(
         err.body?.failureReason
@@ -282,11 +282,11 @@ function Checkout() {
   }
 
   async function handleRetry() {
-    const busyPayload = busyRetryPayloadRef.current;
-    busyRetryPayloadRef.current = null;
-    if (busyPayload) {
+    if (busyRetryPayload) {
+      const payload = busyRetryPayload;
+      setBusyRetryPayload(null);
       setPaymentError('');
-      await submitPayload(busyPayload);
+      await submitPayload(payload);
       return;
     }
     setPaymentState('form');
@@ -488,7 +488,22 @@ function Checkout() {
         </div>
       )}
 
-      {paymentState === 'failed' && (
+      {paymentState === 'failed' && busyRetryPayload && (
+        <div className="checkout-payment-failed">
+          <div className="checkout-error">
+            Your payment went through, but we couldn&apos;t finish your order because the
+            server was busy. Your seats are still held. Please complete your order — you
+            won&apos;t be charged again.
+          </div>
+          <div className="checkout-actions">
+            <button className="checkout-btn-primary" onClick={handleRetry}>
+              Complete Order
+            </button>
+          </div>
+        </div>
+      )}
+
+      {paymentState === 'failed' && !busyRetryPayload && (
         <div className="checkout-payment-failed">
           <div className="checkout-error">{paymentError}</div>
           <div className="checkout-actions">
