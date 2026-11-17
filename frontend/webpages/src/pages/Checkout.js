@@ -12,6 +12,16 @@ const stripePromise = stripeEnabled
   ? loadStripe(process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY)
   : null;
 
+// A Stripe checkout reaches the server only after confirmCardPayment succeeded,
+// so its failure means "charged, no order" unless the server says the card was
+// declined (422) or the payment was refunded (PAYMENT_REFUNDED, its own screen).
+// A 402 here means the charged amount didn't match the order total: still paid.
+function isPaidButNotOrdered(payload, err) {
+  if (!payload.paymentIntentId) return false;
+  if (err.status === 422 && err.code === 'CARD_DECLINED') return false;
+  return err.code !== 'PAYMENT_REFUNDED';
+}
+
 function StripeCardForm({ holds, total, clientSecret, onSuccess, onError, onCancel, submitting, setSubmitting }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -24,6 +34,12 @@ function StripeCardForm({ holds, total, clientSecret, onSuccess, onError, onCanc
       payment_method: { card: elements.getElement(CardElement) },
     });
     setSubmitting(false);
+    // Already charged (e.g. resubmitting after a 409 REQUEST_IN_PROGRESS): Stripe
+    // rejects the confirm, but checkout must still be submitted to create the order.
+    if (error?.payment_intent?.status === 'succeeded') {
+      await onSuccess(error.payment_intent.id);
+      return;
+    }
     if (error) {
       onError(error.message);
       return;
@@ -68,7 +84,7 @@ function Checkout() {
 
   const [cardNumber, setCardNumber] = useState('');
   const [paymentError, setPaymentError] = useState('');
-  const [paymentState, setPaymentState] = useState('form'); // form | processing | success | failed | step-up
+  const [paymentState, setPaymentState] = useState('form'); // form | processing | success | failed | refunded | step-up
   const [stepUpAction, setStepUpAction] = useState(null);
   const [stepUpCaptchaToken, setStepUpCaptchaToken] = useState('');
   const [stepUpError, setStepUpError] = useState('');
@@ -76,6 +92,10 @@ function Checkout() {
   const stepUpCaptchaRef = useRef(null);
   const stepUpModalRef = useRef(null);
   const pendingPayloadRef = useRef(null);
+  // Set when the card was charged but checkout did not create the order (busy,
+  // server error, expired hold, step-up cancelled...). The customer must not be
+  // sent back to the card form or offered Cancel: the order only needs resubmitting.
+  const [paidRetryPayload, setPaidRetryPayload] = useState(null);
   const [, setTick] = useState(0);
   const tickRef = useRef(null);
   const holdIdsRef = useRef(location.state?.holdIds || []);
@@ -192,11 +212,19 @@ function Checkout() {
         pendingPayloadRef.current = payload;
         return;
       }
-      setPaymentState('failed');
+      setPaidRetryPayload(isPaidButNotOrdered(payload, err) ? payload : null);
+      // A refunded intent can never complete an order, and the same holds get the
+      // same intent back, so neither Try Again nor the card form can help.
+      setPaymentState(err.code === 'PAYMENT_REFUNDED' ? 'refunded' : 'failed');
+      // After a charge, the server's 402 "payment has not succeeded" means the
+      // amount didn't match; saying the payment failed would contradict the screen.
+      const amountMismatch = payload.paymentIntentId && err.status === 402;
       setPaymentError(
-        err.body?.failureReason
-          || err.message
-          || 'Payment declined. Please check your card details or try a different card.'
+        amountMismatch
+          ? "The amount charged doesn't match your order total. Please contact support."
+          : err.body?.failureReason
+            || err.message
+            || 'Payment declined. Please check your card details or try a different card.'
       );
     } finally {
       setSubmitting(false);
@@ -252,6 +280,19 @@ function Checkout() {
     }
   }
 
+  function handleStepUpCancel() {
+    setStepUpAction(null);
+    const pending = pendingPayloadRef.current;
+    if (pending?.paymentIntentId) {
+      // Already charged: keep the customer on the paid screen, not the card form.
+      setPaidRetryPayload(pending);
+      setPaymentError('Additional verification is needed before your order can be completed.');
+      setPaymentState('failed');
+      return;
+    }
+    setPaymentState('form');
+  }
+
   async function handleCancel() {
     // In simulation mode, record cancellation server-side before navigating
     if (!stripeEnabled && holds.length > 0 && paymentState !== 'failed') {
@@ -270,7 +311,14 @@ function Checkout() {
     navigate('/my-holds');
   }
 
-  function handleRetry() {
+  async function handleRetry() {
+    if (paidRetryPayload) {
+      const payload = paidRetryPayload;
+      setPaidRetryPayload(null);
+      setPaymentError('');
+      await submitPayload(payload);
+      return;
+    }
     setPaymentState('form');
     setPaymentError('');
     setCardNumber('');
@@ -452,7 +500,7 @@ function Checkout() {
             {stepUpError && <div className="checkout-error">{stepUpError}</div>}
             <Recaptcha ref={stepUpCaptchaRef} onChange={setStepUpCaptchaToken} />
             <div className="checkout-actions">
-              <button type="button" className="checkout-btn-secondary" onClick={() => { setPaymentState('form'); setStepUpAction(null); }} disabled={stepUpSubmitting}>
+              <button type="button" className="checkout-btn-secondary" onClick={handleStepUpCancel} disabled={stepUpSubmitting}>
                 Cancel
               </button>
               <button type="submit" className="checkout-btn-primary" disabled={stepUpSubmitting || !stepUpCaptchaToken}>
@@ -470,7 +518,39 @@ function Checkout() {
         </div>
       )}
 
-      {paymentState === 'failed' && (
+      {paymentState === 'failed' && paidRetryPayload && (
+        <div className="checkout-payment-failed">
+          <div className="checkout-error">
+            <p>
+              Your payment went through, but we couldn&apos;t confirm your order.
+              Select Complete Order to finish it — you won&apos;t be charged again.
+            </p>
+            {paymentError && <p>{paymentError}</p>}
+            <p>
+              Check <Link to="/my-tickets">My Tickets</Link> first: your tickets may already
+              be there. If this keeps failing, contact support and your payment will be refunded.
+            </p>
+          </div>
+          <div className="checkout-actions">
+            <button className="checkout-btn-primary" onClick={handleRetry}>
+              Complete Order
+            </button>
+          </div>
+        </div>
+      )}
+
+      {paymentState === 'refunded' && (
+        <div className="checkout-payment-failed">
+          <div className="checkout-error">{paymentError}</div>
+          <div className="checkout-actions">
+            <button className="checkout-btn-secondary" onClick={() => navigate('/my-holds')}>
+              Back to My Holds
+            </button>
+          </div>
+        </div>
+      )}
+
+      {paymentState === 'failed' && !paidRetryPayload && (
         <div className="checkout-payment-failed">
           <div className="checkout-error">{paymentError}</div>
           <div className="checkout-actions">
