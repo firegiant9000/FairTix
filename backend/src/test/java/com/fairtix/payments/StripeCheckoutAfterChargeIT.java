@@ -12,8 +12,10 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fairtix.audit.application.AuditService;
 import com.fairtix.auth.WithMockPrincipal;
 import com.fairtix.common.LockBusyException;
 import com.fairtix.events.domain.Event;
@@ -68,6 +70,7 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
 
   @MockitoSpyBean private StripePaymentService stripePaymentService;
   @MockitoSpyBean private OrderService orderService;
+  @MockitoSpyBean private AuditService auditService;
 
   private User buyer;
   private SeatHold hold;
@@ -108,11 +111,12 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
   }
 
   /**
-   * A lock that stays busy for every attempt ends in the retryable 409, and the
-   * captured charge is on record for a refund like any other failed order.
+   * A lock that stays busy for every attempt ends in the retryable 409. The
+   * captured charge is on record as STRIPE_ORDER_BUSY, not as a failed order: the
+   * holds are still confirmed, so the customer's next attempt can complete it.
    */
   @Test
-  void capLockBusyOnEveryAttempt_endsIn409_withTheChargeOnRecord() throws Exception {
+  void capLockBusyOnEveryAttempt_endsIn409_withTheChargeOnRecordAsBusy() throws Exception {
     doThrow(new LockBusyException("busy", null))
         .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
 
@@ -120,7 +124,66 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
 
     verify(orderService, times(3)).createOrderWithStripePayment(any(), any(), anyString());
     assertThat(count("SELECT COUNT(*) FROM orders")).isZero();
-    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_ORDER_BUSY'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED'")).isZero();
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT details FROM audit_logs WHERE action = 'STRIPE_ORDER_BUSY'", String.class))
+        .contains("stripe_intent=" + INTENT);
+    assertThat(count("SELECT COUNT(*) FROM seat_holds WHERE status = 'CONFIRMED'")).isEqualTo(1);
+  }
+
+  /**
+   * The audit write fails too (for example the pool is exhausted). The customer
+   * still gets the retryable 409 for the original error, not a 500 for the audit.
+   */
+  @Test
+  void auditFailureAfterBusy_stillAnswersTheOriginal409() throws Exception {
+    doThrow(new LockBusyException("busy", null))
+        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+    doThrow(new IllegalStateException("no connection"))
+        .when(auditService).log(any(), eq("STRIPE_ORDER_BUSY"), any(), any(), any());
+
+    checkout()
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("REQUEST_IN_PROGRESS"));
+  }
+
+  /**
+   * The customer tries again after the busy 409 and the order completes. The busy
+   * row stays, but the intent now has a payment record, so the runbook's refund
+   * check leaves it out.
+   */
+  @Test
+  void retryAfterBusy409_completesTheOrder() throws Exception {
+    doThrow(new LockBusyException("busy", null))
+        .doThrow(new LockBusyException("busy", null))
+        .doThrow(new LockBusyException("busy", null))
+        .doCallRealMethod()
+        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+
+    checkout().andExpect(status().isConflict());
+    checkout().andExpect(status().isCreated());
+
+    assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM payment_records WHERE transaction_id = '" + INTENT + "'"))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED'")).isZero();
+  }
+
+  /**
+   * A double submit: the first checkout creates the order, the second with the
+   * same intent finds the holds no longer confirmed and fails. Nothing is owed to
+   * the customer, so no refund row is written.
+   */
+  @Test
+  void secondCheckoutForAFulfilledIntent_failsWithoutARefundRow() throws Exception {
+    checkout().andExpect(status().isCreated());
+    checkout().andExpect(status().is4xxClientError());
+
+    assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
+    assertThat(count(
+        "SELECT COUNT(*) FROM audit_logs WHERE action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')"))
+        .isZero();
   }
 
   /**

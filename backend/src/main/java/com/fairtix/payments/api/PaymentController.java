@@ -31,6 +31,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -49,6 +51,8 @@ import java.util.stream.Collectors;
 @RestController
 @PreAuthorize("isAuthenticated()")
 public class PaymentController {
+
+  private static final Logger log = LoggerFactory.getLogger(PaymentController.class);
 
   /** Attempts to create the order for a succeeded charge while the cap lock is busy. */
   private static final int STRIPE_ORDER_ATTEMPTS = 3;
@@ -146,6 +150,37 @@ public class PaymentController {
     }
   }
 
+  /**
+   * Puts a succeeded charge whose order was not created on record, after the
+   * order's rollback, so it can be refunded (refund-on-failure is not automated
+   * yet). The runbook check {@code stripe_charges_without_order} reads both actions.
+   *
+   * <ul>
+   *   <li>The intent already has a payment record: another request with the same
+   *       intent created the order (a double submit that lost the race). Nothing is
+   *       owed, so nothing is written.
+   *   <li>The purchase-cap lock stayed busy: {@code STRIPE_ORDER_BUSY}. The holds
+   *       are still confirmed and the answer is a retryable 409, so the customer's
+   *       next attempt can still create the order. This charge needs a refund only
+   *       if no attempt ever does.
+   *   <li>Anything else: {@code STRIPE_ORDER_FAILED}.
+   * </ul>
+   */
+  private void auditStripeOrderNotCreated(UUID userId, java.util.List<UUID> holdIds,
+      String paymentIntentId, RuntimeException ex) {
+    if (paymentRecordRepository.findByTransactionId(paymentIntentId).isPresent()) {
+      return;
+    }
+    boolean busy = ex instanceof LockBusyException;
+    String details = (busy
+        ? "Charge succeeded, order not created yet (purchase-cap lock busy; a retry can complete it): "
+        : "Charge succeeded but order creation failed: ")
+        + "stripe_intent=" + paymentIntentId
+        + ", holdIds=" + holdIds + ", error=" + ex.getClass().getSimpleName();
+    auditService.log(userId, busy ? "STRIPE_ORDER_BUSY" : "STRIPE_ORDER_FAILED", "PAYMENT", null,
+        details);
+  }
+
   @Operation(summary = "Create Stripe PaymentIntent",
       description = "Calculates total for the given holds and returns a Stripe client secret. "
           + "Only available when stripe.enabled=true.")
@@ -237,12 +272,16 @@ public class PaymentController {
       try {
         order = createStripeOrder(principal.getUserId(), request.holdIds(), paymentIntentId);
       } catch (RuntimeException ex) {
-        // The charge succeeded but the order rolled back. This row is written in its
-        // own transaction after that rollback, so the captured charge stays on record
-        // for a refund (refund-on-failure is not automated yet).
-        auditService.log(principal.getUserId(), "STRIPE_ORDER_FAILED", "PAYMENT", null,
-            "Charge succeeded but order creation failed: stripe_intent=" + paymentIntentId
-                + ", holdIds=" + request.holdIds() + ", error=" + ex.getClass().getSimpleName());
+        try {
+          auditStripeOrderNotCreated(principal.getUserId(), request.holdIds(), paymentIntentId, ex);
+        } catch (RuntimeException auditFailure) {
+          // Pool exhaustion or a database outage can fail the audit too. Keep the
+          // charge traceable in the log and answer with the original error.
+          log.error("Charge succeeded, order not created, and the audit row could not be written:"
+              + " stripe_intent={}, holdIds={}, error={}", paymentIntentId, request.holdIds(),
+              ex.getClass().getSimpleName(), auditFailure);
+          ex.addSuppressed(auditFailure);
+        }
         throw ex;
       }
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();

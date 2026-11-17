@@ -16,7 +16,7 @@ The SQL lives in [cap-queue-checks.sql](cap-queue-checks.sql). Every query in it
 | Accepting a ticket transfer | No cap check | Refused if it would put the recipient over the cap |
 | Stripe checkout over the cap | Refused after the charge | Refused when the PaymentIntent is created, before any charge |
 | Overlapping joins to a capped queue | Could exceed `queue_capacity` | Run one at a time per event |
-| A request that waits too long for one of these locks | n/a | 409 `REQUEST_IN_PROGRESS`; the locked work is rolled back (Stripe checkout still logs `STRIPE_ORDER_FAILED`, see below). With PR #279 the frontend retries it twice, except on checkout and queue join |
+| A request that waits too long for one of these locks | n/a | 409 `REQUEST_IN_PROGRESS`; the locked work is rolled back (Stripe checkout still logs `STRIPE_ORDER_BUSY`, see below). With PR #279 the frontend retries it twice, except on checkout and queue join |
 
 ## Settings
 
@@ -26,7 +26,7 @@ The SQL lives in [cap-queue-checks.sql](cap-queue-checks.sql). Every query in it
 | `queue.join-lock-wait-ms` | 500 | Wait for the per-event lock when joining a capped queue |
 | `spring.datasource.hikari.maximum-pool-size` | 10 (Hikari default; not set) | Connections per instance; every request waiting on a lock holds one |
 
-Stripe checkout retries order creation 3 times on a busy lock (constant in `PaymentController`), so a customer who has paid can wait up to about 9 seconds before a 409. The frontend does not retry checkout on top of that. When those 3 attempts fail, `PaymentController` writes a `STRIPE_ORDER_FAILED` audit row before answering 409. The customer's holds stay confirmed, so trying again can still create the order. That is why `stripe_charges_without_order` checks for a payment record instead of counting audit rows.
+Stripe checkout retries order creation 3 times on a busy lock (constant in `PaymentController`), so a customer who has paid can wait up to about 9 seconds before a 409. The frontend does not retry checkout on top of that. When those 3 attempts fail, `PaymentController` writes a `STRIPE_ORDER_BUSY` audit row before answering 409. Any other failure after the charge writes `STRIPE_ORDER_FAILED`. A double submit whose order the other request already created writes neither. The customer's holds stay confirmed, so trying again can still create the order. That is why `stripe_charges_without_order` checks for a payment record instead of counting audit rows.
 
 ## Before deploying
 
@@ -59,9 +59,10 @@ Daily, or after any on-sale:
 | Cap invariant | `users_over_cap` | No rows beyond the ones found before deploy | A new row appears: find how (transfer, box office, lowered cap) from `audit_logs` for that user and event |
 | Queue invariant | `queues_over_capacity` | No rows | Rows that are not explained by recent hold releases |
 | Positions | `duplicate_queue_positions` | No rows | Any row |
-| Paid but no order | `stripe_charges_without_order` | No rows | Any row: confirm in Stripe that the intent succeeded and has no order, then refund it. Do not refund from `STRIPE_ORDER_FAILED` audit rows alone: a later attempt may have fulfilled the order |
+| Paid but no order | `stripe_charges_without_order` | No rows | Any row with `holds_still_confirmed = 0` (NULL means no readable hold ids: investigate, don't refund): confirm in Stripe that the intent succeeded and has no order, then refund it. While any hold is still confirmed, checkout with that intent can still create the order, even after a refund. So wait for the holds to be released or swept. Don't go by elapsed time: each checkout page visit extends them. Do not refund from audit rows alone: a later attempt may have fulfilled the order |
 | Lock timeouts | Application log: `WARN ... Transaction lock wait timed out on <uri>` | Rare | Sustained on `/queue/join` during an on-sale: see below |
 | Pool exhaustion | Application log: Hikari `Connection is not available, request timed out` | Never | Any occurrence; most likely during a burst of queue joins (see below) |
+| Paid, no order, no audit row | Application log: `ERROR ... Charge succeeded, order not created, and the audit row could not be written` | Never | Any occurrence: `stripe_charges_without_order` cannot see this charge. Take `stripe_intent` and `holdIds` from the log line. Check Stripe and `payment_records`, and refund only once none of those holds is CONFIRMED in `seat_holds` |
 
 During an on-sale, watch `lock_waiters`, `connections_by_state` and `advisory_locks_held`, polling every 10 to 30 seconds. Run them with the session settings at the top of the SQL file and autocommit on. Short waits are normal. Many sessions waiting for close to the limit, or active connections at 10 per instance, mean the pool is the bottleneck.
 
@@ -101,9 +102,10 @@ Not measured: more than one instance, a real network between app and database, a
 
 ## Known limits
 
-- Releasing a hold puts the user's queue entry back to `ADMITTED` without the capacity check, so a capped queue can briefly exceed its capacity by the number of users who released holds.
+- Releasing a hold puts the user's queue entry back to `ADMITTED` without the capacity check, so a capped queue can briefly exceed its capacity by the number of users who released holds. Accepted by the owner on 2026-11-17: those users were already admitted once, and enforcing the cap here would remove a user from the queue for releasing a seat. Revisit if `queue_capacity` must become a hard ceiling.
+- About 100 joins per second per capped event (see the load test above). Accepted by the owner on 2026-11-17 as enough for now. Revisit once real on-sale volumes are known. Raising it means replacing the per-event lock (for example an atomic capacity counter updated with `UPDATE ... WHERE count < capacity`), not tuning.
 - Box-office card sales still write `PAYMENT_PROCESSED` in a separate transaction (a second pooled connection). This is deliberate: it keeps a record of a captured card-present charge if the sale rolls back. Many box-office terminals confirming card sales at the same moment could still exhaust the pool; online checkout no longer can.
-- `STRIPE_ORDER_FAILED` is written for any checkout failure after the charge, including a busy lock or a double submit whose order the other request created. So the audit action alone over-reports charges that need a refund. `stripe_charges_without_order` corrects for this. The follow-up is for the backend not to log a retryable busy failure as a failed order.
+- Refunds for charges without an order are manual. `stripe_charges_without_order` finds them. A busy row (`STRIPE_ORDER_BUSY`) only needs a refund if the customer never completes the order.
 - `admitNextBatch` skips (returns nothing) when another admission for the same event is in progress. The admin "admit" endpoint cannot tell that apart from "nobody to admit".
 - Everything was tested on one application instance. Cross-instance behaviour rests on PostgreSQL advisory locks, which `TransactionLockIT` exercises with a second raw connection.
 - The swagger-ui pin in `backend/pom.xml` should be removed once a springdoc release ships swagger-ui 5.35.0 or later.

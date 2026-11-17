@@ -50,11 +50,23 @@ class RolloutChecksIT extends PostgresIT {
   @Test
   void stripeChargesWithoutOrder_leavesOutIntentsThatGotAnOrderLater() throws Exception {
     UUID user = newUser("paid@test.com");
-    // Two failed attempts for an intent whose order was never created.
-    failedStripeOrder(user, "pi_orphan");
-    failedStripeOrder(user, "pi_orphan");
-    // A failed attempt for an intent that a later attempt turned into an order.
-    failedStripeOrder(user, "pi_fulfilled");
+    // A busy attempt then a failed one for an intent whose order was never created.
+    failedStripeOrder(user, "pi_orphan", "STRIPE_ORDER_BUSY");
+    failedStripeOrder(user, "pi_orphan", "STRIPE_ORDER_FAILED");
+    // Only busy attempts so far, still no order, and its hold is still confirmed.
+    Event event = eventRepository.save(
+        new Event("Paid Concert", null, Instant.now().plusSeconds(86400), (UUID) null));
+    Seat seat = seatRepository.save(new Seat(event, "A", "1", "1", new BigDecimal("10.00")));
+    UUID holdId = seatHoldService.createHold(event.getId(), List.of(seat.getId()), user, 10).get(0).getId();
+    seatHoldService.confirmHold(holdId, user);
+    failedStripeOrder(user, "pi_busy", "STRIPE_ORDER_BUSY", holdId);
+    // Details with no hold ids to read: reported, but never as safe to refund.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), user, "Charge succeeded but order creation failed: stripe_intent=pi_legacy");
+    // A busy attempt for an intent that a later attempt turned into an order.
+    failedStripeOrder(user, "pi_fulfilled", "STRIPE_ORDER_BUSY");
     UUID order = UUID.randomUUID();
     jdbcTemplate.update(
         "INSERT INTO orders (id, user_id, status, total_amount, currency, created_at)"
@@ -67,9 +79,21 @@ class RolloutChecksIT extends PostgresIT {
 
     List<Map<String, Object>> rows =
         jdbcTemplate.queryForList(checks().get("stripe_charges_without_order"));
-    assertThat(rows).hasSize(1);
-    assertThat(rows.get(0)).containsEntry("payment_intent", "pi_orphan");
-    assertThat(((Number) rows.get(0).get("failed_attempts")).intValue()).isEqualTo(2);
+    assertThat(rows).extracting(row -> row.get("payment_intent"))
+        .containsExactlyInAnyOrder("pi_orphan", "pi_busy", "pi_legacy");
+    Map<String, Object> legacy = rows.stream()
+        .filter(row -> "pi_legacy".equals(row.get("payment_intent"))).findFirst().orElseThrow();
+    assertThat(legacy.get("holds_still_confirmed")).isNull();
+    Map<String, Object> orphan = rows.stream()
+        .filter(row -> "pi_orphan".equals(row.get("payment_intent"))).findFirst().orElseThrow();
+    assertThat(((Number) orphan.get("failed_attempts")).intValue()).isEqualTo(2);
+    assertThat(orphan).containsEntry("busy_only", false);
+    assertThat(((Number) orphan.get("holds_still_confirmed")).intValue()).isZero();
+    Map<String, Object> busy = rows.stream()
+        .filter(row -> "pi_busy".equals(row.get("payment_intent"))).findFirst().orElseThrow();
+    assertThat(busy).containsEntry("busy_only", true);
+    // Not safe to refund yet: checkout with this intent could still create the order.
+    assertThat(((Number) busy.get("holds_still_confirmed")).intValue()).isEqualTo(1);
   }
 
   @Test
@@ -138,14 +162,18 @@ class RolloutChecksIT extends PostgresIT {
     }
   }
 
-  private void failedStripeOrder(UUID user, String paymentIntentId) {
-    // Same details format as PaymentController.checkout writes.
+  private void failedStripeOrder(UUID user, String paymentIntentId, String action) {
+    failedStripeOrder(user, paymentIntentId, action, UUID.randomUUID());
+  }
+
+  private void failedStripeOrder(UUID user, String paymentIntentId, String action, UUID holdId) {
+    // Same details format as PaymentController writes (List.toString of the hold ids).
     jdbcTemplate.update(
         "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
-            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
-        UUID.randomUUID(), user,
+            + " VALUES (?, ?, ?, 'PAYMENT', ?, now())",
+        UUID.randomUUID(), user, action,
         "Charge succeeded but order creation failed: stripe_intent=" + paymentIntentId
-            + ", holdIds=[" + UUID.randomUUID() + "], error=LockBusyException");
+            + ", holdIds=" + List.of(holdId) + ", error=RuntimeException");
   }
 
   private static String strip(StringBuilder sql) {
