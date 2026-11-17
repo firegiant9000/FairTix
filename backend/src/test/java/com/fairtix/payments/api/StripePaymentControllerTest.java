@@ -64,6 +64,7 @@ class StripePaymentControllerTest {
   @Autowired private JdbcTemplate jdbcTemplate;
 
   @Autowired private OrderRepository orderRepository;
+  @Autowired private jakarta.persistence.EntityManager entityManager;
 
   @MockitoSpyBean
   private StripePaymentService stripePaymentService;
@@ -352,7 +353,9 @@ class StripePaymentControllerTest {
         java.util.UUID.fromString(com.jayway.jsonpath.JsonPath.read(first, "$.orderId")))
         .orElseThrow();
     order.setStatus(OrderStatus.REFUNDED);
-    orderRepository.save(order);
+    orderRepository.saveAndFlush(order);
+    // The replay must read the status from the database, not this session's copy.
+    entityManager.clear();
 
     mockMvc.perform(post("/api/payments/checkout")
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))

@@ -257,8 +257,11 @@ public class PaymentController {
           "This payment has already been used for a different order");
     }
     if (order.getStatus() == OrderStatus.REFUNDED) {
-      // Same answer as a refunded intent at first submit, so the client shows its
-      // refunded screen instead of an order confirmation.
+      // An order refunded through FairTix gets the client's refunded screen, not a
+      // confirmation. The replay does not call Stripe: a refund or dispute made
+      // only at Stripe leaves the order COMPLETED, and the order (and its tickets)
+      // does exist, so it is returned. The charge.refunded webhook alerts on such
+      // refunds (REFUND_ON_LIVE_ORDER).
       throw new PaymentRefundedException(paymentIntentId, "order refunded");
     }
     return PaymentResponse.from(record, order.getStatus());
@@ -372,9 +375,24 @@ public class PaymentController {
         auditStripeOrderNotCreatedSafely(
             principal.getUserId(), request.holdIds(), paymentIntentId, ex);
         // A concurrent submit with the same intent may have created the order while
-        // this one failed on the released holds or the unique transaction id.
-        PaymentResponse replay = replayStripeCheckout(
-            principal.getUserId(), request.holdIds(), paymentIntentId);
+        // this one failed on the released holds or the unique transaction id. If the
+        // lookup itself fails (or refuses), keep the original failure on record.
+        PaymentResponse replay;
+        try {
+          replay = replayStripeCheckout(principal.getUserId(), request.holdIds(), paymentIntentId);
+        } catch (RuntimeException replayFailure) {
+          log.warn("Checkout failed and the replay lookup did not return an order:"
+              + " stripe_intent={}, error={}, replay={}", paymentIntentId,
+              ex.getClass().getSimpleName(), replayFailure.getClass().getSimpleName());
+          if (replayFailure instanceof ResponseStatusException
+              || replayFailure instanceof PaymentRefundedException) {
+            // A deliberate answer about this intent (other user, other holds, refunded).
+            replayFailure.addSuppressed(ex);
+            throw replayFailure;
+          }
+          ex.addSuppressed(replayFailure);
+          throw ex;
+        }
         if (replay != null) {
           return replay;
         }
