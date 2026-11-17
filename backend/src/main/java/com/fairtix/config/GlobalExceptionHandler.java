@@ -396,9 +396,13 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(PaymentRefundedException.class)
   public ResponseEntity<Map<String, Object>> handlePaymentRefunded(
       PaymentRefundedException ex, HttpServletRequest req) {
-    log.warn("Rejected refunded PaymentIntent: stripe_intent={}", ex.getPaymentIntentId());
+    log.warn("Rejected PaymentIntent at checkout: stripe_intent={}, reason={}",
+        ex.getPaymentIntentId(), ex.getReason());
+    // Not "start a new checkout": with the same holds, the intent idempotency key
+    // returns this same intent again, so the customer can't pay on their own.
     return error(HttpStatus.CONFLICT, "PAYMENT_REFUNDED",
-        "This payment has been refunded and can't be used for an order. Start a new checkout.",
+        "This payment has been refunded or disputed, so it can't complete an order."
+            + " Please contact support.",
         req);
   }
 

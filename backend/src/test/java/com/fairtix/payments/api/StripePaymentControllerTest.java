@@ -172,7 +172,7 @@ class StripePaymentControllerTest {
 
   @Test
   void checkout_withRefundedIntent_isRejectedWithoutOrderFailedAudit() throws Exception {
-    doThrow(new PaymentRefundedException("pi_refunded"))
+    doThrow(new PaymentRefundedException("pi_refunded", "refunded"))
         .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
 
     String body = """

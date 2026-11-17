@@ -189,9 +189,10 @@ public class StripePaymentService {
    * True when the intent succeeded for exactly {@code expectedAmountCents}.
    *
    * <p>Stripe leaves {@code status} and {@code amount_received} unchanged after a
-   * refund, so the latest charge is expanded and any refunded amount (full or
-   * partial) throws {@link PaymentRefundedException}: a refunded intent must not
-   * become an order.
+   * refund or dispute, so the latest charge is expanded and any refunded amount
+   * (full or partial) or open dispute throws {@link PaymentRefundedException}:
+   * such an intent must not become an order. This runs once, before the order is
+   * written; a refund that lands during order creation is not caught here.
    */
   public boolean verifyPaymentSucceeded(String paymentIntentId, long expectedAmountCents) {
     try {
@@ -203,8 +204,18 @@ public class StripePaymentService {
         return false;
       }
       Charge charge = intent.getLatestChargeObject();
-      if (charge != null && charge.getAmountRefunded() != null && charge.getAmountRefunded() > 0) {
-        throw new PaymentRefundedException(paymentIntentId);
+      if (charge == null) {
+        // A succeeded intent always has a charge; null means the expand was lost.
+        // Fail open (status and amount already check out) but make the gap visible.
+        log.warn("Succeeded PaymentIntent {} has no expanded latest_charge; refund check skipped",
+            paymentIntentId);
+        return true;
+      }
+      if (charge.getAmountRefunded() != null && charge.getAmountRefunded() > 0) {
+        throw new PaymentRefundedException(paymentIntentId, "refunded");
+      }
+      if (Boolean.TRUE.equals(charge.getDisputed())) {
+        throw new PaymentRefundedException(paymentIntentId, "disputed");
       }
       return true;
     } catch (CardException e) {

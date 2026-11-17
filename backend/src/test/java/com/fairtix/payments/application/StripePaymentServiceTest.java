@@ -114,6 +114,19 @@ class StripePaymentServiceTest {
   }
 
   @Test
+  void verifyPaymentSucceeded_disputed_throwsPaymentRefunded() {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent intent = succeededIntent(5000L, 0L);
+      when(intent.getLatestChargeObject().getDisputed()).thenReturn(true);
+      stubVerifyRetrieve(mocked, "pi_disputed", intent);
+
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_disputed", 5000L))
+          .isInstanceOf(PaymentRefundedException.class)
+          .hasMessageContaining("disputed");
+    }
+  }
+
+  @Test
   void verifyPaymentSucceeded_withoutLatestCharge_returnsTrue() throws Exception {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
       stubVerifyRetrieve(mocked, "pi_no_charge", succeededIntent(5000L, null));

@@ -116,15 +116,17 @@ GROUP BY granted;
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --
--- Checkout rejects a refunded intent (409 PAYMENT_REFUNDED), so a refund can no
--- longer turn into an order later, whatever the hold state. Still prefer rows
--- with holds_still_confirmed = 0: while a hold is CONFIRMED the customer may be
--- about to complete the order themselves (the checkout page offers "Complete
--- Order" after a busy failure), and refunding then fails their attempt.
+-- Refund a row only when holds_still_confirmed = 0. While any of the charge's
+-- holds is still CONFIRMED, the customer can still complete the order (the
+-- checkout page offers "Complete Order" after a failure). Checkout rejects an
+-- intent that is already refunded (409 PAYMENT_REFUNDED), but that check runs
+-- once, before the order is written: a refund landing during order creation
+-- (seconds, with lock retries) still becomes a live order with nothing to flag
+-- it. Treat the 409 as defence in depth, not as permission to refund early.
 -- Elapsed time is no guide, because each visit to the checkout page extends
--- confirmed holds. NULL means the audit details carry no readable hold ids:
--- investigate before refunding. busy_only = true means every attempt so far
--- failed on a busy lock.
+-- confirmed holds. NULL means the audit details carry no readable hold ids: do
+-- not refund, investigate. busy_only = true means every attempt so far failed
+-- on a busy lock.
 SELECT f.payment_intent,
        f.user_id,
        MIN(f.created_at)                         AS first_failed_at,
