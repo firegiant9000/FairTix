@@ -10,6 +10,7 @@ let Checkout;
 const originalKey = process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY;
 
 const mockConfirmCardPayment = jest.fn();
+const mockNavigate = jest.fn();
 
 jest.mock('@stripe/stripe-js', () => ({
   loadStripe: jest.fn(() => Promise.resolve({})),
@@ -31,7 +32,7 @@ jest.mock('../api/client', () => ({
 
 jest.mock('react-router-dom', () => ({
   ...jest.requireActual('react-router-dom'),
-  useNavigate: () => jest.fn(),
+  useNavigate: () => mockNavigate,
   useLocation: () => ({ state: { holdIds: ['hold-1'] } }),
 }));
 
@@ -203,8 +204,34 @@ test('Complete Order after a busy 409 resubmits the paid checkout without asking
   ]);
 });
 
-test('Try Again after a non-busy checkout failure returns to the card form', async () => {
-  mockPost({ status: 402, message: 'Payment failed', body: { failureReason: 'Payment failed' } });
+test('a 402 after the charge (amount mismatch) stays on the paid screen', async () => {
+  mockPost({ status: 402, message: 'Stripe payment has not succeeded' });
+  mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
+
+  renderCheckout();
+  await clickPay();
+
+  expect(await screen.findByText(/your payment went through/i)).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: /my tickets/i })).toHaveAttribute('href', '/my-tickets');
+  expect(screen.queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument();
+});
+
+test('a refunded payment gets a final screen with no retry', async () => {
+  const message = "This payment has been refunded or disputed, so it can't complete an order. Please contact support.";
+  mockPost({ status: 409, code: 'PAYMENT_REFUNDED', message });
+  mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
+
+  renderCheckout();
+  await clickPay();
+
+  expect(await screen.findByText(message)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /try again|complete order/i })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /back to my holds/i }));
+  expect(mockNavigate).toHaveBeenCalledWith('/my-holds');
+});
+
+test('Try Again after a card decline returns to the card form', async () => {
+  mockPost({ status: 422, code: 'CARD_DECLINED', message: 'Your card was declined.' });
   mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
 
   renderCheckout();

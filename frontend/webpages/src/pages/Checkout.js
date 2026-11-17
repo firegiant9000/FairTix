@@ -13,11 +13,12 @@ const stripePromise = stripeEnabled
   : null;
 
 // A Stripe checkout reaches the server only after confirmCardPayment succeeded,
-// so its failure means "charged, no order" unless the server says the intent
-// itself is unusable: 402 (not succeeded), 422 (card declined) or a refund.
+// so its failure means "charged, no order" unless the server says the card was
+// declined (422) or the payment was refunded (PAYMENT_REFUNDED, its own screen).
+// A 402 here means the charged amount didn't match the order total: still paid.
 function isPaidButNotOrdered(payload, err) {
   if (!payload.paymentIntentId) return false;
-  if (err.status === 402 || err.status === 422) return false;
+  if (err.status === 422) return false;
   return err.code !== 'PAYMENT_REFUNDED';
 }
 
@@ -83,7 +84,7 @@ function Checkout() {
 
   const [cardNumber, setCardNumber] = useState('');
   const [paymentError, setPaymentError] = useState('');
-  const [paymentState, setPaymentState] = useState('form'); // form | processing | success | failed | step-up
+  const [paymentState, setPaymentState] = useState('form'); // form | processing | success | failed | refunded | step-up
   const [stepUpAction, setStepUpAction] = useState(null);
   const [stepUpCaptchaToken, setStepUpCaptchaToken] = useState('');
   const [stepUpError, setStepUpError] = useState('');
@@ -212,7 +213,9 @@ function Checkout() {
         return;
       }
       setPaidRetryPayload(isPaidButNotOrdered(payload, err) ? payload : null);
-      setPaymentState('failed');
+      // A refunded intent can never complete an order, and the same holds get the
+      // same intent back, so neither Try Again nor the card form can help.
+      setPaymentState(err.code === 'PAYMENT_REFUNDED' ? 'refunded' : 'failed');
       setPaymentError(
         err.body?.failureReason
           || err.message
@@ -514,17 +517,29 @@ function Checkout() {
         <div className="checkout-payment-failed">
           <div className="checkout-error">
             <p>
-              Your payment went through, but your order isn&apos;t complete yet.
+              Your payment went through, but we couldn&apos;t confirm your order.
               Select Complete Order to finish it — you won&apos;t be charged again.
             </p>
             {paymentError && <p>{paymentError}</p>}
             <p>
-              If this keeps failing, contact support and your payment will be refunded.
+              Check <Link to="/my-tickets">My Tickets</Link> first: your tickets may already
+              be there. If this keeps failing, contact support and your payment will be refunded.
             </p>
           </div>
           <div className="checkout-actions">
             <button className="checkout-btn-primary" onClick={handleRetry}>
               Complete Order
+            </button>
+          </div>
+        </div>
+      )}
+
+      {paymentState === 'refunded' && (
+        <div className="checkout-payment-failed">
+          <div className="checkout-error">{paymentError}</div>
+          <div className="checkout-actions">
+            <button className="checkout-btn-secondary" onClick={() => navigate('/my-holds')}>
+              Back to My Holds
             </button>
           </div>
         </div>
