@@ -2,7 +2,21 @@ const API_BASE = process.env.REACT_APP_API_URL || '';
 
 let refreshPromise = null;
 
-async function apiRequest(path, options = {}, isRetry = false) {
+// The server answers 409 REQUEST_IN_PROGRESS when another request from the same
+// user (or, for a capped queue, another join) still holds the lock it needs. It
+// guarantees nothing was written, so the request is safe to repeat as it is.
+const BUSY_CODE = 'REQUEST_IN_PROGRESS';
+const BUSY_RETRIES = 2;
+const BUSY_BASE_DELAY_MS = 300;
+
+function busyRetryDelay(attempt) {
+  // 300 ms then 600 ms, plus up to 200 ms of jitter so a burst does not retry in step.
+  return BUSY_BASE_DELAY_MS * attempt + Math.floor(Math.random() * 200);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function apiRequest(path, options = {}, isRetry = false, busyAttempt = 0) {
   const headers = {
     ...options.headers,
   };
@@ -43,7 +57,7 @@ async function apiRequest(path, options = {}, isRetry = false) {
     try {
       const refreshResponse = await refreshPromise;
       if (refreshResponse.ok) {
-        return apiRequest(path, options, true);
+        return apiRequest(path, options, true, busyAttempt);
       }
     } catch (_) {
       // network error during refresh — fall through to logout
@@ -64,6 +78,10 @@ async function apiRequest(path, options = {}, isRetry = false) {
     } catch {
       error = new Error('Request failed');
       error.status = response.status;
+    }
+    if (error.status === 409 && error.code === BUSY_CODE && busyAttempt < BUSY_RETRIES) {
+      await sleep(busyRetryDelay(busyAttempt + 1));
+      return apiRequest(path, options, isRetry, busyAttempt + 1);
     }
     throw error;
   }

@@ -134,6 +134,45 @@ test('428 response does not trigger token refresh loop', async () => {
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
+const busy = () =>
+  mockResponse(409, {
+    code: 'REQUEST_IN_PROGRESS',
+    message: 'Another request is still being processed; try again in a moment',
+  });
+
+test('409 REQUEST_IN_PROGRESS is retried and the later success is returned', async () => {
+  global.fetch
+    .mockReturnValueOnce(busy())
+    .mockReturnValueOnce(mockResponse(201, { id: 'hold-1' }));
+
+  const result = await api.post('/api/events/1/holds', { seatIds: ['s1'] });
+
+  expect(result).toEqual({ id: 'hold-1' });
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(fetch.mock.calls[1][1]).toEqual(fetch.mock.calls[0][1]);
+});
+
+test('409 REQUEST_IN_PROGRESS gives up after two retries with the server message', async () => {
+  global.fetch.mockReturnValue(busy());
+
+  await expect(api.post('/api/events/1/queue/join')).rejects.toMatchObject({
+    status: 409,
+    code: 'REQUEST_IN_PROGRESS',
+    message: 'Another request is still being processed; try again in a moment',
+  });
+  expect(fetch).toHaveBeenCalledTimes(3);
+});
+
+test('other 409 conflicts are not retried', async () => {
+  global.fetch.mockReturnValue(mockResponse(409, { code: 'PURCHASE_CAP_EXCEEDED', message: 'cap' }));
+
+  await expect(api.post('/api/payments/intent', {})).rejects.toMatchObject({
+    status: 409,
+    code: 'PURCHASE_CAP_EXCEEDED',
+  });
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
 test('428 with missing action defaults to UNKNOWN', async () => {
   const listener = jest.fn();
   window.addEventListener('auth:step-up-required', listener);
