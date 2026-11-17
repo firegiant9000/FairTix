@@ -119,9 +119,16 @@ GROUP BY granted;
 -- not_verified = true marks a row with any such attempt. For those, open the
 -- intent in Stripe first: if it never succeeded there is nothing to refund.
 -- Their listed holds are the ones submitted, which may not be the ones the
--- intent paid for: before refunding, also check that the amount in Stripe
--- matches those holds, or that the user has no other CONFIRMED hold for the
--- event. Intents that got an
+-- intent paid for, so holds_still_confirmed = 0 is not enough on its own. A
+-- retry with the paid holds can still create the order. Before refunding, also
+-- confirm that the user has no CONFIRMED hold at all for the event (replace
+-- the two ids):
+--   SELECT h.id FROM seat_holds h JOIN seats s ON s.id = h.seat_id
+--   WHERE h.owner_id = '<user_id>' AND h.status = 'CONFIRMED'
+--     AND s.event_id = (SELECT s2.event_id FROM seat_holds h2
+--                       JOIN seats s2 ON s2.id = h2.seat_id
+--                       WHERE h2.id = '<a listed hold id>');
+-- Refund only if that returns no rows. Intents that got an
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --
