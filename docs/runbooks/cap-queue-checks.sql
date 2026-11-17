@@ -120,7 +120,9 @@ GROUP BY granted;
 -- holds is still CONFIRMED, checkout with that intent can still create the
 -- order, even after a refund: verification does not look at refunds. Elapsed
 -- time is no guide, because each visit to the checkout page extends confirmed
--- holds. busy_only = true means every attempt so far failed on a busy lock.
+-- holds. NULL means the audit details carry no readable hold ids: do not
+-- refund, investigate. busy_only = true means every attempt so far failed on
+-- a busy lock.
 SELECT f.payment_intent,
        f.user_id,
        MIN(f.created_at)                         AS first_failed_at,
@@ -133,15 +135,17 @@ FROM (
          a.user_id,
          a.action,
          a.created_at,
-         (SELECT COUNT(*)
-          FROM seat_holds h
-          WHERE h.status = 'CONFIRMED'
-            AND h.id::text IN (
-              SELECT m.hold[1]
-              FROM regexp_matches(
-                     coalesce(substring(a.details from 'holdIds=\[([^]]*)\]'), ''),
-                     '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
-                     'g') AS m(hold))) AS holds_still_confirmed
+         CASE WHEN a.details ~ 'holdIds=\[[^]]*[0-9a-f]{8}-' THEN
+           (SELECT COUNT(*)
+            FROM seat_holds h
+            WHERE h.status = 'CONFIRMED'
+              AND h.id::text IN (
+                SELECT m.hold[1]
+                FROM regexp_matches(
+                       substring(a.details from 'holdIds=\[([^]]*)\]'),
+                       '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
+                       'g') AS m(hold)))
+         END AS holds_still_confirmed
   FROM audit_logs a
   WHERE a.action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')
     AND a.created_at > now() - interval '14 days'

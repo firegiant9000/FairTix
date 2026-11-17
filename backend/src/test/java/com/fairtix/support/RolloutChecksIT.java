@@ -60,6 +60,11 @@ class RolloutChecksIT extends PostgresIT {
     UUID holdId = seatHoldService.createHold(event.getId(), List.of(seat.getId()), user, 10).get(0).getId();
     seatHoldService.confirmHold(holdId, user);
     failedStripeOrder(user, "pi_busy", "STRIPE_ORDER_BUSY", holdId);
+    // Details with no hold ids to read: reported, but never as safe to refund.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), user, "Charge succeeded but order creation failed: stripe_intent=pi_legacy");
     // A busy attempt for an intent that a later attempt turned into an order.
     failedStripeOrder(user, "pi_fulfilled", "STRIPE_ORDER_BUSY");
     UUID order = UUID.randomUUID();
@@ -75,7 +80,10 @@ class RolloutChecksIT extends PostgresIT {
     List<Map<String, Object>> rows =
         jdbcTemplate.queryForList(checks().get("stripe_charges_without_order"));
     assertThat(rows).extracting(row -> row.get("payment_intent"))
-        .containsExactlyInAnyOrder("pi_orphan", "pi_busy");
+        .containsExactlyInAnyOrder("pi_orphan", "pi_busy", "pi_legacy");
+    Map<String, Object> legacy = rows.stream()
+        .filter(row -> "pi_legacy".equals(row.get("payment_intent"))).findFirst().orElseThrow();
+    assertThat(legacy.get("holds_still_confirmed")).isNull();
     Map<String, Object> orphan = rows.stream()
         .filter(row -> "pi_orphan".equals(row.get("payment_intent"))).findFirst().orElseThrow();
     assertThat(((Number) orphan.get("failed_attempts")).intValue()).isEqualTo(2);
