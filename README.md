@@ -19,7 +19,11 @@ webhooks.
 > drills). See the 2026-09 revision at the top of
 > [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md) and the audit in
 > [docs/roadmap-review-2026-09.md](docs/roadmap-review-2026-09.md).
-> No number below is a measured result until it appears under `docs/experiments/`.
+> Built so far: the real-Postgres contention tests and the lab's bootstrap,
+> canary and teardown code. The lab itself, multi-instance tests, tracing and
+> k6 load tests are not built (see [Limitations](#limitations)).
+> No number below is a measured result unless it links to `docs/experiments/`
+> or to a runbook that records the run.
 
 <!-- Screenshots: docs/screenshots/ does not exist yet. Capture the event page,
      the waiting room, the seat map with a live hold, and the organizer
@@ -42,6 +46,15 @@ webhooks.
   [`QueueSseService`](backend/src/main/java/com/fairtix/queue/application/QueueSseService.java)
   pushes position updates to each connected browser. Creating a hold checks
   admission first, so skipping the queue is not possible from the client.
+- **Purchase caps and queue capacity hold under concurrency.** Overlapping
+  holds, checkouts, transfer acceptances and joins to a capped queue are
+  serialised with PostgreSQL advisory locks, per (event, user) for the cap
+  (`PurchaseCapGuard`) and per event for the queue (`QueueService`). A request
+  that waits too long gets 409 `REQUEST_IN_PROGRESS`. Stripe checkout checks
+  the cap before the PaymentIntent is created, so an over-cap order is refused
+  before any charge. Tested on one application instance; see the
+  [rollout runbook](docs/runbooks/cap-queue-rollout.md) for the checks, the
+  known limits and one measured burst of queue joins.
 - **Fraud scoring with step-up authentication.** The
   [`fraud`](backend/src/main/java/com/fairtix/fraud) package scores orders from
   suspicious-activity flags, payment failures and account age
@@ -51,8 +64,9 @@ webhooks.
 - **Stripe webhooks are signature-verified.**
   [`StripeWebhookController`](backend/src/main/java/com/fairtix/payments/api/StripeWebhookController.java)
   reconstructs every event with `Webhook.constructEvent` and rejects anything
-  that fails verification. Refund completion is not yet idempotent against a
-  redelivered event; see Limitations.
+  that fails verification. Refund completion is a conditional update
+  (`completeIfActive`), so a redelivered `charge.refunded` does nothing once
+  the refund is complete.
 - **Rate limiting and abuse controls.** Per-route limits keyed by user or IP
   through Redisson rate limiters (`RateLimitService`), login-attempt tracking,
   reCAPTCHA on login, and velocity limits on ticket transfers.
@@ -147,7 +161,8 @@ The CI workflow
 ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull
 request and on push to `main`: `./mvnw clean verify` with a Redis service
 container, the frontend suite with coverage, OWASP Dependency-Check, and a
-Trivy image scan.
+Trivy image scan. On `main` at `58014c3` (2026-11-17) that run passed 622
+`*Test` tests, 110 `*IT` tests and 189 frontend tests.
 
 ## Security notes
 
@@ -191,18 +206,27 @@ Trivy image scan.
 - Never deployed; no real traffic, no production hardening beyond the above.
 - The SSE registry is in-memory, so the waiting room works on a single backend
   instance only.
-- Refund webhooks are verified but not deduplicated. A redelivered
-  `charge.refunded` event can re-run refund completion.
+- Webhook events are not recorded by event id. Redelivery is handled per
+  handler (refund completion is a conditional update), not by a general
+  deduplication table.
 - The PostgreSQL test suites run a single application instance with the
   `@Scheduled` jobs off, so multi-instance behaviour is untested.
 - The AWS lab is not built: `infra/` holds the bootstrap, canary and teardown
   code only (see [docs/infra/README.md](docs/infra/README.md)).
-- Ten `@Scheduled` jobs run on every replica; there is no leader election.
-- Stripe calls carry no idempotency keys and run inside database transactions.
+- Eleven `@Scheduled` jobs run on every replica; there is no leader election.
+- PaymentIntent and refund calls to Stripe carry idempotency keys and run
+  outside database transactions. Connect account creation is keyed too but
+  still runs inside one.
+- The purchase-cap and queue-capacity locks were tested on one application
+  instance. A capped queue admits about 100 joins per second per event on a
+  laptop (one run each; see the
+  [rollout runbook](docs/runbooks/cap-queue-rollout.md)).
 - With Redis down, the rate limiter fails closed (503) on the credential
   endpoints (login, registration, verification, password reset, step-up) and
   open everywhere else.
-- No end-to-end browser tests, no load test, no metrics or tracing.
+- No end-to-end browser tests, no k6 or multi-instance load test (the only
+  load measurement is the opt-in, single-instance `QueueJoinLoadIT`), no
+  metrics or tracing.
 
 ## Team and contributions
 
@@ -218,7 +242,8 @@ pull requests (M1 to M8). Sole author of the `queue` (SSE waiting room) and
 trail, the CI pipeline, and most of the React frontend.
 
 **Teammates:** Maddux Vitrano (dependency upgrades, method security, the logo,
-early inventory work, and the webcrawler tooling in the open PR); Zoe
+early inventory work, and the webcrawler tooling in PR #76, which was closed
+without merging); Zoe
 Dominguez (reCAPTCHA integration, rate-limit keying and tests, payment-record
 migrations, Redis in CI); Matheus Nery (service tests and backend fixes);
 Sophie LaGraize (request logging with MDC, login and signup error handling);
