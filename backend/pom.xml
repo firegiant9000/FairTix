@@ -228,6 +228,8 @@
             <!-- Hits Stripe's test-mode API and needs STRIPE_TEST_SECRET_KEY; gated, not
                  part of the container suite. Run it on demand with -Dit.test=StripeRefundIntegrationIT. -->
             <exclude>**/StripeRefundIntegrationIT.java</exclude>
+            <!-- Opt-in load measurement; run with -Dit.test=QueueJoinLoadIT. -->
+            <exclude>**/QueueJoinLoadIT.java</exclude>
           </excludes>
         </configuration>
         <executions>
