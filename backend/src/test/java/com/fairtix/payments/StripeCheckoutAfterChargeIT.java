@@ -171,14 +171,17 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
   }
 
   /**
-   * A double submit: the first checkout creates the order, the second with the
-   * same intent finds the holds no longer confirmed and fails. Nothing is owed to
-   * the customer, so no refund row is written.
+   * A double submit, or a resubmit after a lost response: the first checkout
+   * creates the order, the second with the same intent gets that order back.
+   * Nothing is owed to the customer, so no refund row is written.
    */
   @Test
-  void secondCheckoutForAFulfilledIntent_failsWithoutARefundRow() throws Exception {
-    checkout().andExpect(status().isCreated());
-    checkout().andExpect(status().is4xxClientError());
+  void secondCheckoutForAFulfilledIntent_returnsTheOrderWithoutARefundRow() throws Exception {
+    String first = checkout().andExpect(status().isCreated())
+        .andReturn().getResponse().getContentAsString();
+    String orderId = com.jayway.jsonpath.JsonPath.read(first, "$.orderId");
+    checkout().andExpect(status().isCreated())
+        .andExpect(jsonPath("$.orderId").value(orderId));
 
     assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
     assertThat(count(

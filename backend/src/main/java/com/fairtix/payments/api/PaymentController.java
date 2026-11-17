@@ -14,6 +14,7 @@ import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.domain.Plan;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.payments.application.PaymentFailedException;
+import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.payments.application.PaymentSimulationService;
 import com.fairtix.payments.application.StripeIdempotencyKeys;
 import com.fairtix.payments.application.StripePaymentService;
@@ -255,6 +256,11 @@ public class PaymentController {
       throw new ResponseStatusException(HttpStatus.CONFLICT,
           "This payment has already been used for a different order");
     }
+    if (order.getStatus() == OrderStatus.REFUNDED) {
+      // Same answer as a refunded intent at first submit, so the client shows its
+      // refunded screen instead of an order confirmation.
+      throw new PaymentRefundedException(paymentIntentId, "order refunded");
+    }
     return PaymentResponse.from(record, order.getStatus());
   }
 
@@ -365,6 +371,13 @@ public class PaymentController {
       } catch (RuntimeException ex) {
         auditStripeOrderNotCreatedSafely(
             principal.getUserId(), request.holdIds(), paymentIntentId, ex);
+        // A concurrent submit with the same intent may have created the order while
+        // this one failed on the released holds or the unique transaction id.
+        PaymentResponse replay = replayStripeCheckout(
+            principal.getUserId(), request.holdIds(), paymentIntentId);
+        if (replay != null) {
+          return replay;
+        }
         throw ex;
       }
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();

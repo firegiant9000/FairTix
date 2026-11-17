@@ -9,7 +9,12 @@ import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
+import com.fairtix.orders.application.OrderService;
+import com.fairtix.orders.domain.Order;
+import com.fairtix.orders.domain.OrderStatus;
+import com.fairtix.orders.infrastructure.OrderRepository;
 import com.fairtix.payments.application.PaymentRefundedException;
+import com.fairtix.queue.application.QueueService;
 import com.fairtix.payments.application.StripePaymentService;
 import com.fairtix.payments.application.StripePaymentService.ConnectContext;
 import com.fairtix.users.domain.User;
@@ -34,6 +39,8 @@ import java.time.Instant;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
@@ -56,8 +63,16 @@ class StripePaymentControllerTest {
   @Autowired private PasswordEncoder passwordEncoder;
   @Autowired private JdbcTemplate jdbcTemplate;
 
+  @Autowired private OrderRepository orderRepository;
+
   @MockitoSpyBean
   private StripePaymentService stripePaymentService;
+
+  @MockitoSpyBean
+  private OrderService orderService;
+
+  @MockitoSpyBean
+  private QueueService queueService;
 
   private MockMvc mockMvc;
   private User user;
@@ -320,6 +335,86 @@ class StripePaymentControllerTest {
     org.assertj.core.api.Assertions.assertThat(
         seatHoldRepository.findById(secondHold.getId()).orElseThrow().getStatus())
         .isEqualTo(HoldStatus.CONFIRMED);
+  }
+
+  /** A refunded order must not be replayed as a confirmation. */
+  @Test
+  void checkout_replayOfRefundedOrder_answersPaymentRefunded() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    String body = checkoutBody(confirmedHold.getId(), "pi_replay_refunded");
+    String first = mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isCreated())
+        .andReturn().getResponse().getContentAsString();
+    Order order = orderRepository.findById(
+        java.util.UUID.fromString(com.jayway.jsonpath.JsonPath.read(first, "$.orderId")))
+        .orElseThrow();
+    order.setStatus(OrderStatus.REFUNDED);
+    orderRepository.save(order);
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_REFUNDED"));
+  }
+
+  /**
+   * Two submits with the same intent race: the other one created the order while
+   * this one failed on the released holds. This one answers with that order.
+   */
+  @Test
+  void checkout_losingConcurrentSubmit_returnsTheOrderTheWinnerCreated() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doAnswer(inv -> {
+      inv.callRealMethod();
+      throw new IllegalArgumentException("Hold is not confirmed (status: RELEASED)");
+    }).when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_race")))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.orderStatus").value("COMPLETED"));
+
+    Integer orderFailedRows = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED' AND user_id = ?",
+        Integer.class, user.getId());
+    org.assertj.core.api.Assertions.assertThat(orderFailedRows).isZero();
+  }
+
+  /**
+   * Order creation completes the queue entry, so the replay must run before the
+   * queue-clearance check or a resubmit for a queued event gets a 403.
+   */
+  @Test
+  void checkout_replayForQueuedEvent_returnsExistingOrder() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    Event event = confirmedHold.getSeat().getEvent();
+    event.updateQueueSettings(true, null);
+    eventRepository.save(event);
+    doReturn(true).doReturn(false).when(queueService).hasCheckoutClearance(any(), any());
+    doNothing().when(queueService).completeQueueEntry(any(), any());
+
+    String body = checkoutBody(confirmedHold.getId(), "pi_replay_queued");
+    String first = mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isCreated())
+        .andReturn().getResponse().getContentAsString();
+    String orderId = com.jayway.jsonpath.JsonPath.read(first, "$.orderId");
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.orderId").value(orderId));
   }
 
   private SeatHold confirmedHoldFor(User owner, String seatNumber) {
