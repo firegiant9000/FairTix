@@ -129,16 +129,29 @@ GROUP BY granted;
 -- (seconds, with lock retries) still becomes a live order with nothing to flag
 -- it. Treat the 409 as defence in depth, not as permission to refund early.
 -- Elapsed time is no guide, because each visit to the checkout page extends
--- confirmed holds. NULL means the audit details carry no readable hold ids: do
--- not refund, investigate. busy_only = true means every attempt so far failed
--- on a busy lock.
+-- confirmed holds. NULL means at least one attempt's audit details carry no
+-- readable hold ids: do not refund, investigate. busy_only = true means every
+-- attempt so far failed on a busy lock.
+--
+-- escalate = true: the first failure is more than 7 days old and the charge is
+-- still not refundable (some hold CONFIRMED, or unreadable hold ids). Rows drop
+-- out of this 14-day window without ever becoming refundable, so don't wait:
+-- escalate to the repo owner, who decides between releasing the holds (the
+-- charge then becomes refundable) and contacting the customer to finish the
+-- order (Complete Order with this intent can still create it).
 SELECT f.payment_intent,
        f.user_id,
        MIN(f.created_at)                         AS first_failed_at,
        MAX(f.created_at)                         AS last_failed_at,
        COUNT(*)                                  AS failed_attempts,
        bool_and(f.action = 'STRIPE_ORDER_BUSY')  AS busy_only,
-       MAX(f.holds_still_confirmed)              AS holds_still_confirmed
+       -- MAX ignores NULL, so one unreadable attempt must make the whole row NULL.
+       CASE WHEN COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0 THEN NULL
+            ELSE MAX(f.holds_still_confirmed)
+       END                                       AS holds_still_confirmed,
+       MIN(f.created_at) < now() - interval '7 days'
+         AND (COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0
+              OR MAX(f.holds_still_confirmed) > 0) AS escalate
 FROM (
   SELECT substring(a.details from 'stripe_intent=([^,]+)') AS payment_intent,
          a.user_id,
