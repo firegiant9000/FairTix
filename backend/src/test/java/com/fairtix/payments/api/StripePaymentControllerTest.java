@@ -9,6 +9,7 @@ import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
+import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.payments.application.StripePaymentService;
 import com.fairtix.payments.application.StripePaymentService.ConnectContext;
 import com.fairtix.users.domain.User;
@@ -18,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
@@ -33,6 +35,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -49,6 +52,7 @@ class StripePaymentControllerTest {
   @Autowired private SeatRepository seatRepository;
   @Autowired private SeatHoldRepository seatHoldRepository;
   @Autowired private PasswordEncoder passwordEncoder;
+  @Autowired private JdbcTemplate jdbcTemplate;
 
   @MockitoSpyBean
   private StripePaymentService stripePaymentService;
@@ -164,5 +168,33 @@ class StripePaymentControllerTest {
             .contentType(MediaType.APPLICATION_JSON)
             .content(body))
         .andExpect(status().isPaymentRequired());
+  }
+
+  @Test
+  void checkout_withRefundedIntent_isRejectedWithoutOrderFailedAudit() throws Exception {
+    doThrow(new PaymentRefundedException("pi_refunded", "refunded"))
+        .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+
+    String body = """
+        {
+          "holdIds": ["%s"],
+          "paymentIntentId": "pi_refunded"
+        }
+        """.formatted(confirmedHold.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_REFUNDED"));
+
+    Integer orderFailedRows = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED' AND user_id = ?",
+        Integer.class, user.getId());
+    org.assertj.core.api.Assertions.assertThat(orderFailedRows).isZero();
+    org.assertj.core.api.Assertions.assertThat(
+        seatHoldRepository.findById(confirmedHold.getId()).orElseThrow().getStatus())
+        .isEqualTo(HoldStatus.CONFIRMED);
   }
 }

@@ -8,11 +8,13 @@ import com.stripe.Stripe;
 import com.stripe.exception.CardException;
 import com.stripe.exception.IdempotencyException;
 import com.stripe.exception.StripeException;
+import com.stripe.model.Charge;
 import com.stripe.model.PaymentIntent;
 import com.stripe.model.Refund;
 import com.stripe.model.RefundCollection;
 import com.stripe.net.RequestOptions;
 import com.stripe.param.PaymentIntentCreateParams;
+import com.stripe.param.PaymentIntentRetrieveParams;
 import com.stripe.param.RefundCreateParams;
 import com.stripe.param.RefundListParams;
 import jakarta.annotation.PostConstruct;
@@ -183,11 +185,39 @@ public class StripePaymentService {
       String statementDescriptorSuffix
   ) {}
 
+  /**
+   * True when the intent succeeded for exactly {@code expectedAmountCents}.
+   *
+   * <p>Stripe leaves {@code status} and {@code amount_received} unchanged after a
+   * refund or dispute, so the latest charge is expanded and any refunded amount
+   * (full or partial) or open dispute throws {@link PaymentRefundedException}:
+   * such an intent must not become an order. This runs once, before the order is
+   * written; a refund that lands during order creation is not caught here.
+   */
   public boolean verifyPaymentSucceeded(String paymentIntentId, long expectedAmountCents) {
     try {
-      PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId);
-      return "succeeded".equals(intent.getStatus())
+      PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId,
+          PaymentIntentRetrieveParams.builder().addExpand("latest_charge").build(), null);
+      boolean succeeded = "succeeded".equals(intent.getStatus())
           && intent.getAmountReceived() == expectedAmountCents;
+      if (!succeeded) {
+        return false;
+      }
+      Charge charge = intent.getLatestChargeObject();
+      if (charge == null) {
+        // A succeeded intent always has a charge; null means the expand was lost.
+        // Fail open (status and amount already check out) but make the gap visible.
+        log.warn("Succeeded PaymentIntent {} has no expanded latest_charge; refund check skipped",
+            paymentIntentId);
+        return true;
+      }
+      if (charge.getAmountRefunded() != null && charge.getAmountRefunded() > 0) {
+        throw new PaymentRefundedException(paymentIntentId, "refunded");
+      }
+      if (Boolean.TRUE.equals(charge.getDisputed())) {
+        throw new PaymentRefundedException(paymentIntentId, "disputed");
+      }
+      return true;
     } catch (CardException e) {
       throw new PaymentDeclinedException(
           e.getUserMessage() != null ? e.getUserMessage() : e.getMessage());

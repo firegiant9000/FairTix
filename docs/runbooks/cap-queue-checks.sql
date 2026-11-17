@@ -117,12 +117,21 @@ GROUP BY granted;
 -- intent id) and are left out here. Expect no rows.
 --
 -- Refund a row only when holds_still_confirmed = 0. While any of the charge's
--- holds is still CONFIRMED, checkout with that intent can still create the
--- order, even after a refund: verification does not look at refunds. Elapsed
--- time is no guide, because each visit to the checkout page extends confirmed
--- holds. NULL means the audit details carry no readable hold ids: do not
--- refund, investigate. busy_only = true means every attempt so far failed on
--- a busy lock.
+-- holds is still CONFIRMED, any later checkout request with this intent id (a
+-- customer retry, a double submit, a direct API call) can still create the
+-- order. Before refunding, check the charge in Stripe for any dispute (open or
+-- closed): if there is one, do not refund. A refund on top of a chargeback pays
+-- the customer twice; respond to the dispute in the Stripe Dashboard
+-- (Payments > Disputes) instead. Checkout rejects an intent that is already
+-- refunded or disputed
+-- (409 PAYMENT_REFUNDED), but that check runs
+-- once, before the order is written: a refund landing during order creation
+-- (seconds, with lock retries) still becomes a live order with nothing to flag
+-- it. Treat the 409 as defence in depth, not as permission to refund early.
+-- Elapsed time is no guide, because each visit to the checkout page extends
+-- confirmed holds. NULL means the audit details carry no readable hold ids: do
+-- not refund, investigate. busy_only = true means every attempt so far failed
+-- on a busy lock.
 SELECT f.payment_intent,
        f.user_id,
        MIN(f.created_at)                         AS first_failed_at,
