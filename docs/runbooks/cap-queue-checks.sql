@@ -117,9 +117,11 @@ GROUP BY granted;
 -- intent id) and are left out here. Expect no rows.
 --
 -- Refund a row only when holds_still_confirmed = 0. While any of the charge's
--- holds is still CONFIRMED, the customer can still complete the order (the
--- checkout page offers "Complete Order" after a failure). Checkout rejects an
--- intent that is already refunded (409 PAYMENT_REFUNDED), but that check runs
+-- holds is still CONFIRMED, the customer can still complete the order from the
+-- checkout page. Before refunding, check the charge in Stripe for an open
+-- dispute: if there is one, do not refund here; handle it through the dispute
+-- process. Checkout rejects an intent that is already refunded or disputed
+-- (409 PAYMENT_REFUNDED), but that check runs
 -- once, before the order is written: a refund landing during order creation
 -- (seconds, with lock retries) still becomes a live order with nothing to flag
 -- it. Treat the 409 as defence in depth, not as permission to refund early.
