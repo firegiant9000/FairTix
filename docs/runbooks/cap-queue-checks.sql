@@ -117,10 +117,13 @@ GROUP BY granted;
 -- intent id) and are left out here. Expect no rows.
 --
 -- Refund a row only when holds_still_confirmed = 0. While any of the charge's
--- holds is still CONFIRMED, the customer can still complete the order from the
--- checkout page. Before refunding, check the charge in Stripe for an open
--- dispute: if there is one, do not refund here; handle it through the dispute
--- process. Checkout rejects an intent that is already refunded or disputed
+-- holds is still CONFIRMED, any later checkout request with this intent id (a
+-- customer retry, a double submit, a direct API call) can still create the
+-- order. Before refunding, check the charge in Stripe for any dispute (open or
+-- closed): if there is one, do not refund. A refund on top of a chargeback pays
+-- the customer twice; respond to the dispute in the Stripe Dashboard
+-- (Payments > Disputes) instead. Checkout rejects an intent that is already
+-- refunded or disputed
 -- (409 PAYMENT_REFUNDED), but that check runs
 -- once, before the order is written: a refund landing during order creation
 -- (seconds, with lock retries) still becomes a live order with nothing to flag
