@@ -5,6 +5,7 @@ import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import com.fairtix.refunds.domain.RefundRequest;
 import com.fairtix.refunds.domain.RefundStatus;
 import com.fairtix.refunds.infrastructure.RefundRepository;
+import com.stripe.Stripe;
 import com.stripe.exception.SignatureVerificationException;
 import com.stripe.model.Charge;
 import com.stripe.model.Event;
@@ -108,7 +109,19 @@ public class StripeWebhookController {
     getObject(event, Charge.class).ifPresent(charge -> {
       String piId = charge.getPaymentIntent();
       if (piId == null) return;
-      paymentRecordRepository.findByTransactionId(piId).ifPresent(record -> {
+      var payment = paymentRecordRepository.findByTransactionId(piId);
+      if (payment.isEmpty()) {
+        // No order yet: either the intent never got one (a refund from
+        // stripe_charges_without_order), or checkout is still creating it and the
+        // payment record commits with the order. Put the refund on record so the
+        // runbook check refunds_on_live_orders can match it to an order later.
+        auditService.log(SYSTEM_ACTOR, "STRIPE_REFUND_UNMATCHED", "PAYMENT", null,
+            "Stripe refund with no payment record yet: stripe_intent=" + piId
+                + ", charge=" + charge.getId()
+                + ", amount_refunded_cents=" + amountRefundedCents(charge));
+        return;
+      }
+      payment.ifPresent(record -> {
         List<RefundRequest> requests = refundRepository.findAllByOrderId(record.getOrderId());
         Optional<RefundRequest> active = requests.stream()
             .filter(r -> r.getStatus() == RefundStatus.APPROVED
@@ -131,11 +144,12 @@ public class StripeWebhookController {
   }
 
   /**
-   * A refund with no active refund request behind it: made in the Stripe
-   * Dashboard, or landing while checkout was creating the order (checkout's
-   * refunded-intent check runs once, before the order is written). The order is
-   * live but its money is gone, so it is logged at ERROR and audited as
-   * {@code REFUND_ON_LIVE_ORDER} for the runbook.
+   * A refund with no active refund request behind it, typically made in the Stripe
+   * Dashboard. (One landing while checkout is still creating the order usually
+   * arrives before the payment record commits; that case is audited as
+   * {@code STRIPE_REFUND_UNMATCHED} above.) The order is live but its money is
+   * gone, so it is logged at ERROR and audited as {@code REFUND_ON_LIVE_ORDER}
+   * for the runbook.
    *
    * <p>Stripe's {@code amount_refunded} is cumulative and this event can arrive
    * after our own refund flow has completed its request, so the refund is
@@ -144,7 +158,7 @@ public class StripeWebhookController {
    */
   private void alertIfRefundUnaccounted(Charge charge, String piId, UUID orderId,
       List<RefundRequest> requests) {
-    long refundedCents = charge.getAmountRefunded() == null ? 0L : charge.getAmountRefunded();
+    long refundedCents = amountRefundedCents(charge);
     long accountedCents = requests.stream()
         .filter(r -> r.getStatus() == RefundStatus.COMPLETED)
         .map(RefundRequest::getAmount)
@@ -173,9 +187,25 @@ public class StripeWebhookController {
     });
   }
 
+  private static long amountRefundedCents(Charge charge) {
+    return charge.getAmountRefunded() == null ? 0L : charge.getAmountRefunded();
+  }
+
+  /**
+   * The event's object, for a type this controller handles. Empty when the
+   * payload's API version doesn't match the library's (the endpoint's version
+   * was changed in the Stripe Dashboard): every handler would then go silent
+   * while answering 200, so that is logged at ERROR.
+   */
   @SuppressWarnings("unchecked")
   private <T extends StripeObject> Optional<T> getObject(Event event, Class<T> type) {
-    return event.getDataObjectDeserializer().getObject()
+    Optional<StripeObject> object = event.getDataObjectDeserializer().getObject();
+    if (object.isEmpty()) {
+      log.error("Stripe webhook {} ({}) could not be deserialized: event API version {},"
+          + " library API version {}; the event was not processed",
+          event.getId(), event.getType(), event.getApiVersion(), Stripe.API_VERSION);
+    }
+    return object
         .filter(type::isInstance)
         .map(obj -> (T) obj);
   }

@@ -319,14 +319,21 @@ class StripeWebhookControllerTest {
         eq(orderId), contains("amount_refunded_cents=5000"));
   }
 
-  /** No order for the intent: stripe_charges_without_order covers it, not this alert. */
+  /**
+   * No payment record yet: the order may still be committing. The refund goes on
+   * record as unmatched (refunds_on_live_orders matches it to an order later), not
+   * as an alert on an order.
+   */
   @Test
-  void chargeRefunded_withoutPaymentRecord_isNotAlerted() throws Exception {
+  void chargeRefunded_withoutPaymentRecord_isRecordedAsUnmatched() throws Exception {
     String piId = "pi_no_order";
     when(paymentRecordRepository.findByTransactionId(piId)).thenReturn(Optional.empty());
 
-    postSigned(chargeRefundedEvent(piId));
+    postSigned(chargeRefundedEvent(piId, 5000));
 
+    verify(auditService).log(eq(new UUID(0L, 0L)), eq("STRIPE_REFUND_UNMATCHED"), eq("PAYMENT"),
+        isNull(), eq("Stripe refund with no payment record yet: stripe_intent=" + piId
+            + ", charge=ch_test, amount_refunded_cents=5000"));
     verify(auditService, never()).log(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
   }
 }
