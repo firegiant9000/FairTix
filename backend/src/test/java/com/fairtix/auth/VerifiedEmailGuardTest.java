@@ -116,7 +116,9 @@ class VerifiedEmailGuardTest {
   void verified_paths_unchanged() throws Exception {
     User u = user(true);
     intent(u).andExpect(status().isNotImplemented());
-    assertThat(transfer(u).andReturn().getResponse().getStatus()).isNotEqualTo(403);
+    // Past the guard, the random ticket id is simply not found. Asserting the exact
+    // status (not just "not 403") keeps a 500 from an unstubbed Redis call from passing.
+    transfer(u).andExpect(status().isNotFound());
     createOrg(u).andExpect(status().isOk());
   }
 
