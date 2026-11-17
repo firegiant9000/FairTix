@@ -8,11 +8,13 @@ import com.stripe.Stripe;
 import com.stripe.exception.CardException;
 import com.stripe.exception.IdempotencyException;
 import com.stripe.exception.StripeException;
+import com.stripe.model.Charge;
 import com.stripe.model.PaymentIntent;
 import com.stripe.model.Refund;
 import com.stripe.model.RefundCollection;
 import com.stripe.net.RequestOptions;
 import com.stripe.param.PaymentIntentCreateParams;
+import com.stripe.param.PaymentIntentRetrieveParams;
 import com.stripe.param.RefundCreateParams;
 import com.stripe.param.RefundListParams;
 import jakarta.annotation.PostConstruct;
@@ -183,11 +185,28 @@ public class StripePaymentService {
       String statementDescriptorSuffix
   ) {}
 
+  /**
+   * True when the intent succeeded for exactly {@code expectedAmountCents}.
+   *
+   * <p>Stripe leaves {@code status} and {@code amount_received} unchanged after a
+   * refund, so the latest charge is expanded and any refunded amount (full or
+   * partial) throws {@link PaymentRefundedException}: a refunded intent must not
+   * become an order.
+   */
   public boolean verifyPaymentSucceeded(String paymentIntentId, long expectedAmountCents) {
     try {
-      PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId);
-      return "succeeded".equals(intent.getStatus())
+      PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId,
+          PaymentIntentRetrieveParams.builder().addExpand("latest_charge").build(), null);
+      boolean succeeded = "succeeded".equals(intent.getStatus())
           && intent.getAmountReceived() == expectedAmountCents;
+      if (!succeeded) {
+        return false;
+      }
+      Charge charge = intent.getLatestChargeObject();
+      if (charge != null && charge.getAmountRefunded() != null && charge.getAmountRefunded() > 0) {
+        throw new PaymentRefundedException(paymentIntentId);
+      }
+      return true;
     } catch (CardException e) {
       throw new PaymentDeclinedException(
           e.getUserMessage() != null ? e.getUserMessage() : e.getMessage());

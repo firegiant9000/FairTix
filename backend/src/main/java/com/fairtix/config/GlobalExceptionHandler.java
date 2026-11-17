@@ -19,6 +19,7 @@ import com.fairtix.auth.application.WeakPasswordException;
 import com.fairtix.payments.api.PaymentProcessingException;
 import com.fairtix.payments.application.PaymentDeclinedException;
 import com.fairtix.payments.application.PaymentFailedException;
+import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.payments.application.PaymentRetryConflictException;
 import com.fairtix.refunds.application.RefundFinaliseException;
 import com.fairtix.refunds.application.RefundProviderException;
@@ -390,6 +391,15 @@ public class GlobalExceptionHandler {
     return error(HttpStatus.INTERNAL_SERVER_ERROR, "REFUND_FINALISE_ERROR",
         "The refund was sent to the payment provider but its record could not be saved. "
             + "It can be retried.", req);
+  }
+
+  @ExceptionHandler(PaymentRefundedException.class)
+  public ResponseEntity<Map<String, Object>> handlePaymentRefunded(
+      PaymentRefundedException ex, HttpServletRequest req) {
+    log.warn("Rejected refunded PaymentIntent: stripe_intent={}", ex.getPaymentIntentId());
+    return error(HttpStatus.CONFLICT, "PAYMENT_REFUNDED",
+        "This payment has been refunded and can't be used for an order. Start a new checkout.",
+        req);
   }
 
   @ExceptionHandler(PaymentDeclinedException.class)

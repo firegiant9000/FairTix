@@ -5,11 +5,13 @@ import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import com.stripe.exception.ApiConnectionException;
 import com.stripe.exception.CardException;
 import com.stripe.exception.IdempotencyException;
+import com.stripe.model.Charge;
 import com.stripe.model.PaymentIntent;
 import com.stripe.model.Refund;
 import com.stripe.model.RefundCollection;
 import com.stripe.net.RequestOptions;
 import com.stripe.param.PaymentIntentCreateParams;
+import com.stripe.param.PaymentIntentRetrieveParams;
 import com.stripe.param.RefundCreateParams;
 import com.stripe.param.RefundListParams;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +32,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
@@ -47,15 +51,74 @@ class StripePaymentServiceTest {
     service = new StripePaymentService(paymentRecordRepository, auditService);
   }
 
+  /** Stubs the expanded retrieve that {@code verifyPaymentSucceeded} uses. */
+  private static void stubVerifyRetrieve(MockedStatic<PaymentIntent> mocked, String id,
+      PaymentIntent intent) {
+    mocked.when(() -> PaymentIntent.retrieve(eq(id), any(PaymentIntentRetrieveParams.class),
+        isNull())).thenReturn(intent);
+  }
+
+  private static PaymentIntent succeededIntent(long amountReceived, Long amountRefunded) {
+    PaymentIntent intent = mock(PaymentIntent.class);
+    when(intent.getStatus()).thenReturn("succeeded");
+    when(intent.getAmountReceived()).thenReturn(amountReceived);
+    if (amountRefunded != null) {
+      Charge charge = mock(Charge.class);
+      when(charge.getAmountRefunded()).thenReturn(amountRefunded);
+      when(intent.getLatestChargeObject()).thenReturn(charge);
+    }
+    return intent;
+  }
+
   @Test
   void verifyPaymentSucceeded_returnsTrueForSucceeded() throws Exception {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
-      PaymentIntent mockIntent = mock(PaymentIntent.class);
-      when(mockIntent.getStatus()).thenReturn("succeeded");
-      when(mockIntent.getAmountReceived()).thenReturn(5000L);
-      mocked.when(() -> PaymentIntent.retrieve("pi_test_123")).thenReturn(mockIntent);
+      stubVerifyRetrieve(mocked, "pi_test_123", succeededIntent(5000L, 0L));
 
       assertTrue(service.verifyPaymentSucceeded("pi_test_123", 5000L));
+    }
+  }
+
+  @Test
+  void verifyPaymentSucceeded_expandsLatestCharge() throws Exception {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      stubVerifyRetrieve(mocked, "pi_expand", succeededIntent(5000L, 0L));
+
+      service.verifyPaymentSucceeded("pi_expand", 5000L);
+
+      ArgumentCaptor<PaymentIntentRetrieveParams> params =
+          ArgumentCaptor.forClass(PaymentIntentRetrieveParams.class);
+      mocked.verify(() -> PaymentIntent.retrieve(eq("pi_expand"), params.capture(), isNull()));
+      assertThat(params.getValue().getExpand()).containsExactly("latest_charge");
+    }
+  }
+
+  @Test
+  void verifyPaymentSucceeded_fullyRefunded_throwsPaymentRefunded() {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      stubVerifyRetrieve(mocked, "pi_refunded", succeededIntent(5000L, 5000L));
+
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_refunded", 5000L))
+          .isInstanceOf(PaymentRefundedException.class);
+    }
+  }
+
+  @Test
+  void verifyPaymentSucceeded_partiallyRefunded_throwsPaymentRefunded() {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      stubVerifyRetrieve(mocked, "pi_partial", succeededIntent(5000L, 1L));
+
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_partial", 5000L))
+          .isInstanceOf(PaymentRefundedException.class);
+    }
+  }
+
+  @Test
+  void verifyPaymentSucceeded_withoutLatestCharge_returnsTrue() throws Exception {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      stubVerifyRetrieve(mocked, "pi_no_charge", succeededIntent(5000L, null));
+
+      assertTrue(service.verifyPaymentSucceeded("pi_no_charge", 5000L));
     }
   }
 
@@ -64,7 +127,7 @@ class StripePaymentServiceTest {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
       PaymentIntent mockIntent = mock(PaymentIntent.class);
       when(mockIntent.getStatus()).thenReturn("requires_payment_method");
-      mocked.when(() -> PaymentIntent.retrieve("pi_failed")).thenReturn(mockIntent);
+      stubVerifyRetrieve(mocked, "pi_failed", mockIntent);
 
       assertFalse(service.verifyPaymentSucceeded("pi_failed", 5000L));
     }
@@ -73,10 +136,7 @@ class StripePaymentServiceTest {
   @Test
   void verifyPaymentSucceeded_returnsFalseWhenAmountDiffers() throws Exception {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
-      PaymentIntent mockIntent = mock(PaymentIntent.class);
-      when(mockIntent.getStatus()).thenReturn("succeeded");
-      when(mockIntent.getAmountReceived()).thenReturn(4999L);
-      mocked.when(() -> PaymentIntent.retrieve("pi_short")).thenReturn(mockIntent);
+      stubVerifyRetrieve(mocked, "pi_short", succeededIntent(4999L, 0L));
 
       assertFalse(service.verifyPaymentSucceeded("pi_short", 5000L));
     }
@@ -85,7 +145,8 @@ class StripePaymentServiceTest {
   @Test
   void verifyPaymentSucceeded_cardDeclined_throwsPaymentDeclined() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
-      mocked.when(() -> PaymentIntent.retrieve("pi_declined")).thenThrow(cardDeclined());
+      mocked.when(() -> PaymentIntent.retrieve(eq("pi_declined"),
+          any(PaymentIntentRetrieveParams.class), isNull())).thenThrow(cardDeclined());
 
       assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_declined", 5000L))
           .isInstanceOf(PaymentDeclinedException.class)
@@ -96,7 +157,8 @@ class StripePaymentServiceTest {
   @Test
   void verifyPaymentSucceeded_otherStripeError_wrapsAsRuntimeException() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
-      mocked.when(() -> PaymentIntent.retrieve("pi_down"))
+      mocked.when(() -> PaymentIntent.retrieve(eq("pi_down"),
+          any(PaymentIntentRetrieveParams.class), isNull()))
           .thenThrow(new ApiConnectionException("connection reset"));
 
       assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_down", 5000L))
