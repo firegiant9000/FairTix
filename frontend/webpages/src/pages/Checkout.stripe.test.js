@@ -212,6 +212,8 @@ test('a 402 after the charge (amount mismatch) stays on the paid screen', async 
   await clickPay();
 
   expect(await screen.findByText(/your payment went through/i)).toBeInTheDocument();
+  expect(screen.getByText(/amount charged doesn't match your order total/i)).toBeInTheDocument();
+  expect(screen.queryByText('Stripe payment has not succeeded')).not.toBeInTheDocument();
   expect(screen.getByRole('link', { name: /my tickets/i })).toHaveAttribute('href', '/my-tickets');
   expect(screen.queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument();
 });

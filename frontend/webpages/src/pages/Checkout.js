@@ -18,7 +18,7 @@ const stripePromise = stripeEnabled
 // A 402 here means the charged amount didn't match the order total: still paid.
 function isPaidButNotOrdered(payload, err) {
   if (!payload.paymentIntentId) return false;
-  if (err.status === 422) return false;
+  if (err.status === 422 && err.code === 'CARD_DECLINED') return false;
   return err.code !== 'PAYMENT_REFUNDED';
 }
 
@@ -216,10 +216,15 @@ function Checkout() {
       // A refunded intent can never complete an order, and the same holds get the
       // same intent back, so neither Try Again nor the card form can help.
       setPaymentState(err.code === 'PAYMENT_REFUNDED' ? 'refunded' : 'failed');
+      // After a charge, the server's 402 "payment has not succeeded" means the
+      // amount didn't match; saying the payment failed would contradict the screen.
+      const amountMismatch = payload.paymentIntentId && err.status === 402;
       setPaymentError(
-        err.body?.failureReason
-          || err.message
-          || 'Payment declined. Please check your card details or try a different card.'
+        amountMismatch
+          ? "The amount charged doesn't match your order total. Please contact support."
+          : err.body?.failureReason
+            || err.message
+            || 'Payment declined. Please check your card details or try a different card.'
       );
     } finally {
       setSubmitting(false);
