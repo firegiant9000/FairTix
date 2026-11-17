@@ -24,6 +24,12 @@ function StripeCardForm({ holds, total, clientSecret, onSuccess, onError, onCanc
       payment_method: { card: elements.getElement(CardElement) },
     });
     setSubmitting(false);
+    // Already charged (e.g. resubmitting after a 409 REQUEST_IN_PROGRESS): Stripe
+    // rejects the confirm, but checkout must still be submitted to create the order.
+    if (error?.payment_intent?.status === 'succeeded') {
+      await onSuccess(error.payment_intent.id);
+      return;
+    }
     if (error) {
       onError(error.message);
       return;
@@ -76,6 +82,7 @@ function Checkout() {
   const stepUpCaptchaRef = useRef(null);
   const stepUpModalRef = useRef(null);
   const pendingPayloadRef = useRef(null);
+  const busyRetryPayloadRef = useRef(null);
   const [, setTick] = useState(0);
   const tickRef = useRef(null);
   const holdIdsRef = useRef(location.state?.holdIds || []);
@@ -192,6 +199,10 @@ function Checkout() {
         pendingPayloadRef.current = payload;
         return;
       }
+      // The card was charged but the server was busy and kept the holds: "Try Again"
+      // resubmits this payload instead of asking for the card again.
+      const paidButBusy = err.status === 409 && err.code === 'REQUEST_IN_PROGRESS' && payload.paymentIntentId;
+      busyRetryPayloadRef.current = paidButBusy ? payload : null;
       setPaymentState('failed');
       setPaymentError(
         err.body?.failureReason
@@ -270,7 +281,14 @@ function Checkout() {
     navigate('/my-holds');
   }
 
-  function handleRetry() {
+  async function handleRetry() {
+    const busyPayload = busyRetryPayloadRef.current;
+    busyRetryPayloadRef.current = null;
+    if (busyPayload) {
+      setPaymentError('');
+      await submitPayload(busyPayload);
+      return;
+    }
     setPaymentState('form');
     setPaymentError('');
     setCardNumber('');
