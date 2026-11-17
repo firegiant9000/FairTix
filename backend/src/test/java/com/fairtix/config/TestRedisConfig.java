@@ -4,6 +4,7 @@ import org.mockito.Mockito;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RBucket;
 import org.redisson.api.RRateLimiter;
+import org.redisson.api.RScoredSortedSet;
 import org.redisson.api.RSet;
 import org.redisson.api.RedissonClient;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -88,6 +89,18 @@ public class TestRedisConfig {
       when(setMock.remove(Mockito.any())).thenReturn(true);
       when(setMock.expire(Mockito.any(java.time.Duration.class))).thenReturn(true);
       return setMock;
+    });
+
+    // Scored sorted set mock for TransferService's transfer-velocity window: always
+    // empty, so the velocity limit never trips in mock-Redis tests (TransferServiceTest
+    // covers the limit with its own mock).
+    when(mock.getScoredSortedSet(anyString())).thenAnswer(invocation -> {
+      @SuppressWarnings("unchecked")
+      RScoredSortedSet<String> sortedSetMock = Mockito.mock(RScoredSortedSet.class);
+      when(sortedSetMock.size()).thenReturn(0);
+      when(sortedSetMock.add(Mockito.anyDouble(), Mockito.any())).thenReturn(true);
+      when(sortedSetMock.expire(Mockito.any(java.time.Duration.class))).thenReturn(true);
+      return sortedSetMock;
     });
 
     return mock;
