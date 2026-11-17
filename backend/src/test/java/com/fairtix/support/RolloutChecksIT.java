@@ -130,8 +130,13 @@ class RolloutChecksIT extends PostgresIT {
     failedStripeOrder(user, "pi_stuck", "STRIPE_ORDER_FAILED", holdId, "8 days");
     failedStripeOrder(user, "pi_recent", "STRIPE_ORDER_FAILED", holdId, "1 day");
     failedStripeOrder(user, "pi_refundable", "STRIPE_ORDER_FAILED", UUID.randomUUID(), "8 days");
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now() - interval '8 days')",
+        UUID.randomUUID(), user, "Charge succeeded but order creation failed: stripe_intent=pi_unreadable");
 
     assertThat(chargeWithoutOrder("pi_stuck")).containsEntry("escalate", true);
+    assertThat(chargeWithoutOrder("pi_unreadable")).containsEntry("escalate", true);
     assertThat(chargeWithoutOrder("pi_recent")).containsEntry("escalate", false);
     assertThat(chargeWithoutOrder("pi_refundable")).containsEntry("escalate", false);
   }

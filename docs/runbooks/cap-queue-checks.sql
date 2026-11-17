@@ -134,8 +134,11 @@ GROUP BY granted;
 -- attempt so far failed on a busy lock.
 --
 -- escalate = true: the first failure is more than 7 days old and the charge is
--- still not refundable (some hold CONFIRMED, or unreadable hold ids). Rows drop
--- out of this 14-day window without ever becoming refundable, so don't wait:
+-- still not refundable (some hold CONFIRMED, or unreadable hold ids). Attempts
+-- drop out of this 14-day window one by one, so after day 14 a row describes
+-- only its later attempts and can turn "refundable" (0) without being so:
+-- never refund an intent that was escalated on the strength of a later 0. Don't
+-- wait:
 -- escalate to the repo owner, who decides between releasing the holds (the
 -- charge then becomes refundable) and contacting the customer to finish the
 -- order (Complete Order with this intent can still create it).
