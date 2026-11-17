@@ -84,6 +84,9 @@ class RolloutChecksIT extends PostgresIT {
     UUID order = paidOrder(user, "pi_early", "COMPLETED");
     unmatchedRefund("pi_early");
     unmatchedRefund("pi_never_ordered");
+    // Already handled: the order was refunded through FairTix afterwards.
+    paidOrder(user, "pi_handled", "REFUNDED");
+    unmatchedRefund("pi_handled");
 
     List<Map<String, Object>> rows =
         jdbcTemplate.queryForList(checks().get("refunds_on_live_orders"));
