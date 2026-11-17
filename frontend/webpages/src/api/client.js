@@ -3,11 +3,19 @@ const API_BASE = process.env.REACT_APP_API_URL || '';
 let refreshPromise = null;
 
 // The server answers 409 REQUEST_IN_PROGRESS when another request from the same
-// user (or, for a capped queue, another join) still holds the lock it needs. It
-// guarantees nothing was written, so the request is safe to repeat as it is.
+// user (or, for a capped queue, another join) still holds the lock it needs. The
+// purchase-cap paths retried here are safe to repeat as they are. Two are not:
+// - checkout: the server has already retried the order 3 times and audited the
+//   failed charge, so a client retry stacks waits and can fulfil an order whose
+//   audit row says "refund it";
+// - queue join: the lock is shared by everyone joining the event, so retrying
+//   adds load at exactly the moment it is saturated.
 const BUSY_CODE = 'REQUEST_IN_PROGRESS';
 const BUSY_RETRIES = 2;
 const BUSY_BASE_DELAY_MS = 300;
+const NO_BUSY_RETRY = [/^\/api\/payments\/checkout(?:[/?]|$)/, /\/queue\/join(?:[/?]|$)/];
+
+const busyRetryAllowed = (path) => !NO_BUSY_RETRY.some((pattern) => pattern.test(path));
 
 function busyRetryDelay(attempt) {
   // 300 ms then 600 ms, plus up to 200 ms of jitter so a burst does not retry in step.
@@ -79,7 +87,7 @@ async function apiRequest(path, options = {}, isRetry = false, busyAttempt = 0) 
       error = new Error('Request failed');
       error.status = response.status;
     }
-    if (error.status === 409 && error.code === BUSY_CODE && busyAttempt < BUSY_RETRIES) {
+    if (error.status === 409 && error.code === BUSY_CODE && busyAttempt < BUSY_RETRIES && busyRetryAllowed(path)) {
       await sleep(busyRetryDelay(busyAttempt + 1));
       return apiRequest(path, options, isRetry, busyAttempt + 1);
     }

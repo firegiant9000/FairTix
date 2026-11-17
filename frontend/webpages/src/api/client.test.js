@@ -155,12 +155,40 @@ test('409 REQUEST_IN_PROGRESS is retried and the later success is returned', asy
 test('409 REQUEST_IN_PROGRESS gives up after two retries with the server message', async () => {
   global.fetch.mockReturnValue(busy());
 
-  await expect(api.post('/api/events/1/queue/join')).rejects.toMatchObject({
+  await expect(api.post('/api/payments/intent', { holdIds: ['h1'] })).rejects.toMatchObject({
     status: 409,
     code: 'REQUEST_IN_PROGRESS',
     message: 'Another request is still being processed; try again in a moment',
   });
   expect(fetch).toHaveBeenCalledTimes(3);
+});
+
+test.each([
+  ['checkout', '/api/payments/checkout'],
+  ['queue join', '/api/events/1/queue/join'],
+])('409 REQUEST_IN_PROGRESS on %s is not retried', async (_, path) => {
+  global.fetch.mockReturnValue(busy());
+
+  await expect(api.post(path, {})).rejects.toMatchObject({
+    status: 409,
+    code: 'REQUEST_IN_PROGRESS',
+  });
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+test('busy retries are still bounded after a 401 refresh', async () => {
+  global.fetch
+    .mockReturnValueOnce(busy())                  // busy, retry 1 follows
+    .mockReturnValueOnce(mockResponse(401, {}))   // retry 1 hits an expired session
+    .mockReturnValueOnce(mockResponse(200, {}))   // refresh succeeds
+    .mockReturnValue(busy());                     // still busy from here on
+
+  await expect(api.post('/api/events/1/holds', {})).rejects.toMatchObject({
+    status: 409,
+    code: 'REQUEST_IN_PROGRESS',
+  });
+  // original + retry 1 + refresh + replay of retry 1 + retry 2
+  expect(fetch).toHaveBeenCalledTimes(5);
 });
 
 test('other 409 conflicts are not retried', async () => {
