@@ -29,10 +29,15 @@ public class TransferVelocityLimiter {
     /**
      * KEYS[1] the sender's set. ARGV: window start (ms; entries up to and including
      * it are pruned), now (ms), a unique member, the limit, the key's TTL (ms).
-     * Returns 1 when a slot was taken, 0 when the window is full.
+     * Returns 1 when a slot was taken, 0 when the window is full. The member is
+     * unique per call, so a resend of the same call (Redisson retries after a
+     * response timeout) finds its own slot and answers 1 again instead of 0.
      */
     static final String ACQUIRE_SCRIPT = """
             redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+            if redis.call('ZSCORE', KEYS[1], ARGV[3]) then
+              return 1
+            end
             if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[4]) then
               return 0
             end

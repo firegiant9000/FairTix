@@ -75,6 +75,25 @@ class TransferVelocityLimiterIT extends PostgresIT {
                 .isPositive();
     }
 
+    /**
+     * The window slides: an entry just over a window old (24 h, in ms) is pruned, so
+     * with four newer entries one more slot is free, and then none.
+     */
+    @Test
+    void entriesAWindowOld_arePruned() {
+        UUID user = UUID.randomUUID();
+        var set = redissonClient.getScoredSortedSet(TransferVelocityLimiter.KEY_PREFIX + user,
+                org.redisson.client.codec.StringCodec.INSTANCE);
+        long now = System.currentTimeMillis();
+        set.add(now - 24L * 3_600_000L - 1_000L, "expired");
+        for (int i = 0; i < LIMIT - 1; i++) {
+            set.add(now - 60_000L * (i + 1), "recent-" + i);
+        }
+
+        assertThat(limiter.tryAcquire(user)).isTrue();
+        assertThat(limiter.tryAcquire(user)).isFalse();
+    }
+
     @Test
     void limitIsPerSender() {
         UUID first = UUID.randomUUID();
