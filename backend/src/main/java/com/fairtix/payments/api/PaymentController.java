@@ -209,8 +209,11 @@ public class PaymentController {
     try {
       auditStripeOrderNotCreated(userId, holdIds, paymentIntentId, ex);
     } catch (RuntimeException auditFailure) {
-      log.error("Charge succeeded, order not created, and the audit row could not be written:"
-          + " stripe_intent={}, holdIds={}, error={}", paymentIntentId, holdIds,
+      String what = ex instanceof PaymentNotVerifiedException
+          ? "Payment not verified (check the intent in Stripe),"
+          : "Charge succeeded,";
+      log.error("{} order not created, and the audit row could not be written:"
+          + " stripe_intent={}, holdIds={}, error={}", what, paymentIntentId, holdIds,
           ex.getClass().getSimpleName(), auditFailure);
       ex.addSuppressed(auditFailure);
     }

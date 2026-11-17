@@ -115,9 +115,13 @@ GROUP BY granted;
 -- STRIPE_ORDER_BUSY when the purchase-cap lock stayed busy. STRIPE_ORDER_FAILED
 -- with error=PaymentNotVerified in its details means checkout answered 402
 -- because verification failed: almost always a paid intent whose amount no
--- longer matches the holds (a seat price changed, or a hold was swapped). For
--- those, open the intent in Stripe first: if it never succeeded there is
--- nothing to refund. Intents that got an
+-- longer matches the holds (a seat price changed, or a hold was swapped).
+-- not_verified = true marks a row with any such attempt. For those, open the
+-- intent in Stripe first: if it never succeeded there is nothing to refund.
+-- Their listed holds are the ones submitted, which may not be the ones the
+-- intent paid for: before refunding, also check that the amount in Stripe
+-- matches those holds, or that the user has no other CONFIRMED hold for the
+-- event. Intents that got an
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --
@@ -153,6 +157,7 @@ SELECT f.payment_intent,
        MAX(f.created_at)                         AS last_failed_at,
        COUNT(*)                                  AS failed_attempts,
        bool_and(f.action = 'STRIPE_ORDER_BUSY')  AS busy_only,
+       bool_or(f.not_verified)                   AS not_verified,
        -- MAX ignores NULL, so one unreadable attempt must make the whole row NULL.
        CASE WHEN COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0 THEN NULL
             ELSE MAX(f.holds_still_confirmed)
@@ -165,6 +170,7 @@ FROM (
          a.user_id,
          a.action,
          a.created_at,
+         a.details LIKE '%error=PaymentNotVerified%' AS not_verified,
          CASE WHEN a.details ~ 'holdIds=\[[^]]*[0-9a-f]{8}-' THEN
            (SELECT COUNT(*)
             FROM seat_holds h
