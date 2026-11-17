@@ -59,7 +59,7 @@ Daily, or after any on-sale:
 | Cap invariant | `users_over_cap` | No rows beyond the ones found before deploy | A new row appears: find how (transfer, box office, lowered cap) from `audit_logs` for that user and event |
 | Queue invariant | `queues_over_capacity` | No rows | Rows that are not explained by recent hold releases |
 | Positions | `duplicate_queue_positions` | No rows | Any row |
-| Paid but no order | `stripe_charges_without_order` | No rows | Any row: confirm in Stripe that the intent succeeded and has no order, then refund it. For a `busy_only` row with a recent `last_failed_at`, wait until the customer's holds have expired first: they may still complete it. Do not refund from audit rows alone: a later attempt may have fulfilled the order |
+| Paid but no order | `stripe_charges_without_order` | No rows | Any row with `holds_still_confirmed = 0`: confirm in Stripe that the intent succeeded and has no order, then refund it. While any hold is still confirmed, checkout with that intent can still create the order, even after a refund. So wait for the holds to be released or swept. Don't go by elapsed time: each checkout page visit extends them. Do not refund from audit rows alone: a later attempt may have fulfilled the order |
 | Lock timeouts | Application log: `WARN ... Transaction lock wait timed out on <uri>` | Rare | Sustained on `/queue/join` during an on-sale: see below |
 | Pool exhaustion | Application log: Hikari `Connection is not available, request timed out` | Never | Any occurrence; most likely during a burst of queue joins (see below) |
 

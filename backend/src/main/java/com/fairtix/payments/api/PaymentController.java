@@ -31,6 +31,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -49,6 +51,8 @@ import java.util.stream.Collectors;
 @RestController
 @PreAuthorize("isAuthenticated()")
 public class PaymentController {
+
+  private static final Logger log = LoggerFactory.getLogger(PaymentController.class);
 
   /** Attempts to create the order for a succeeded charge while the cap lock is busy. */
   private static final int STRIPE_ORDER_ATTEMPTS = 3;
@@ -268,7 +272,16 @@ public class PaymentController {
       try {
         order = createStripeOrder(principal.getUserId(), request.holdIds(), paymentIntentId);
       } catch (RuntimeException ex) {
-        auditStripeOrderNotCreated(principal.getUserId(), request.holdIds(), paymentIntentId, ex);
+        try {
+          auditStripeOrderNotCreated(principal.getUserId(), request.holdIds(), paymentIntentId, ex);
+        } catch (RuntimeException auditFailure) {
+          // Pool exhaustion or a database outage can fail the audit too. Keep the
+          // charge traceable in the log and answer with the original error.
+          log.error("Charge succeeded, order not created, and the audit row could not be written:"
+              + " stripe_intent={}, holdIds={}, error={}", paymentIntentId, request.holdIds(),
+              ex.getClass().getSimpleName(), auditFailure);
+          ex.addSuppressed(auditFailure);
+        }
         throw ex;
       }
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();

@@ -111,25 +111,37 @@ GROUP BY granted;
 
 -- name: stripe_charges_without_order
 -- PaymentIntents that succeeded at Stripe but never got an order, last 14 days.
--- Each row needs a manual refund. Checkout writes STRIPE_ORDER_FAILED when the
--- order failed, and STRIPE_ORDER_BUSY when the purchase-cap lock stayed busy.
--- After a busy row the holds stay confirmed, so the customer's next attempt can
--- still create the order. Intents that got an order on a later attempt have a
--- payment_records row (transaction_id is the intent id) and are left out here.
--- busy_only = true means only busy attempts so far. If last_failed_at is recent,
--- the customer may still complete it: wait until their holds have expired
--- before refunding. Expect no rows.
+-- Checkout writes STRIPE_ORDER_FAILED when the order failed, and
+-- STRIPE_ORDER_BUSY when the purchase-cap lock stayed busy. Intents that got an
+-- order on a later attempt have a payment_records row (transaction_id is the
+-- intent id) and are left out here. Expect no rows.
+--
+-- Refund a row only when holds_still_confirmed = 0. While any of the charge's
+-- holds is still CONFIRMED, checkout with that intent can still create the
+-- order, even after a refund: verification does not look at refunds. Elapsed
+-- time is no guide, because each visit to the checkout page extends confirmed
+-- holds. busy_only = true means every attempt so far failed on a busy lock.
 SELECT f.payment_intent,
        f.user_id,
-       MIN(f.created_at)             AS first_failed_at,
-       MAX(f.created_at)             AS last_failed_at,
-       COUNT(*)                      AS failed_attempts,
-       bool_and(f.action = 'STRIPE_ORDER_BUSY') AS busy_only
+       MIN(f.created_at)                         AS first_failed_at,
+       MAX(f.created_at)                         AS last_failed_at,
+       COUNT(*)                                  AS failed_attempts,
+       bool_and(f.action = 'STRIPE_ORDER_BUSY')  AS busy_only,
+       MAX(f.holds_still_confirmed)              AS holds_still_confirmed
 FROM (
   SELECT substring(a.details from 'stripe_intent=([^,]+)') AS payment_intent,
          a.user_id,
          a.action,
-         a.created_at
+         a.created_at,
+         (SELECT COUNT(*)
+          FROM seat_holds h
+          WHERE h.status = 'CONFIRMED'
+            AND h.id::text IN (
+              SELECT m.hold[1]
+              FROM regexp_matches(
+                     coalesce(substring(a.details from 'holdIds=\[([^]]*)\]'), ''),
+                     '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
+                     'g') AS m(hold))) AS holds_still_confirmed
   FROM audit_logs a
   WHERE a.action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')
     AND a.created_at > now() - interval '14 days'

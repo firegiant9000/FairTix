@@ -12,8 +12,10 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fairtix.audit.application.AuditService;
 import com.fairtix.auth.WithMockPrincipal;
 import com.fairtix.common.LockBusyException;
 import com.fairtix.events.domain.Event;
@@ -68,6 +70,7 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
 
   @MockitoSpyBean private StripePaymentService stripePaymentService;
   @MockitoSpyBean private OrderService orderService;
+  @MockitoSpyBean private AuditService auditService;
 
   private User buyer;
   private SeatHold hold;
@@ -127,6 +130,22 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
         "SELECT details FROM audit_logs WHERE action = 'STRIPE_ORDER_BUSY'", String.class))
         .contains("stripe_intent=" + INTENT);
     assertThat(count("SELECT COUNT(*) FROM seat_holds WHERE status = 'CONFIRMED'")).isEqualTo(1);
+  }
+
+  /**
+   * The audit write fails too (for example the pool is exhausted). The customer
+   * still gets the retryable 409 for the original error, not a 500 for the audit.
+   */
+  @Test
+  void auditFailureAfterBusy_stillAnswersTheOriginal409() throws Exception {
+    doThrow(new LockBusyException("busy", null))
+        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+    doThrow(new IllegalStateException("no connection"))
+        .when(auditService).log(any(), eq("STRIPE_ORDER_BUSY"), any(), any(), any());
+
+    checkout()
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("REQUEST_IN_PROGRESS"));
   }
 
   /**
