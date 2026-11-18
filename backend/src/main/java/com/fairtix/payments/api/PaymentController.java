@@ -13,10 +13,10 @@ import com.fairtix.organizations.application.OrgSalesCapService;
 import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.domain.Plan;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
+import com.fairtix.payments.application.OnlinePaymentIntentService;
 import com.fairtix.payments.application.PaymentFailedException;
 import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.payments.application.PaymentSimulationService;
-import com.fairtix.payments.application.OnlinePaymentIntentService;
 import com.fairtix.payments.application.StripePaymentService;
 import com.fairtix.payments.application.StripePaymentService.ConnectContext;
 import com.fairtix.payments.dto.PaymentIntentRequest;
@@ -287,6 +287,11 @@ public class PaymentController {
     if (!stripeEnabled) {
       throw new ResponseStatusException(HttpStatus.NOT_IMPLEMENTED,
           "Stripe is not enabled in this environment");
+    }
+
+    // The hold-set hash de-duplicates ids but the amount sums them, so reject duplicates.
+    if (request.holdIds().stream().distinct().count() != request.holdIds().size()) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Duplicate hold ids");
     }
 
     // Keeps the CONFIRMED-hold sweep from freeing these seats while the customer pays.

@@ -45,6 +45,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -129,6 +130,24 @@ class StripePaymentControllerTest {
     assertThat(jdbcTemplate.queryForObject(
         "SELECT COUNT(*) FROM online_payment_intents WHERE user_id = ? AND status = 'ACTIVE'",
         Integer.class, user.getId())).isEqualTo(1);
+  }
+
+  @Test
+  void createIntent_duplicateHoldIds_returns400() throws Exception {
+    String body = """
+        { "holdIds": ["%s", "%s"] }
+        """.formatted(confirmedHold.getId(), confirmedHold.getId());
+
+    mockMvc.perform(post("/api/payments/intent")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isBadRequest());
+
+    verify(stripePaymentService, never())
+        .createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM online_payment_intents", Integer.class)).isZero();
   }
 
   @Test
