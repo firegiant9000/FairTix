@@ -21,7 +21,10 @@ import com.fairtix.refunds.domain.RefundStatus;
 import com.fairtix.refunds.infrastructure.RefundRepository;
 import com.fairtix.tickets.domain.Ticket;
 import com.fairtix.tickets.domain.TicketStatus;
+import com.fairtix.tickets.domain.TicketTransferRequest;
+import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
+import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.persistence.EntityManager;
@@ -38,7 +41,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -57,6 +62,7 @@ public class RefundService {
   private final EmailTemplateService emailTemplateService;
   private final RiskScoringService riskScoringService;
   private final StripePaymentService stripePaymentService;
+  private final TicketTransferRequestRepository transferRepository;
 
   @PersistenceContext
   private EntityManager entityManager;
@@ -82,7 +88,9 @@ public class RefundService {
       NotificationGate notificationGate,
       EmailTemplateService emailTemplateService,
       RiskScoringService riskScoringService,
-      StripePaymentService stripePaymentService) {
+      StripePaymentService stripePaymentService,
+      TicketTransferRequestRepository transferRepository) {
+    this.transferRepository = transferRepository;
     this.refundRepository = refundRepository;
     this.orderRepository = orderRepository;
     this.ticketRepository = ticketRepository;
@@ -292,8 +300,15 @@ public class RefundService {
       paymentRecordRepository.save(refundRecord);
     }
 
-    // Mark tickets as REFUNDED and release seats
-    List<Ticket> tickets = ticketRepository.findAllByOrder_Id(refund.getOrderId());
+    // Mark tickets as REFUNDED and release seats. Each ticket row is locked first,
+    // in id order, and re-read: TransferService.acceptTransfer takes the same lock,
+    // so an acceptance either committed before this or waits and then sees REFUNDED.
+    List<Ticket> tickets = ticketRepository.findAllByOrder_Id(refund.getOrderId()).stream()
+        .sorted(Comparator.comparing(Ticket::getId))
+        .toList();
+    for (Ticket ticket : tickets) {
+      entityManager.refresh(ticket, LockModeType.PESSIMISTIC_WRITE);
+    }
     for (Ticket ticket : tickets) {
       ticket.setStatus(TicketStatus.REFUNDED);
       ticketRepository.save(ticket);
@@ -301,6 +316,7 @@ public class RefundService {
       seat.setStatus(SeatStatus.AVAILABLE);
       seatRepository.save(seat);
     }
+    cancelPendingTransfers(tickets, refund, actorId);
 
     if (stripeRefundInitiated) {
       // Stripe is processing; the charge.refunded webhook flips the request to
@@ -319,6 +335,32 @@ public class RefundService {
           "Refund completed for order " + refund.getOrderId() + ", amount=" + refund.getAmount());
     }
     return new FinaliseResult(refund, true);
+  }
+
+  /**
+   * A refunded ticket cannot change hands: its pending transfer request ends here.
+   * Each request row is locked and re-read before it is written (the row has no
+   * version column, so a reject or cancel committed since the query would
+   * otherwise be overwritten). Locked in request-id order, the order
+   * {@code TransferService.expireStaleRequests} uses, so the two cannot deadlock.
+   */
+  private void cancelPendingTransfers(List<Ticket> tickets, RefundRequest refund, UUID actorId) {
+    List<TicketTransferRequest> pending = tickets.stream()
+        .map(ticket -> transferRepository.findByTicket_IdAndStatus(ticket.getId(), TransferStatus.PENDING))
+        .flatMap(Optional::stream)
+        .sorted(Comparator.comparing(TicketTransferRequest::getId))
+        .toList();
+    for (TicketTransferRequest request : pending) {
+      entityManager.refresh(request, LockModeType.PESSIMISTIC_WRITE);
+      if (request.getStatus() != TransferStatus.PENDING) {
+        continue;
+      }
+      request.setStatus(TransferStatus.CANCELLED);
+      request.setResolvedAt(Instant.now());
+      transferRepository.save(request);
+      auditService.logInCurrentTransaction(actorId, "TRANSFER_CANCELLED", "TICKET",
+          request.getTicket().getId(), "ticket refunded, refund=" + refund.getId());
+    }
   }
 
   /**

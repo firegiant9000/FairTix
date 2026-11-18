@@ -9,12 +9,16 @@ import com.fairtix.notifications.application.EmailTemplateService;
 import com.fairtix.notifications.application.NotificationGate;
 import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.orders.application.PurchaseCapExceededException;
+import com.fairtix.refunds.domain.RefundStatus;
+import com.fairtix.refunds.infrastructure.RefundRepository;
 import com.fairtix.tickets.domain.TicketStatus;
 import com.fairtix.tickets.domain.TicketTransferRequest;
 import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.users.infrastructure.UserRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -42,6 +46,8 @@ public class TransferService {
     private final TransferVelocityLimiter velocityLimiter;
     private final RiskScoringService riskScoringService;
     private final PurchaseCapGuard purchaseCapGuard;
+    private final RefundRepository refundRepository;
+    private final EntityManager entityManager;
 
     public TransferService(TicketRepository ticketRepository,
                            TicketTransferRequestRepository transferRepository,
@@ -51,8 +57,12 @@ public class TransferService {
                            EmailTemplateService emailTemplateService,
                            TransferVelocityLimiter velocityLimiter,
                            RiskScoringService riskScoringService,
-                           PurchaseCapGuard purchaseCapGuard) {
+                           PurchaseCapGuard purchaseCapGuard,
+                           RefundRepository refundRepository,
+                           EntityManager entityManager) {
         this.purchaseCapGuard = purchaseCapGuard;
+        this.refundRepository = refundRepository;
+        this.entityManager = entityManager;
         this.ticketRepository = ticketRepository;
         this.transferRepository = transferRepository;
         this.userRepository = userRepository;
@@ -125,7 +135,13 @@ public class TransferService {
         return request;
     }
 
-    @Transactional
+    /**
+     * Lock order: the recipient's cap lock, then the ticket row. The ticket row
+     * lock is the one {@code RefundService.finalise} takes, so an acceptance and a
+     * refund of the same ticket run one after the other, and the second sees what
+     * the first committed.
+     */
+    @Transactional(noRollbackFor = TransferNoLongerAcceptableException.class)
     public TicketTransferRequest acceptTransfer(UUID requestId, UUID toUserId) {
         var request = findRequestForRecipient(requestId, toUserId);
 
@@ -146,6 +162,37 @@ public class TransferService {
         Integer cap = event.getMaxTicketsPerUser();
         if (cap != null) {
             purchaseCapGuard.lock(event.getId(), toUserId);
+        }
+
+        // Lock the ticket, then the request, and re-read both: they were loaded
+        // without a lock, and a refund, a cancel, a reject, an expiry or another
+        // acceptance may have committed since. Ticket before request, as in
+        // RefundService.finalise; the paths that lock only the request
+        // (reject, cancel, expiry) never wait on a ticket.
+        entityManager.refresh(ticket, LockModeType.PESSIMISTIC_WRITE);
+        entityManager.refresh(request, LockModeType.PESSIMISTIC_WRITE);
+        if (request.getStatus() != TransferStatus.PENDING) {
+            throw new IllegalStateException("Transfer request is no longer pending");
+        }
+        if (ticket.getStatus() != TicketStatus.VALID) {
+            request.setStatus(TransferStatus.CANCELLED);
+            request.setResolvedAt(Instant.now());
+            transferRepository.save(request);
+            auditService.logInCurrentTransaction(toUserId, "TRANSFER_CANCELLED", "TICKET",
+                    ticket.getId(), "ticket is " + ticket.getStatus() + ", no longer transferable");
+            throw new TransferNoLongerAcceptableException(
+                    "This ticket can no longer be transferred (status: " + ticket.getStatus() + ")");
+        }
+        // A refund that is approved, or already COMPLETED by the charge.refunded
+        // webhook while finalise has not yet run (or failed and awaits a retry), is
+        // about to void the ticket; finalise also cancels this request. The ticket
+        // is still VALID here, so the order is not yet REFUNDED. Nothing is resolved.
+        if (refundRepository.existsByOrderIdAndStatusIn(ticket.getOrder().getId(),
+                List.of(RefundStatus.APPROVED, RefundStatus.COMPLETED))) {
+            throw new IllegalStateException("A refund is in progress for this ticket's order");
+        }
+
+        if (cap != null) {
             long owned = purchaseCapGuard.activeTickets(toUserId, event.getId());
             long held = purchaseCapGuard.liveHolds(toUserId, event.getId());
             if (owned + held + 1 > cap) {
@@ -157,7 +204,6 @@ public class TransferService {
         }
 
         ticket.setUser(request.getToUser());
-        ticket.setStatus(TicketStatus.VALID);
         ticketRepository.save(ticket);
 
         request.setStatus(TransferStatus.ACCEPTED);
@@ -187,6 +233,7 @@ public class TransferService {
     @Transactional
     public TicketTransferRequest rejectTransfer(UUID requestId, UUID toUserId) {
         var request = findRequestForRecipient(requestId, toUserId);
+        lockPending(request);
 
         request.setStatus(TransferStatus.REJECTED);
         request.setResolvedAt(Instant.now());
@@ -224,6 +271,7 @@ public class TransferService {
         if (request.getStatus() != TransferStatus.PENDING) {
             throw new IllegalStateException("Only PENDING requests can be cancelled");
         }
+        lockPending(request);
 
         request.setStatus(TransferStatus.CANCELLED);
         request.setResolvedAt(Instant.now());
@@ -248,10 +296,20 @@ public class TransferService {
     public void expireStaleRequests() {
         MDC.put("requestId", "sched-expireStaleRequests-" + UUID.randomUUID());
         try {
+            // Locked one by one below, in id order: the order RefundService.finalise
+            // locks requests in, so a sweep and a refund cannot deadlock.
             List<TicketTransferRequest> expired =
-                    transferRepository.findByStatusAndExpiresAtBefore(TransferStatus.PENDING, Instant.now());
+                    transferRepository.findByStatusAndExpiresAtBefore(TransferStatus.PENDING, Instant.now())
+                            .stream()
+                            .sorted(java.util.Comparator.comparing(TicketTransferRequest::getId))
+                            .toList();
 
             for (TicketTransferRequest request : expired) {
+                // Accepted, rejected or cancelled since the query: leave it.
+                entityManager.refresh(request, LockModeType.PESSIMISTIC_WRITE);
+                if (request.getStatus() != TransferStatus.PENDING) {
+                    continue;
+                }
                 request.setStatus(TransferStatus.EXPIRED);
                 request.setResolvedAt(Instant.now());
                 transferRepository.save(request);
@@ -291,6 +349,18 @@ public class TransferService {
         }
 
         return request;
+    }
+
+    /**
+     * Locks the request row and re-reads it. The row has no version column, so
+     * without the lock a writer that read PENDING earlier would overwrite whatever
+     * another transaction committed in between.
+     */
+    private void lockPending(TicketTransferRequest request) {
+        entityManager.refresh(request, LockModeType.PESSIMISTIC_WRITE);
+        if (request.getStatus() != TransferStatus.PENDING) {
+            throw new IllegalStateException("Transfer request is no longer pending");
+        }
     }
 
     private String seatDesc(TicketTransferRequest r) {

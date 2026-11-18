@@ -7,17 +7,31 @@ import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.fraud.domain.RiskTier;
 import com.fairtix.notifications.application.EmailTemplateService;
 import com.fairtix.notifications.application.NotificationGate;
+import com.fairtix.events.domain.Event;
+import com.fairtix.inventory.domain.Seat;
+import com.fairtix.orders.domain.Order;
+import com.fairtix.refunds.domain.RefundStatus;
+import com.fairtix.refunds.infrastructure.RefundRepository;
 import com.fairtix.tickets.domain.Ticket;
 import com.fairtix.tickets.domain.TicketStatus;
+import com.fairtix.tickets.domain.TicketTransferRequest;
+import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
@@ -30,10 +44,15 @@ class TransferServiceTest {
     private AuditService auditService;
     private TicketRepository ticketRepository;
     private UserRepository userRepository;
+    private TicketTransferRequestRepository transferRepository;
+    private RefundRepository refundRepository;
+    private EntityManager entityManager;
     private TransferService transferService;
 
     private static final UUID USER_ID = UUID.randomUUID();
     private static final UUID TICKET_ID = UUID.randomUUID();
+    private static final UUID REQUEST_ID = UUID.randomUUID();
+    private static final UUID ORDER_ID = UUID.randomUUID();
 
     @BeforeEach
     void setUp() {
@@ -42,17 +61,22 @@ class TransferServiceTest {
         auditService = mock(AuditService.class);
         ticketRepository = mock(TicketRepository.class);
         userRepository = mock(UserRepository.class);
+        transferRepository = mock(TicketTransferRequestRepository.class);
+        refundRepository = mock(RefundRepository.class);
+        entityManager = mock(EntityManager.class);
 
         transferService = new TransferService(
                 ticketRepository,
-                mock(TicketTransferRequestRepository.class),
+                transferRepository,
                 userRepository,
                 auditService,
                 mock(NotificationGate.class),
                 mock(EmailTemplateService.class),
                 velocityLimiter,
                 riskScoringService,
-                mock(PurchaseCapGuard.class));
+                mock(PurchaseCapGuard.class),
+                refundRepository,
+                entityManager);
 
         when(riskScoringService.getTier(USER_ID)).thenReturn(RiskTier.LOW);
     }
@@ -134,6 +158,125 @@ class TransferServiceTest {
                 .isInstanceOf(ResourceNotFoundException.class);
 
         verify(velocityLimiter).acquire(USER_ID);
+    }
+
+    /**
+     * A ticket that is no longer VALID is never handed over or set back to VALID:
+     * the request is resolved, audited, and the acceptance is refused.
+     */
+    @ParameterizedTest
+    @EnumSource(value = TicketStatus.class, names = {"REFUNDED", "CANCELLED", "USED"})
+    void acceptOnATicketThatIsNotValid_resolvesTheRequestAndLeavesTheTicket(TicketStatus status) {
+        Ticket ticket = ticketOwnedBy(UUID.randomUUID(), status);
+        TicketTransferRequest request = pendingRequestFor(ticket);
+
+        assertThatThrownBy(() -> transferService.acceptTransfer(REQUEST_ID, USER_ID))
+                .isInstanceOf(TransferNoLongerAcceptableException.class)
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(entityManager).refresh(ticket, LockModeType.PESSIMISTIC_WRITE);
+        verify(request).setStatus(TransferStatus.CANCELLED);
+        verify(request, never()).setStatus(TransferStatus.ACCEPTED);
+        verify(ticket, never()).setUser(any());
+        verify(ticket, never()).setStatus(any());
+        verify(ticketRepository, never()).save(any());
+        verify(auditService).logInCurrentTransaction(eq(USER_ID), eq("TRANSFER_CANCELLED"),
+                eq("TICKET"), any(), anyString());
+    }
+
+    /** The request is re-read under the ticket lock: one resolved meanwhile is not accepted. */
+    @Test
+    void acceptOnARequestResolvedWhileWaitingForTheLock_isRefused() {
+        Ticket ticket = ticketOwnedBy(UUID.randomUUID(), TicketStatus.VALID);
+        TicketTransferRequest request = pendingRequestFor(ticket);
+        AtomicReference<TransferStatus> status = new AtomicReference<>(TransferStatus.PENDING);
+        when(request.getStatus()).thenAnswer(inv -> status.get());
+        doAnswer(inv -> {
+            status.set(TransferStatus.CANCELLED);
+            return null;
+        }).when(entityManager).refresh(request, LockModeType.PESSIMISTIC_WRITE);
+
+        assertThatThrownBy(() -> transferService.acceptTransfer(REQUEST_ID, USER_ID))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("no longer pending");
+
+        verify(ticket, never()).setUser(any());
+        verify(ticketRepository, never()).save(any());
+    }
+
+    /**
+     * APPROVED, or COMPLETED by the charge.refunded webhook before finalise ran:
+     * either way finalise is about to void the ticket.
+     */
+    @Test
+    void acceptWhileARefundIsApprovedOrCompleted_isRefusedAndTheRequestStaysPending() {
+        Ticket ticket = ticketOwnedBy(UUID.randomUUID(), TicketStatus.VALID);
+        TicketTransferRequest request = pendingRequestFor(ticket);
+        when(refundRepository.existsByOrderIdAndStatusIn(
+                ORDER_ID, List.of(RefundStatus.APPROVED, RefundStatus.COMPLETED)))
+                .thenReturn(true);
+
+        assertThatThrownBy(() -> transferService.acceptTransfer(REQUEST_ID, USER_ID))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("refund is in progress");
+
+        verify(request, never()).setStatus(any());
+        verify(ticket, never()).setUser(any());
+        verify(ticketRepository, never()).save(any());
+    }
+
+    @Test
+    void acceptOnAValidTicket_handsItOverWithoutTouchingItsStatus() {
+        Ticket ticket = ticketOwnedBy(UUID.randomUUID(), TicketStatus.VALID);
+        TicketTransferRequest request = pendingRequestFor(ticket);
+        transferService.acceptTransfer(REQUEST_ID, USER_ID);
+
+        verify(ticket).setUser(request.getToUser());
+        verify(ticket, never()).setStatus(any());
+        verify(request).setStatus(TransferStatus.ACCEPTED);
+    }
+
+    /** Reject and cancel re-read the request under its row lock before resolving it. */
+    @Test
+    void rejectOnARequestResolvedMeanwhile_isRefused() {
+        TicketTransferRequest request =
+                pendingRequestFor(ticketOwnedBy(UUID.randomUUID(), TicketStatus.VALID));
+        AtomicReference<TransferStatus> status = new AtomicReference<>(TransferStatus.PENDING);
+        when(request.getStatus()).thenAnswer(inv -> status.get());
+        doAnswer(inv -> {
+            status.set(TransferStatus.ACCEPTED);
+            return null;
+        }).when(entityManager).refresh(request, LockModeType.PESSIMISTIC_WRITE);
+
+        assertThatThrownBy(() -> transferService.rejectTransfer(REQUEST_ID, USER_ID))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("no longer pending");
+
+        verify(request, never()).setStatus(TransferStatus.REJECTED);
+        verify(transferRepository, never()).save(any());
+    }
+
+    /** A PENDING, unexpired request addressed to {@link #USER_ID}, on an uncapped event. */
+    private TicketTransferRequest pendingRequestFor(Ticket ticket) {
+        Event event = mock(Event.class);
+        when(event.getMaxTicketsPerUser()).thenReturn(null);
+        Order order = mock(Order.class);
+        when(order.getId()).thenReturn(ORDER_ID);
+        when(ticket.getEvent()).thenReturn(event);
+        when(ticket.getOrder()).thenReturn(order);
+        when(ticket.getSeat()).thenReturn(mock(Seat.class));
+
+        User recipient = mock(User.class);
+        when(recipient.getId()).thenReturn(USER_ID);
+        User sender = ticket.getUser();
+        TicketTransferRequest request = mock(TicketTransferRequest.class);
+        when(request.getToUser()).thenReturn(recipient);
+        when(request.getFromUser()).thenReturn(sender);
+        when(request.getStatus()).thenReturn(TransferStatus.PENDING);
+        when(request.getExpiresAt()).thenReturn(Instant.now().plusSeconds(3600));
+        when(request.getTicket()).thenReturn(ticket);
+        when(transferRepository.findById(REQUEST_ID)).thenReturn(Optional.of(request));
+        return request;
     }
 
     private void ownedValidTicket() {
