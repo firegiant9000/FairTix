@@ -1,6 +1,7 @@
 package com.fairtix.holds.application;
 
 import com.fairtix.audit.application.AuditService;
+import com.fairtix.common.TransactionLock;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.holds.dto.IssueCompRequest;
@@ -8,8 +9,10 @@ import com.fairtix.inventory.application.SeatHoldConflictException;
 import com.fairtix.inventory.domain.Seat;
 import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatRepository;
+import com.fairtix.orders.application.PurchaseCapExceededException;
 import com.fairtix.orders.domain.Order;
 import com.fairtix.orders.infrastructure.OrderRepository;
+import com.fairtix.tickets.application.PurchaseCapGuard;
 import com.fairtix.tickets.domain.Ticket;
 import com.fairtix.tickets.domain.TicketKind;
 import com.fairtix.tickets.infrastructure.TicketRepository;
@@ -18,6 +21,7 @@ import com.fairtix.users.infrastructure.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -39,6 +43,8 @@ class CompServiceTest {
   private UserRepository users;
   private OrderRepository orders;
   private AuditService audit;
+  private TransactionLock transactionLock;
+  private PurchaseCapGuard purchaseCapGuard;
   private CompService service;
 
   private UUID issuerId;
@@ -54,7 +60,10 @@ class CompServiceTest {
     users = mock(UserRepository.class);
     orders = mock(OrderRepository.class);
     audit = mock(AuditService.class);
-    service = new CompService(events, seats, tickets, users, orders, audit);
+    transactionLock = mock(TransactionLock.class);
+    purchaseCapGuard = mock(PurchaseCapGuard.class);
+    service = new CompService(events, seats, tickets, users, orders, audit,
+        transactionLock, purchaseCapGuard);
 
     issuerId = UUID.randomUUID();
     eventId = UUID.randomUUID();
@@ -62,6 +71,7 @@ class CompServiceTest {
     event = mock(Event.class);
     when(event.getId()).thenReturn(eventId);
     when(event.getCompLimit()).thenReturn(null);
+    when(event.getMaxTicketsPerUser()).thenReturn(null);
     when(events.findById(eventId)).thenReturn(Optional.of(event));
 
     issuer = new User();
@@ -131,6 +141,78 @@ class CompServiceTest {
     assertThatThrownBy(() -> service.issueComp(req, issuerId))
         .isInstanceOf(CompLimitExceededException.class);
     verifyNoInteractions(orders);
+  }
+
+  /** The count runs under the per-event lock, taken before any seat is locked. */
+  @Test
+  void compLimitIsCountedUnderTheEventLock() {
+    when(event.getCompLimit()).thenReturn(5);
+    UUID seatId = UUID.randomUUID();
+    Seat seat = mockSeat(seatId, SeatStatus.AVAILABLE);
+    when(seats.findAndLockByIdIn(List.of(seatId))).thenReturn(List.of(seat));
+
+    service.issueComp(new IssueCompRequest(eventId, List.of(seatId), null, null, null, false), issuerId);
+
+    InOrder order = inOrder(transactionLock, tickets, seats);
+    order.verify(transactionLock).acquire("comp-limit:" + eventId);
+    order.verify(tickets).countByEvent_IdAndKind(eventId, TicketKind.COMP);
+    order.verify(seats).findAndLockByIdIn(List.of(seatId));
+  }
+
+  /** Comps count toward the recipient's purchase cap, checked under the cap lock. */
+  @Test
+  void refusesACompOverTheRecipientsPurchaseCap() {
+    when(event.getMaxTicketsPerUser()).thenReturn(2);
+    User recipient = new User();
+    recipient.setId(UUID.randomUUID());
+    recipient.setEmail("guest@example.com");
+    when(users.findByEmail("guest@example.com")).thenReturn(Optional.of(recipient));
+    when(purchaseCapGuard.activeTickets(recipient.getId(), eventId)).thenReturn(1L);
+    when(purchaseCapGuard.liveHolds(recipient.getId(), eventId)).thenReturn(1L);
+    UUID seatId = UUID.randomUUID();
+
+    assertThatThrownBy(() -> service.issueComp(
+        new IssueCompRequest(eventId, List.of(seatId), null, "guest@example.com", null, false),
+        issuerId))
+        .isInstanceOf(PurchaseCapExceededException.class);
+
+    InOrder order = inOrder(purchaseCapGuard);
+    order.verify(purchaseCapGuard).lock(eventId, recipient.getId());
+    order.verify(purchaseCapGuard).activeTickets(recipient.getId(), eventId);
+    verify(seats, never()).findAndLockByIdIn(any());
+    verifyNoInteractions(orders);
+  }
+
+  /**
+   * A name-only comp (no email) is owned by the issuer as a stand-in; it is not
+   * the issuer's purchase, so the issuer's cap is neither locked nor counted.
+   */
+  @Test
+  void nameOnlyCompOnACappedEvent_isNotCountedAgainstTheIssuer() {
+    when(event.getMaxTicketsPerUser()).thenReturn(1);
+    when(purchaseCapGuard.activeTickets(any(), any())).thenReturn(5L);
+    UUID seatId = UUID.randomUUID();
+    Seat seat = mockSeat(seatId, SeatStatus.AVAILABLE);
+    when(seats.findAndLockByIdIn(List.of(seatId))).thenReturn(List.of(seat));
+
+    assertThat(service.issueComp(
+        new IssueCompRequest(eventId, List.of(seatId), "Will Call Guest", null, null, true), issuerId))
+        .hasSize(1);
+
+    verify(purchaseCapGuard, never()).lock(any(), any());
+    verify(purchaseCapGuard, never()).activeTickets(any(), any());
+  }
+
+  @Test
+  void uncappedEventTakesNoLocks() {
+    UUID seatId = UUID.randomUUID();
+    Seat seat = mockSeat(seatId, SeatStatus.AVAILABLE);
+    when(seats.findAndLockByIdIn(List.of(seatId))).thenReturn(List.of(seat));
+
+    service.issueComp(new IssueCompRequest(eventId, List.of(seatId), null, null, null, false), issuerId);
+
+    verifyNoInteractions(transactionLock);
+    verify(purchaseCapGuard, never()).lock(any(), any());
   }
 
   @Test
