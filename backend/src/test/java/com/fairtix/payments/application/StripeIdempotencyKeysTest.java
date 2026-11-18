@@ -95,4 +95,46 @@ class StripeIdempotencyKeysTest {
     assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null))
         .startsWith("fairtix-pi2-");
   }
+
+  @Test
+  void holdSetHash_ignoresOrderAndDuplicates() {
+    assertThat(StripeIdempotencyKeys.holdSetHash(List.of(HOLD_A, HOLD_B, HOLD_A)))
+        .isEqualTo(StripeIdempotencyKeys.holdSetHash(List.of(HOLD_B, HOLD_A)))
+        .matches("^[0-9a-f]{64}$");
+  }
+
+  @Test
+  void holdSetHash_differsByHoldSet() {
+    assertThat(StripeIdempotencyKeys.holdSetHash(List.of(HOLD_A)))
+        .isNotEqualTo(StripeIdempotencyKeys.holdSetHash(List.of(HOLD_A, HOLD_B)));
+  }
+
+  @Test
+  void routingHash_directVsConnect() {
+    StripePaymentService.ConnectContext fee50 =
+        new StripePaymentService.ConnectContext("org", "acct_1", 50L, "Org");
+    StripePaymentService.ConnectContext fee75 =
+        new StripePaymentService.ConnectContext("org", "acct_1", 75L, "Org");
+    assertThat(StripeIdempotencyKeys.routingHash(null))
+        .isNotEqualTo(StripeIdempotencyKeys.routingHash(fee50))
+        .matches("^[0-9a-f]{64}$");
+    assertThat(StripeIdempotencyKeys.routingHash(fee50))
+        .isNotEqualTo(StripeIdempotencyKeys.routingHash(fee75));
+  }
+
+  @Test
+  void replacementKey_nullMatchesOriginal() {
+    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null, null))
+        .isEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null));
+  }
+
+  @Test
+  void replacementKey_differsFromOriginal() {
+    String original = StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null);
+    String replaced = StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null, "pi_old");
+    assertThat(replaced)
+        .isNotEqualTo(original)
+        .isNotEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null, "pi_other"))
+        .startsWith("fairtix-pi2-");
+  }
 }

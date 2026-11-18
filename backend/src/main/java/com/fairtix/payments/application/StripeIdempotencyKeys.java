@@ -38,12 +38,43 @@ public final class StripeIdempotencyKeys {
    */
   public static String onlineIntent(UUID userId, Collection<UUID> holdIds, long amountCents,
       StripePaymentService.ConnectContext connect) {
-    String holds = holdIds.stream().map(UUID::toString).sorted().distinct()
+    return onlineIntent(userId, holdIds, amountCents, connect, null);
+  }
+
+  /**
+   * Key for a replacement intent: the same payment as {@link #onlineIntent(UUID,
+   * Collection, long, StripePaymentService.ConnectContext)} but after the intent
+   * {@code replacesIntentId} was abandoned. A null {@code replacesIntentId}
+   * returns the original key unchanged.
+   */
+  public static String onlineIntent(UUID userId, Collection<UUID> holdIds, long amountCents,
+      StripePaymentService.ConnectContext connect, String replacesIntentId) {
+    String base = userId + "|" + holdsString(holdIds) + "|" + amountCents + "|" + routingString(connect);
+    if (replacesIntentId == null) {
+      return "fairtix-pi2-" + sha256Hex(base);
+    }
+    return "fairtix-pi2-" + sha256Hex(base + "|replaces:" + replacesIntentId);
+  }
+
+  /** 64-char sha256 hex of the sorted, distinct hold ids. */
+  public static String holdSetHash(Collection<UUID> holdIds) {
+    return sha256Hex(holdsString(holdIds));
+  }
+
+  /** 64-char sha256 hex of the Connect routing (or {@code "direct"} when null). */
+  public static String routingHash(StripePaymentService.ConnectContext connect) {
+    return sha256Hex(routingString(connect));
+  }
+
+  private static String holdsString(Collection<UUID> holdIds) {
+    return holdIds.stream().map(UUID::toString).sorted().distinct()
         .collect(Collectors.joining(","));
-    String routing = connect == null ? "direct"
+  }
+
+  private static String routingString(StripePaymentService.ConnectContext connect) {
+    return connect == null ? "direct"
         : connect.organizationId() + "|" + connect.connectedAccountId() + "|"
             + connect.applicationFeeAmountCents() + "|" + connect.statementDescriptorSuffix();
-    return "fairtix-pi2-" + sha256Hex(userId + "|" + holds + "|" + amountCents + "|" + routing);
   }
 
   /** One key per pending box-office sale row. */
