@@ -73,11 +73,25 @@ public class OrgSalesCapService {
     }
   }
 
-  /** Records a successful sale against the rolling cap. */
+  /**
+   * Records a successful sale against the rolling cap, once per (channel, sourceId): a repeat
+   * for the same sale (a retry, a reconciliation job) is ignored. Returns whether an entry was
+   * written. An entry without a sourceId has no key, so it is always written.
+   */
   @Transactional
-  public void recordSale(UUID organizationId, long amountCents, String channel, String sourceId) {
-    if (organizationId == null || amountCents <= 0) return;
-    ledger.save(new OrgSalesLedgerEntry(organizationId, amountCents, channel, sourceId));
+  public boolean recordSale(UUID organizationId, long amountCents, String channel, String sourceId) {
+    if (organizationId == null || amountCents <= 0) return false;
+    if (sourceId == null) {
+      ledger.save(new OrgSalesLedgerEntry(organizationId, amountCents, channel, null));
+      return true;
+    }
+    boolean inserted = ledger.insertIfAbsent(UUID.randomUUID(), organizationId, amountCents,
+        channel, sourceId, Instant.now()) == 1;
+    if (!inserted) {
+      log.info("Sale already recorded against the sales cap: org={} channel={} source={}",
+          organizationId, channel, sourceId);
+    }
+    return inserted;
   }
 
   /** Visible for tests and the dashboard widget. */
