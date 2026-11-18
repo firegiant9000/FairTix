@@ -381,16 +381,19 @@ public class PaymentController {
         try {
           replay = replayStripeCheckout(principal.getUserId(), request.holdIds(), paymentIntentId);
         } catch (RuntimeException replayFailure) {
-          log.warn("Checkout failed and the replay lookup did not return an order:"
-              + " stripe_intent={}, error={}, replay={}", paymentIntentId,
-              ex.getClass().getSimpleName(), replayFailure.getClass().getSimpleName(),
-              replayFailure);
           if (replayFailure instanceof ResponseStatusException
               || replayFailure instanceof PaymentRefundedException) {
             // A deliberate answer about this intent (other user, other holds, refunded).
+            // Expected on double submits, so no stack trace.
+            log.warn("Checkout failed and the replay refused the intent:"
+                + " stripe_intent={}, error={}, replay={}", paymentIntentId,
+                ex.getClass().getSimpleName(), replayFailure.getClass().getSimpleName());
             replayFailure.addSuppressed(ex);
             throw replayFailure;
           }
+          log.warn("Checkout failed and the replay lookup failed:"
+              + " stripe_intent={}, error={}", paymentIntentId,
+              ex.getClass().getSimpleName(), replayFailure);
           ex.addSuppressed(replayFailure);
           throw ex;
         }

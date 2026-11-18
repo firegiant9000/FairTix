@@ -407,7 +407,33 @@ class StripePaymentControllerTest {
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
             .contentType(MediaType.APPLICATION_JSON)
             .content(checkoutBody(confirmedHold.getId(), "pi_race_refused")))
-        .andExpect(status().isConflict());
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.message")
+            .value("This payment has already been used for a different order"));
+  }
+
+  /** The losing submit's replay finds the winner's order already refunded. */
+  @Test
+  void checkout_losingSubmitWhoseReplayFindsRefundedOrder_answersPaymentRefunded()
+      throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doAnswer(inv -> {
+      inv.callRealMethod();
+      throw new IllegalArgumentException("Hold is not confirmed (status: RELEASED)");
+    }).when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+    doAnswer(inv -> {
+      @SuppressWarnings("unchecked")
+      var found = (java.util.Optional<Order>) inv.callRealMethod();
+      found.ifPresent(o -> o.setStatus(OrderStatus.REFUNDED));
+      return found;
+    }).when(orderService).findOrderForHolds(any(), any());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_race_refunded")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_REFUNDED"));
   }
 
   /** The replay lookup itself fails: the original order failure is the answer. */
