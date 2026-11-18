@@ -22,10 +22,13 @@ import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.List;
@@ -33,6 +36,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -47,6 +51,7 @@ class TransferServiceTest {
     private TicketTransferRequestRepository transferRepository;
     private RefundRepository refundRepository;
     private EntityManager entityManager;
+    private NotificationGate notificationGate;
     private TransferService transferService;
 
     private static final UUID USER_ID = UUID.randomUUID();
@@ -64,13 +69,14 @@ class TransferServiceTest {
         transferRepository = mock(TicketTransferRequestRepository.class);
         refundRepository = mock(RefundRepository.class);
         entityManager = mock(EntityManager.class);
+        notificationGate = mock(NotificationGate.class);
 
         transferService = new TransferService(
                 ticketRepository,
                 transferRepository,
                 userRepository,
                 auditService,
-                mock(NotificationGate.class),
+                notificationGate,
                 mock(EmailTemplateService.class),
                 velocityLimiter,
                 riskScoringService,
@@ -79,6 +85,13 @@ class TransferServiceTest {
                 entityManager);
 
         when(riskScoringService.getTier(USER_ID)).thenReturn(RiskTier.LOW);
+    }
+
+    @AfterEach
+    void clearTransactionSynchronization() {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test
@@ -256,6 +269,100 @@ class TransferServiceTest {
         verify(transferRepository, never()).save(any());
     }
 
+    // ---- Mail is sent after the commit, never inside the transaction --------
+
+    @Test
+    void requestMail_isSentOnlyAfterTheCommit() {
+        Ticket ticket = ownedValidTicket();
+        User recipient = mock(User.class);
+        when(recipient.getId()).thenReturn(UUID.randomUUID());
+        when(userRepository.findByEmail("other@example.com")).thenReturn(Optional.of(recipient));
+        TransactionSynchronizationManager.initSynchronization();
+
+        transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com");
+        verifyNoInteractions(notificationGate);
+
+        commit();
+        verify(notificationGate).sendEmail(any(), any(), eq("other@example.com"), anyString(), any());
+    }
+
+    @Test
+    void requestMail_isNotSentWhenTheTransactionRollsBack() {
+        ownedValidTicket();
+        User recipient = mock(User.class);
+        when(recipient.getId()).thenReturn(UUID.randomUUID());
+        when(userRepository.findByEmail("other@example.com")).thenReturn(Optional.of(recipient));
+        TransactionSynchronizationManager.initSynchronization();
+
+        transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com");
+        rollBack();
+
+        verifyNoInteractions(notificationGate);
+    }
+
+    @Test
+    void acceptedMail_isSentOnlyAfterTheCommit() {
+        pendingRequestFor(ticketOwnedBy(UUID.randomUUID(), TicketStatus.VALID));
+        TransactionSynchronizationManager.initSynchronization();
+
+        transferService.acceptTransfer(REQUEST_ID, USER_ID);
+        verifyNoInteractions(notificationGate);
+
+        commit();
+        verify(notificationGate).sendEmail(any(), any(), any(), anyString(), any());
+    }
+
+    /** The commit has happened; a mail failure after it is logged, not thrown. */
+    @Test
+    void acceptedMailFailure_doesNotReachTheCaller() {
+        pendingRequestFor(ticketOwnedBy(UUID.randomUUID(), TicketStatus.VALID));
+        doThrow(new RuntimeException("Email delivery failed"))
+                .when(notificationGate).sendEmail(any(), any(), any(), anyString(), any());
+        TransactionSynchronizationManager.initSynchronization();
+
+        transferService.acceptTransfer(REQUEST_ID, USER_ID);
+
+        assertThatCode(this::commit).doesNotThrowAnyException();
+        verify(notificationGate).sendEmail(any(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    void rejectedMail_isNotSentWhenTheTransactionRollsBack() {
+        pendingRequestFor(ticketOwnedBy(UUID.randomUUID(), TicketStatus.VALID));
+        TransactionSynchronizationManager.initSynchronization();
+
+        transferService.rejectTransfer(REQUEST_ID, USER_ID);
+        rollBack();
+
+        verifyNoInteractions(notificationGate);
+    }
+
+    @Test
+    void expiredMail_isSentOnlyAfterTheCommit() {
+        TicketTransferRequest request =
+                pendingRequestFor(ticketOwnedBy(UUID.randomUUID(), TicketStatus.VALID));
+        when(transferRepository.findByStatusAndExpiresAtBefore(eq(TransferStatus.PENDING), any()))
+                .thenReturn(List.of(request));
+        TransactionSynchronizationManager.initSynchronization();
+
+        transferService.expireStaleRequests();
+        verify(request).setStatus(TransferStatus.EXPIRED);
+        verifyNoInteractions(notificationGate);
+
+        commit();
+        verify(notificationGate).sendEmail(any(), any(), any(), anyString(), any());
+    }
+
+    private void commit() {
+        TransactionSynchronizationManager.getSynchronizations()
+                .forEach(TransactionSynchronization::afterCommit);
+    }
+
+    private void rollBack() {
+        TransactionSynchronizationManager.getSynchronizations()
+                .forEach(s -> s.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK));
+    }
+
     /** A PENDING, unexpired request addressed to {@link #USER_ID}, on an uncapped event. */
     private TicketTransferRequest pendingRequestFor(Ticket ticket) {
         Event event = mock(Event.class);
@@ -279,9 +386,12 @@ class TransferServiceTest {
         return request;
     }
 
-    private void ownedValidTicket() {
+    private Ticket ownedValidTicket() {
         Ticket ticket = ticketOwnedBy(USER_ID, TicketStatus.VALID);
+        when(ticket.getEvent()).thenReturn(mock(Event.class));
+        when(ticket.getSeat()).thenReturn(mock(Seat.class));
         when(ticketRepository.findById(TICKET_ID)).thenReturn(Optional.of(ticket));
+        return ticket;
     }
 
     private static Ticket ticketOwnedBy(UUID ownerId, TicketStatus status) {

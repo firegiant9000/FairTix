@@ -1,6 +1,7 @@
 package com.fairtix.tickets.application;
 
 import com.fairtix.audit.application.AuditService;
+import com.fairtix.common.AfterCommit;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
@@ -19,8 +20,6 @@ import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -34,7 +33,6 @@ import java.util.UUID;
 @Service
 public class TransferService {
 
-    private static final Logger log = LoggerFactory.getLogger(TransferService.class);
     private static final int TRANSFER_EXPIRY_DAYS = 7;
 
     private final TicketRepository ticketRepository;
@@ -118,19 +116,17 @@ public class TransferService {
         auditService.logInCurrentTransaction(fromUserId, "TRANSFER_REQUESTED", "TICKET", ticketId,
                 "to=" + toEmail);
 
+        UUID toUserId = toUser.getId();
+        String fromEmail = ticket.getUser().getEmail();
+        String eventTitle = ticket.getEvent().getTitle();
         String seatDesc = seatDesc(request);
-        try {
-            notificationGate.sendEmail(
-                    toUser.getId(),
-                    NotificationCategory.TICKET_TRANSFER,
-                    toEmail,
-                    "Ticket transfer request from FairTix",
-                    emailTemplateService.buildTransferRequestEmail(
-                            toEmail, ticket.getUser().getEmail(),
-                            ticket.getEvent().getTitle(), seatDesc, null));
-        } catch (Exception e) {
-            log.warn("Failed to send transfer request email to={}", toEmail, e);
-        }
+        AfterCommit.run("transfer request email, request " + request.getId(), () -> notificationGate.sendEmail(
+                toUserId,
+                NotificationCategory.TICKET_TRANSFER,
+                toEmail,
+                "Ticket transfer request from FairTix",
+                emailTemplateService.buildTransferRequestEmail(
+                        toEmail, fromEmail, eventTitle, seatDesc, null)));
 
         return request;
     }
@@ -213,19 +209,15 @@ public class TransferService {
         auditService.logInCurrentTransaction(toUserId, "TRANSFER_ACCEPTED", "TICKET", ticket.getId(),
                 "from=" + request.getFromUser().getEmail());
 
-        String seatDesc = seatDesc(request);
-        try {
-            notificationGate.sendEmail(
-                    request.getFromUser().getId(),
-                    NotificationCategory.TICKET_TRANSFER,
-                    request.getFromUser().getEmail(),
-                    "Your ticket transfer was accepted",
-                    emailTemplateService.buildTransferAcceptedEmail(
-                            request.getFromUser().getEmail(), request.getToUser().getEmail(),
-                            ticket.getEvent().getTitle(), seatDesc));
-        } catch (Exception e) {
-            log.warn("Failed to send transfer accepted email", e);
-        }
+        // Sent after the commit, so not while the cap lock and ticket row are held.
+        MailToSender mail = MailToSender.of(request, seatDesc(request));
+        AfterCommit.run("transfer accepted email, request " + request.getId(), () -> notificationGate.sendEmail(
+                mail.fromUserId(),
+                NotificationCategory.TICKET_TRANSFER,
+                mail.fromEmail(),
+                "Your ticket transfer was accepted",
+                emailTemplateService.buildTransferAcceptedEmail(
+                        mail.fromEmail(), mail.toEmail(), mail.eventTitle(), mail.seatDesc())));
 
         return request;
     }
@@ -242,19 +234,14 @@ public class TransferService {
         auditService.logInCurrentTransaction(toUserId, "TRANSFER_REJECTED", "TICKET", request.getTicket().getId(),
                 "from=" + request.getFromUser().getEmail());
 
-        String seatDesc = seatDesc(request);
-        try {
-            notificationGate.sendEmail(
-                    request.getFromUser().getId(),
-                    NotificationCategory.TICKET_TRANSFER,
-                    request.getFromUser().getEmail(),
-                    "Your ticket transfer was declined",
-                    emailTemplateService.buildTransferRejectedEmail(
-                            request.getFromUser().getEmail(), request.getToUser().getEmail(),
-                            request.getTicket().getEvent().getTitle(), seatDesc));
-        } catch (Exception e) {
-            log.warn("Failed to send transfer rejected email", e);
-        }
+        MailToSender mail = MailToSender.of(request, seatDesc(request));
+        AfterCommit.run("transfer rejected email, request " + request.getId(), () -> notificationGate.sendEmail(
+                mail.fromUserId(),
+                NotificationCategory.TICKET_TRANSFER,
+                mail.fromEmail(),
+                "Your ticket transfer was declined",
+                emailTemplateService.buildTransferRejectedEmail(
+                        mail.fromEmail(), mail.toEmail(), mail.eventTitle(), mail.seatDesc())));
 
         return request;
     }
@@ -317,19 +304,14 @@ public class TransferService {
                 auditService.logInCurrentTransaction(request.getFromUser().getId(), "TRANSFER_EXPIRED", "TICKET",
                         request.getTicket().getId(), "to=" + request.getToUser().getEmail());
 
-                String seatDesc = seatDesc(request);
-                try {
-                    notificationGate.sendEmail(
-                            request.getFromUser().getId(),
-                            NotificationCategory.TICKET_TRANSFER,
-                            request.getFromUser().getEmail(),
-                            "Your ticket transfer request expired",
-                            emailTemplateService.buildTransferExpiredEmail(
-                                    request.getFromUser().getEmail(),
-                                    request.getTicket().getEvent().getTitle(), seatDesc));
-                } catch (Exception e) {
-                    log.warn("Failed to send transfer expired email to={}", request.getFromUser().getEmail(), e);
-                }
+                MailToSender mail = MailToSender.of(request, seatDesc(request));
+                AfterCommit.run("transfer expired email, request " + request.getId(), () -> notificationGate.sendEmail(
+                        mail.fromUserId(),
+                        NotificationCategory.TICKET_TRANSFER,
+                        mail.fromEmail(),
+                        "Your ticket transfer request expired",
+                        emailTemplateService.buildTransferExpiredEmail(
+                                mail.fromEmail(), mail.eventTitle(), mail.seatDesc())));
             }
         } finally {
             MDC.remove("requestId");
@@ -360,6 +342,18 @@ public class TransferService {
         entityManager.refresh(request, LockModeType.PESSIMISTIC_WRITE);
         if (request.getStatus() != TransferStatus.PENDING) {
             throw new IllegalStateException("Transfer request is no longer pending");
+        }
+    }
+
+    /**
+     * What a mail to the sender needs, read inside the transaction: the entities
+     * may be detached by the time the after-commit send runs.
+     */
+    private record MailToSender(UUID fromUserId, String fromEmail, String toEmail,
+                                String eventTitle, String seatDesc) {
+        static MailToSender of(TicketTransferRequest request, String seatDesc) {
+            return new MailToSender(request.getFromUser().getId(), request.getFromUser().getEmail(),
+                    request.getToUser().getEmail(), request.getTicket().getEvent().getTitle(), seatDesc);
         }
     }
 

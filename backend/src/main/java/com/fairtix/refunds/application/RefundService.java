@@ -1,6 +1,7 @@
 package com.fairtix.refunds.application;
 
 import com.fairtix.audit.application.AuditService;
+import com.fairtix.common.AfterCommit;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.domain.RiskTier;
 import com.fairtix.inventory.domain.Seat;
@@ -438,17 +439,19 @@ public class RefundService {
 
   // -------------------------------------------------------------------------
 
+  /** Runs inside requestRefund's transaction; the mail goes out after it commits. */
   private void sendRefundRequestedEmail(UUID userId, RefundRequest refund) {
-    try {
-      User user = userRepository.findById(userId).orElse(null);
-      if (user == null) return;
-      String body = emailTemplateService.buildRefundRequestedEmail(
-          user.getEmail(), refund.getOrderId().toString(), refund.getAmount().toPlainString(), refund.getReason());
-      notificationGate.sendEmail(user.getId(), NotificationCategory.REFUND,
-          user.getEmail(), "Your FairTix refund request was received", body);
-    } catch (Exception ex) {
-      log.warn("Failed to send refund-requested email for refund {}: {}", refund.getId(), ex.getMessage());
-    }
+    User user = userRepository.findById(userId).orElse(null);
+    if (user == null) return;
+    UUID recipientId = user.getId();
+    String email = user.getEmail();
+    String orderId = refund.getOrderId().toString();
+    String amount = refund.getAmount().toPlainString();
+    String reason = refund.getReason();
+    AfterCommit.run("refund-requested email, refund " + refund.getId(), () -> notificationGate.sendEmail(
+        recipientId, NotificationCategory.REFUND, email,
+        "Your FairTix refund request was received",
+        emailTemplateService.buildRefundRequestedEmail(email, orderId, amount, reason)));
   }
 
   private void sendRefundInitiatedEmail(RefundRequest refund) {
@@ -477,16 +480,17 @@ public class RefundService {
     }
   }
 
+  /** Runs inside reviewRefund's transaction; the mail goes out after it commits. */
   private void sendRefundRejectedEmail(RefundRequest refund, String adminNotes) {
-    try {
-      User user = userRepository.findById(refund.getUserId()).orElse(null);
-      if (user == null) return;
-      String body = emailTemplateService.buildRefundRejectedEmail(
-          user.getEmail(), refund.getOrderId().toString(), refund.getReason(), adminNotes);
-      notificationGate.sendEmail(user.getId(), NotificationCategory.REFUND,
-          user.getEmail(), "Update on your FairTix refund request", body);
-    } catch (Exception ex) {
-      log.warn("Failed to send refund-rejected email for refund {}: {}", refund.getId(), ex.getMessage());
-    }
+    User user = userRepository.findById(refund.getUserId()).orElse(null);
+    if (user == null) return;
+    UUID recipientId = user.getId();
+    String email = user.getEmail();
+    String orderId = refund.getOrderId().toString();
+    String reason = refund.getReason();
+    AfterCommit.run("refund-rejected email, refund " + refund.getId(), () -> notificationGate.sendEmail(
+        recipientId, NotificationCategory.REFUND, email,
+        "Update on your FairTix refund request",
+        emailTemplateService.buildRefundRejectedEmail(email, orderId, reason, adminNotes)));
   }
 }
