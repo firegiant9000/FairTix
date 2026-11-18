@@ -16,7 +16,7 @@ import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.payments.application.PaymentFailedException;
 import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.payments.application.PaymentSimulationService;
-import com.fairtix.payments.application.StripeIdempotencyKeys;
+import com.fairtix.payments.application.OnlinePaymentIntentService;
 import com.fairtix.payments.application.StripePaymentService;
 import com.fairtix.payments.application.StripePaymentService.ConnectContext;
 import com.fairtix.payments.dto.PaymentIntentRequest;
@@ -69,6 +69,7 @@ public class PaymentController {
   private final SeatHoldService seatHoldService;
   private final AuditService auditService;
   private final VerifiedEmailGuard verifiedEmailGuard;
+  private final OnlinePaymentIntentService onlinePaymentIntentService;
 
   @Autowired(required = false)
   private PaymentSimulationService paymentSimulationService;
@@ -89,7 +90,9 @@ public class PaymentController {
       OrgSalesCapService salesCapService,
       SeatHoldService seatHoldService,
       AuditService auditService,
-      VerifiedEmailGuard verifiedEmailGuard) {
+      VerifiedEmailGuard verifiedEmailGuard,
+      OnlinePaymentIntentService onlinePaymentIntentService) {
+    this.onlinePaymentIntentService = onlinePaymentIntentService;
     this.verifiedEmailGuard = verifiedEmailGuard;
     this.seatHoldService = seatHoldService;
     this.auditService = auditService;
@@ -271,6 +274,7 @@ public class PaymentController {
       description = "Calculates total for the given holds and returns a Stripe client secret. "
           + "Only available when stripe.enabled=true.")
   @ApiResponse(responseCode = "200", description = "Client secret returned")
+  @ApiResponse(responseCode = "409", description = "PAYMENT_RETRY_CONFLICT: try again")
   @ApiResponse(responseCode = "501", description = "Stripe not enabled")
   @PostMapping("/api/payments/intent")
   public PaymentIntentResponse createPaymentIntent(
@@ -305,10 +309,8 @@ public class PaymentController {
     if (connect != null) {
       salesCapService.checkCanCharge(UUID.fromString(connect.organizationId()), amountCents);
     }
-    String clientSecret = stripePaymentService.createPaymentIntent(amountCents, "usd", connect,
-        principal.getUserId(),
-        StripeIdempotencyKeys.onlineIntent(principal.getUserId(), request.holdIds(), amountCents,
-            connect)).clientSecret();
+    String clientSecret = onlinePaymentIntentService.clientSecretFor(
+        principal.getUserId(), request.holdIds(), amountCents, connect);
     return new PaymentIntentResponse(clientSecret);
   }
 

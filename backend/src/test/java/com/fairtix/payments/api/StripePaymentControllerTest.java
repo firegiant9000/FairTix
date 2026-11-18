@@ -47,6 +47,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -124,6 +125,10 @@ class StripePaymentControllerTest {
             .content(body))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.clientSecret").value("pi_test_secret_xyz"));
+
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM online_payment_intents WHERE user_id = ? AND status = 'ACTIVE'",
+        Integer.class, user.getId())).isEqualTo(1);
   }
 
   @Test
