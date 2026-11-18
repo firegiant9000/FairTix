@@ -391,6 +391,45 @@ class StripePaymentControllerTest {
   }
 
   /**
+   * The losing submit's replay finds the intent paid for an order that does not
+   * cover these holds: the replay's 409 is the answer, not the original failure.
+   */
+  @Test
+  void checkout_losingSubmitWhoseReplayRefuses_answersWithReplayConflict() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doAnswer(inv -> {
+      inv.callRealMethod();
+      throw new IllegalArgumentException("Hold is not confirmed (status: RELEASED)");
+    }).when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+    doReturn(java.util.Optional.empty()).when(orderService).findOrderForHolds(any(), any());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_race_refused")))
+        .andExpect(status().isConflict());
+  }
+
+  /** The replay lookup itself fails: the original order failure is the answer. */
+  @Test
+  void checkout_failedSubmitWhoseReplayLookupFails_answersWithOriginalError() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doAnswer(inv -> {
+      inv.callRealMethod();
+      throw new IllegalArgumentException("Hold is not confirmed (status: RELEASED)");
+    }).when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+    doThrow(new IllegalStateException("lookup failed"))
+        .when(orderService).findOrderForHolds(any(), any());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_race_lookup_failed")))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value("Hold is not confirmed (status: RELEASED)"));
+  }
+
+  /**
    * Order creation completes the queue entry, so the replay must run before the
    * queue-clearance check or a resubmit for a queued event gets a 403.
    */

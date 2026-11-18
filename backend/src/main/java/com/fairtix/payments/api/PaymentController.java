@@ -383,7 +383,8 @@ public class PaymentController {
         } catch (RuntimeException replayFailure) {
           log.warn("Checkout failed and the replay lookup did not return an order:"
               + " stripe_intent={}, error={}, replay={}", paymentIntentId,
-              ex.getClass().getSimpleName(), replayFailure.getClass().getSimpleName());
+              ex.getClass().getSimpleName(), replayFailure.getClass().getSimpleName(),
+              replayFailure);
           if (replayFailure instanceof ResponseStatusException
               || replayFailure instanceof PaymentRefundedException) {
             // A deliberate answer about this intent (other user, other holds, refunded).
