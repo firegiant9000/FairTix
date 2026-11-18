@@ -109,7 +109,8 @@ class StripePaymentControllerTest {
   void createIntent_returnsClientSecret() throws Exception {
     // ConnectContext may be null (no Connect org); the key is always the
     // deterministic online-intent key (exposure gate (b)).
-    doReturn("pi_test_secret_xyz").when(stripePaymentService)
+    doReturn(new StripePaymentService.StripeIntent("pi_test_xyz", "requires_payment_method",
+        "pi_test_secret_xyz")).when(stripePaymentService)
         .createPaymentIntent(anyLong(), anyString(), any(), eq(user.getId()),
             org.mockito.ArgumentMatchers.startsWith("fairtix-pi2-"));
 

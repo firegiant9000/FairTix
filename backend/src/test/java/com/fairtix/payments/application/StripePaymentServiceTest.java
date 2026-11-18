@@ -5,11 +5,13 @@ import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import com.stripe.exception.ApiConnectionException;
 import com.stripe.exception.CardException;
 import com.stripe.exception.IdempotencyException;
+import com.stripe.exception.InvalidRequestException;
 import com.stripe.model.Charge;
 import com.stripe.model.PaymentIntent;
 import com.stripe.model.Refund;
 import com.stripe.model.RefundCollection;
 import com.stripe.net.RequestOptions;
+import com.stripe.param.PaymentIntentCancelParams;
 import com.stripe.param.PaymentIntentCreateParams;
 import com.stripe.param.PaymentIntentRetrieveParams;
 import com.stripe.param.RefundCreateParams;
@@ -456,11 +458,15 @@ class StripePaymentServiceTest {
     MDC.put("requestId", "req-abc");
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
       PaymentIntent intent = mock(PaymentIntent.class);
+      when(intent.getId()).thenReturn("pi_k1");
       when(intent.getClientSecret()).thenReturn("pi_secret");
       mocked.when(() -> PaymentIntent.create(any(PaymentIntentCreateParams.class), any(RequestOptions.class)))
           .thenReturn(intent);
 
-      assertThat(service.createPaymentIntent(5000L, "usd", null, OWNER, "fairtix-pi2-k1")).isEqualTo("pi_secret");
+      StripePaymentService.StripeIntent created =
+          service.createPaymentIntent(5000L, "usd", null, OWNER, "fairtix-pi2-k1");
+      assertThat(created.clientSecret()).isEqualTo("pi_secret");
+      assertThat(created.id()).isEqualTo("pi_k1");
 
       ArgumentCaptor<PaymentIntentCreateParams> params =
           ArgumentCaptor.forClass(PaymentIntentCreateParams.class);
@@ -508,6 +514,71 @@ class StripePaymentServiceTest {
 
       assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd", null, OWNER, "fairtix-pi2-k2"))
           .isInstanceOf(PaymentRetryConflictException.class);
+    }
+  }
+
+  private static PaymentIntent stubIntent(String id, String status, String secret) {
+    PaymentIntent intent = mock(PaymentIntent.class);
+    when(intent.getId()).thenReturn(id);
+    when(intent.getStatus()).thenReturn(status);
+    when(intent.getClientSecret()).thenReturn(secret);
+    return intent;
+  }
+
+  @Test
+  void retrievePaymentIntent_mapsIdStatusSecret() {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent intent = stubIntent("pi_1", "requires_payment_method", "sec_1");
+      mocked.when(() -> PaymentIntent.retrieve("pi_1")).thenReturn(intent);
+
+      assertThat(service.retrievePaymentIntent("pi_1")).isEqualTo(
+          new StripePaymentService.StripeIntent("pi_1", "requires_payment_method", "sec_1"));
+    }
+  }
+
+  @Test
+  void cancelPaymentIntent_cancelsAsAbandoned() throws Exception {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent open = stubIntent("pi_1", "requires_payment_method", "sec_1");
+      PaymentIntent canceled = stubIntent("pi_1", "canceled", "sec_1");
+      when(open.cancel(any(PaymentIntentCancelParams.class))).thenReturn(canceled);
+      mocked.when(() -> PaymentIntent.retrieve("pi_1")).thenReturn(open);
+
+      assertThat(service.cancelPaymentIntent("pi_1").status()).isEqualTo("canceled");
+
+      ArgumentCaptor<PaymentIntentCancelParams> params =
+          ArgumentCaptor.forClass(PaymentIntentCancelParams.class);
+      org.mockito.Mockito.verify(open).cancel(params.capture());
+      assertThat(params.getValue().getCancellationReason())
+          .isEqualTo(PaymentIntentCancelParams.CancellationReason.ABANDONED);
+    }
+  }
+
+  @Test
+  void cancelPaymentIntent_unexpectedState_returnsCurrentIntent() throws Exception {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent open = stubIntent("pi_1", "requires_payment_method", "sec_1");
+      PaymentIntent succeeded = stubIntent("pi_1", "succeeded", "sec_1");
+      when(open.cancel(any(PaymentIntentCancelParams.class))).thenThrow(
+          new InvalidRequestException("cannot cancel", null, "req_1",
+              "payment_intent_unexpected_state", 400, null));
+      mocked.when(() -> PaymentIntent.retrieve("pi_1")).thenReturn(open, succeeded);
+
+      assertThat(service.cancelPaymentIntent("pi_1").status()).isEqualTo("succeeded");
+    }
+  }
+
+  @Test
+  void cancelPaymentIntent_otherError_throws() throws Exception {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent open = stubIntent("pi_1", "requires_payment_method", "sec_1");
+      when(open.cancel(any(PaymentIntentCancelParams.class)))
+          .thenThrow(new ApiConnectionException("connection reset"));
+      mocked.when(() -> PaymentIntent.retrieve("pi_1")).thenReturn(open);
+
+      assertThatThrownBy(() -> service.cancelPaymentIntent("pi_1"))
+          .isExactlyInstanceOf(RuntimeException.class)
+          .hasCauseInstanceOf(ApiConnectionException.class);
     }
   }
 

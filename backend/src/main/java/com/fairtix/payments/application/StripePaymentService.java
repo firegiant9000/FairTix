@@ -7,12 +7,14 @@ import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import com.stripe.Stripe;
 import com.stripe.exception.CardException;
 import com.stripe.exception.IdempotencyException;
+import com.stripe.exception.InvalidRequestException;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Charge;
 import com.stripe.model.PaymentIntent;
 import com.stripe.model.Refund;
 import com.stripe.model.RefundCollection;
 import com.stripe.net.RequestOptions;
+import com.stripe.param.PaymentIntentCancelParams;
 import com.stripe.param.PaymentIntentCreateParams;
 import com.stripe.param.PaymentIntentRetrieveParams;
 import com.stripe.param.RefundCreateParams;
@@ -166,7 +168,7 @@ public class StripePaymentService {
    *
    * <p>{@code idempotencyKey} comes from {@link StripeIdempotencyKeys#onlineIntent}.
    */
-  public String createPaymentIntent(long amountCents, String currency, ConnectContext connect,
+  public StripeIntent createPaymentIntent(long amountCents, String currency, ConnectContext connect,
       UUID userId, String idempotencyKey) {
     Objects.requireNonNull(userId, "userId");
     try {
@@ -189,7 +191,7 @@ public class StripePaymentService {
         builder.putMetadata("fairtix_org_id", connect.organizationId());
       }
       PaymentIntent intent = PaymentIntent.create(builder.build(), keyed(idempotencyKey));
-      return intent.getClientSecret();
+      return toStripeIntent(intent);
     } catch (IdempotencyException e) {
       throw retryConflict(e);
     } catch (CardException e) {
@@ -199,6 +201,44 @@ public class StripePaymentService {
       throw new RuntimeException("Failed to create Stripe payment intent: " + e.getMessage(), e);
     }
   }
+
+  /** Reads an online intent's current id, status and client secret from Stripe. */
+  public StripeIntent retrievePaymentIntent(String paymentIntentId) {
+    try {
+      return toStripeIntent(PaymentIntent.retrieve(paymentIntentId));
+    } catch (StripeException e) {
+      throw new RuntimeException("Failed to retrieve Stripe payment intent: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Cancels an intent as abandoned. If Stripe says it is no longer cancelable
+   * ({@code payment_intent_unexpected_state}, e.g. it already succeeded), returns
+   * the current intent instead so the caller can decide from its status.
+   */
+  public StripeIntent cancelPaymentIntent(String paymentIntentId) {
+    try {
+      PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId);
+      PaymentIntent canceled = intent.cancel(PaymentIntentCancelParams.builder()
+          .setCancellationReason(PaymentIntentCancelParams.CancellationReason.ABANDONED)
+          .build());
+      return toStripeIntent(canceled);
+    } catch (InvalidRequestException e) {
+      if ("payment_intent_unexpected_state".equals(e.getCode())) {
+        return retrievePaymentIntent(paymentIntentId);
+      }
+      throw new RuntimeException("Failed to cancel Stripe payment intent: " + e.getMessage(), e);
+    } catch (StripeException e) {
+      throw new RuntimeException("Failed to cancel Stripe payment intent: " + e.getMessage(), e);
+    }
+  }
+
+  private static StripeIntent toStripeIntent(PaymentIntent intent) {
+    return new StripeIntent(intent.getId(), intent.getStatus(), intent.getClientSecret());
+  }
+
+  /** The parts of an online PaymentIntent that checkout needs. */
+  public record StripeIntent(String id, String status, String clientSecret) {}
 
   // Stripe limits statement descriptor suffix to 22 chars; ASCII, no <>"'*\
   static String sanitizeStatementDescriptor(String raw) {

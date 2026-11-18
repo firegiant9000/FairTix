@@ -308,7 +308,7 @@ public class PaymentController {
     String clientSecret = stripePaymentService.createPaymentIntent(amountCents, "usd", connect,
         principal.getUserId(),
         StripeIdempotencyKeys.onlineIntent(principal.getUserId(), request.holdIds(), amountCents,
-            connect));
+            connect)).clientSecret();
     return new PaymentIntentResponse(clientSecret);
   }
 
