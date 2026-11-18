@@ -96,6 +96,51 @@ class RolloutChecksIT extends PostgresIT {
     assertThat(((Number) busy.get("holds_still_confirmed")).intValue()).isEqualTo(1);
   }
 
+  /**
+   * One attempt with readable hold ids (none confirmed) and one without: MAX alone
+   * would ignore the NULL and show 0, listing the charge as safe to refund.
+   */
+  @Test
+  void stripeChargesWithoutOrder_mixedUnreadableAttempts_areNeverRefundable() throws Exception {
+    UUID user = newUser("mixed@test.com");
+    failedStripeOrder(user, "pi_mixed", "STRIPE_ORDER_FAILED");
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), user, "Charge succeeded but order creation failed: stripe_intent=pi_mixed");
+
+    Map<String, Object> mixed = chargeWithoutOrder("pi_mixed");
+    assertThat(((Number) mixed.get("failed_attempts")).intValue()).isEqualTo(2);
+    assertThat(mixed.get("holds_still_confirmed")).isNull();
+  }
+
+  /**
+   * Holds that stay confirmed keep a charge unrefundable until it leaves the
+   * 14-day window, so after 7 days the row is flagged for escalation. A charge
+   * that is already refundable is not.
+   */
+  @Test
+  void stripeChargesWithoutOrder_flagsOldUnrefundableChargesForEscalation() throws Exception {
+    UUID user = newUser("stuck@test.com");
+    Event event = eventRepository.save(
+        new Event("Stuck Concert", null, Instant.now().plusSeconds(86400), (UUID) null));
+    Seat seat = seatRepository.save(new Seat(event, "A", "1", "1", new BigDecimal("10.00")));
+    UUID holdId = seatHoldService.createHold(event.getId(), List.of(seat.getId()), user, 10).get(0).getId();
+    seatHoldService.confirmHold(holdId, user);
+    failedStripeOrder(user, "pi_stuck", "STRIPE_ORDER_FAILED", holdId, "8 days");
+    failedStripeOrder(user, "pi_recent", "STRIPE_ORDER_FAILED", holdId, "1 day");
+    failedStripeOrder(user, "pi_refundable", "STRIPE_ORDER_FAILED", UUID.randomUUID(), "8 days");
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now() - interval '8 days')",
+        UUID.randomUUID(), user, "Charge succeeded but order creation failed: stripe_intent=pi_unreadable");
+
+    assertThat(chargeWithoutOrder("pi_stuck")).containsEntry("escalate", true);
+    assertThat(chargeWithoutOrder("pi_unreadable")).containsEntry("escalate", true);
+    assertThat(chargeWithoutOrder("pi_recent")).containsEntry("escalate", false);
+    assertThat(chargeWithoutOrder("pi_refundable")).containsEntry("escalate", false);
+  }
+
   @Test
   void usersOverCap_findsAUserAboveTheCap() throws Exception {
     Event event = new Event("Checked Concert", null, Instant.now().plusSeconds(86400), (UUID) null);
@@ -167,13 +212,24 @@ class RolloutChecksIT extends PostgresIT {
   }
 
   private void failedStripeOrder(UUID user, String paymentIntentId, String action, UUID holdId) {
+    failedStripeOrder(user, paymentIntentId, action, holdId, "0 seconds");
+  }
+
+  private void failedStripeOrder(UUID user, String paymentIntentId, String action, UUID holdId,
+      String age) {
     // Same details format as PaymentController writes (List.toString of the hold ids).
     jdbcTemplate.update(
         "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
-            + " VALUES (?, ?, ?, 'PAYMENT', ?, now())",
+            + " VALUES (?, ?, ?, 'PAYMENT', ?, now() - CAST(? AS interval))",
         UUID.randomUUID(), user, action,
         "Charge succeeded but order creation failed: stripe_intent=" + paymentIntentId
-            + ", holdIds=" + List.of(holdId) + ", error=RuntimeException");
+            + ", holdIds=" + List.of(holdId) + ", error=RuntimeException", age);
+  }
+
+  private Map<String, Object> chargeWithoutOrder(String paymentIntentId) throws Exception {
+    return jdbcTemplate.queryForList(checks().get("stripe_charges_without_order")).stream()
+        .filter(row -> paymentIntentId.equals(row.get("payment_intent")))
+        .findFirst().orElseThrow();
   }
 
   private static String strip(StringBuilder sql) {
