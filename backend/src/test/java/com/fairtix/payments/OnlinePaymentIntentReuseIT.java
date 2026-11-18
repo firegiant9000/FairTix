@@ -43,6 +43,7 @@ import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -56,6 +57,9 @@ import org.springframework.web.context.WebApplicationContext;
  *
  * <p>Stripe is never called: the service is a spy with stubbed calls.
  */
+// Its own context (spies on StripePaymentService and SeatHoldService): close it after the class
+// so its pool doesn't count against the shared container's max_connections for the rest of the suite.
+@DirtiesContext
 @TestPropertySource(properties = "stripe.enabled=true")
 class OnlinePaymentIntentReuseIT extends PostgresIT {
 
