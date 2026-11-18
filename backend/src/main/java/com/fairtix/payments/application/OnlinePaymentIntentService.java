@@ -78,8 +78,8 @@ public class OnlinePaymentIntentService {
               "Existing payment intent " + intentId + " could not be canceled (status "
                   + after.status() + ")", null);
         }
-        auditService.log(userId, "PAYMENT_INTENT_REPLACED", "PAYMENT_INTENT", row.getId(),
-            "reason=" + reason + ", replaced=" + intentId);
+        auditService.log(userId, "PAYMENT_INTENT_REPLACED", "PAYMENT", null,
+            "stripe_intent=" + intentId + ", reason=" + reason);
         repository.invalidate(row.getId(), reason, clock.instant());
       } else {
         return intent.clientSecret();
@@ -89,19 +89,34 @@ public class OnlinePaymentIntentService {
 
     StripeIntent created = stripe.createPaymentIntent(amountCents, "usd", connect, userId,
         StripeIdempotencyKeys.onlineIntent(userId, holdIds, amountCents, connect, replaces));
+    if ("canceled".equals(created.status())) {
+      // Stripe replayed a dead intent for the original key; key a fresh one on it.
+      String deadId = created.id();
+      created = stripe.createPaymentIntent(amountCents, "usd", connect, userId,
+          StripeIdempotencyKeys.onlineIntent(userId, holdIds, amountCents, connect, deadId));
+      if ("canceled".equals(created.status())) {
+        throw new PaymentRetryConflictException(
+            "Replacement payment intent " + created.id() + " was already canceled; retry", null);
+      }
+    }
     try {
       repository.saveAndFlush(
           new OnlinePaymentIntent(userId, holdHash, amountCents, routing, created.id()));
     } catch (DataIntegrityViolationException e) {
-      OnlinePaymentIntent winner = repository
-          .findByUserIdAndHoldSetHashAndStatus(userId, holdHash, OnlinePaymentIntentStatus.ACTIVE)
-          .orElseThrow(() -> new PaymentRetryConflictException(
-              "Concurrent payment intent creation; retry", e));
+      Optional<OnlinePaymentIntent> found = repository
+          .findByUserIdAndHoldSetHashAndStatus(userId, holdHash, OnlinePaymentIntentStatus.ACTIVE);
+      if (found.isEmpty()) {
+        log.warn("Online intent insert failed and no active row found: created={}",
+            created.id(), e);
+        throw new PaymentRetryConflictException(
+            "Concurrent payment intent creation; retry", e);
+      }
+      OnlinePaymentIntent winner = found.get();
       if (created.id().equals(winner.getStripePaymentIntentId())) {
         return created.clientSecret();
       }
       log.warn("Concurrent online intent creation: created={} stored={}", created.id(),
-          winner.getStripePaymentIntentId());
+          winner.getStripePaymentIntentId(), e);
       throw new PaymentRetryConflictException(
           "Concurrent payment intent creation; retry", e);
     }

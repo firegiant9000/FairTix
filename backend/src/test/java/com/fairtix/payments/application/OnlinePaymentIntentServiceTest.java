@@ -25,8 +25,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -76,7 +74,7 @@ class OnlinePaymentIntentServiceTest {
     return new StripeIntent(id, status, secret);
   }
 
-  private void stubCreate(StripeIntent created) throws Exception {
+  private void stubCreate(StripeIntent created) {
     when(stripe.createPaymentIntent(anyLong(), anyString(), any(), any(), anyString()))
         .thenReturn(created);
   }
@@ -165,9 +163,8 @@ class OnlinePaymentIntentServiceTest {
     order.verify(repo).invalidate(row.getId(), IntentInvalidationReason.AMOUNT_CHANGED, NOW);
     order.verify(stripe).createPaymentIntent(AMOUNT, "usd", null, USER,
         StripeIdempotencyKeys.onlineIntent(USER, HOLDS, AMOUNT, null, "pi_old"));
-    UUID rowId = row.getId();
-    verify(audit).log(eq(USER), eq("PAYMENT_INTENT_REPLACED"), anyString(), eq(rowId),
-        contains("reason=AMOUNT_CHANGED"));
+    verify(audit).log(USER, "PAYMENT_INTENT_REPLACED", "PAYMENT", null,
+        "stripe_intent=pi_old, reason=AMOUNT_CHANGED");
   }
 
   @Test
@@ -182,9 +179,90 @@ class OnlinePaymentIntentServiceTest {
     assertEquals("secret_new", service.clientSecretFor(USER, HOLDS, AMOUNT, connect));
 
     verify(repo).invalidate(row.getId(), IntentInvalidationReason.ROUTING_CHANGED, NOW);
-    UUID rowId = row.getId();
-    verify(audit).log(eq(USER), eq("PAYMENT_INTENT_REPLACED"), anyString(), eq(rowId),
-        contains("reason=ROUTING_CHANGED"));
+    verify(audit).log(USER, "PAYMENT_INTENT_REPLACED", "PAYMENT", null,
+        "stripe_intent=pi_old, reason=ROUTING_CHANGED");
+  }
+
+  @Test
+  void requiresCaptureWithChangedAmount_isReturned() {
+    row(4000L, null, "pi_old");
+    when(stripe.retrievePaymentIntent("pi_old"))
+        .thenReturn(intent("pi_old", "requires_capture", "secret_old"));
+
+    assertEquals("secret_old", service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    verify(stripe, never()).cancelPaymentIntent(anyString());
+    verify(stripe, never()).createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+    verify(repo, never()).invalidate(any(), any(), any());
+  }
+
+  @Test
+  void cancelReturnsUnexpectedStatus_throwsRetryConflict() {
+    row(4000L, null, "pi_old");
+    when(stripe.retrievePaymentIntent("pi_old"))
+        .thenReturn(intent("pi_old", "requires_payment_method", "secret_old"));
+    when(stripe.cancelPaymentIntent("pi_old"))
+        .thenReturn(intent("pi_old", "requires_payment_method", "secret_old"));
+
+    assertThrows(PaymentRetryConflictException.class,
+        () -> service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    verify(repo, never()).invalidate(any(), any(), any());
+    verify(stripe, never()).createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+  }
+
+  @Test
+  void insertRace_noWinnerFound_throwsRetryConflict() {
+    noRow();
+    stubCreate(intent("pi_new", "requires_payment_method", "secret_new"));
+    when(repo.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("dup"));
+
+    assertThrows(PaymentRetryConflictException.class,
+        () -> service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+  }
+
+  @Test
+  void invalidateReturnsZero_stillCreatesReplacement() {
+    OnlinePaymentIntent row = row(4000L, null, "pi_old");
+    when(stripe.retrievePaymentIntent("pi_old"))
+        .thenReturn(intent("pi_old", "requires_payment_method", "secret_old"));
+    when(stripe.cancelPaymentIntent("pi_old")).thenReturn(intent("pi_old", "canceled", "secret_old"));
+    when(repo.invalidate(any(), any(), any())).thenReturn(0);
+    stubCreate(intent("pi_new", "requires_payment_method", "secret_new"));
+
+    assertEquals("secret_new", service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    verify(repo).invalidate(row.getId(), IntentInvalidationReason.AMOUNT_CHANGED, NOW);
+    verify(stripe).createPaymentIntent(AMOUNT, "usd", null, USER,
+        StripeIdempotencyKeys.onlineIntent(USER, HOLDS, AMOUNT, null, "pi_old"));
+  }
+
+  @Test
+  void createReplaysCanceledIntent_createsReplacementKeyedOnIt() {
+    noRow();
+    String originalKey = StripeIdempotencyKeys.onlineIntent(USER, HOLDS, AMOUNT, null);
+    String replacementKey = StripeIdempotencyKeys.onlineIntent(USER, HOLDS, AMOUNT, null, "pi_dead");
+    when(stripe.createPaymentIntent(AMOUNT, "usd", null, USER, originalKey))
+        .thenReturn(intent("pi_dead", "canceled", "secret_dead"));
+    when(stripe.createPaymentIntent(AMOUNT, "usd", null, USER, replacementKey))
+        .thenReturn(intent("pi_new", "requires_payment_method", "secret_new"));
+
+    assertEquals("secret_new", service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    ArgumentCaptor<OnlinePaymentIntent> saved = ArgumentCaptor.forClass(OnlinePaymentIntent.class);
+    verify(repo).saveAndFlush(saved.capture());
+    assertEquals("pi_new", saved.getValue().getStripePaymentIntentId());
+  }
+
+  @Test
+  void createReplaysCanceledTwice_throwsRetryConflict() {
+    noRow();
+    stubCreate(intent("pi_dead", "canceled", "secret_dead"));
+
+    assertThrows(PaymentRetryConflictException.class,
+        () -> service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    verify(repo, never()).saveAndFlush(any());
   }
 
   @Test
