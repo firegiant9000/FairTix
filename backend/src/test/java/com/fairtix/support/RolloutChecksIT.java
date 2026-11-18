@@ -43,8 +43,81 @@ class RolloutChecksIT extends PostgresIT {
     assertThat(checks).containsKeys(
         "postgres_version", "users_over_cap", "queues_over_capacity",
         "duplicate_queue_positions", "lock_waiters", "connections_by_state", "advisory_locks_held",
-        "stripe_charges_without_order");
+        "stripe_charges_without_order", "refunds_on_live_orders");
     checks.forEach((name, sql) -> jdbcTemplate.queryForList(sql));
+  }
+
+  /** Webhook redeliveries of one refund are one row, with the order's status. */
+  @Test
+  void refundsOnLiveOrders_groupsRedeliveriesPerOrder() throws Exception {
+    UUID user = newUser("refunded@test.com");
+    UUID order = paidOrder(user, "pi_live", "COMPLETED");
+    for (int i = 0; i < 2; i++) {
+      // Same details format as StripeWebhookController writes.
+      jdbcTemplate.update(
+          "INSERT INTO audit_logs (id, user_id, action, resource_type, resource_id, details, created_at)"
+              + " VALUES (?, ?, 'REFUND_ON_LIVE_ORDER', 'ORDER', ?, ?, now())",
+          UUID.randomUUID(), new UUID(0L, 0L), order,
+          "Stripe refund with no refund request: stripe_intent=pi_live, charge=ch_live,"
+              + " amount_refunded_cents=5000, accounted_cents=0");
+    }
+
+    List<Map<String, Object>> rows =
+        jdbcTemplate.queryForList(checks().get("refunds_on_live_orders"));
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0))
+        .containsEntry("order_id", order)
+        .containsEntry("order_status", "COMPLETED")
+        .containsEntry("payment_intent", "pi_live");
+    assertThat(((Number) rows.get(0).get("amount_refunded_cents")).longValue()).isEqualTo(5000L);
+    assertThat(((Number) rows.get(0).get("events")).intValue()).isEqualTo(2);
+    assertThat(rows.get(0)).containsEntry("refunded_before_order", false);
+  }
+
+  /**
+   * A refund that arrived before its order committed is reported once the order
+   * exists. A refund of a charge that never got an order is not.
+   */
+  @Test
+  void refundsOnLiveOrders_matchesRefundsThatArrivedBeforeTheOrder() throws Exception {
+    UUID user = newUser("early-refund@test.com");
+    UUID order = paidOrder(user, "pi_early", "COMPLETED");
+    unmatchedRefund("pi_early");
+    unmatchedRefund("pi_never_ordered");
+    // Already handled: the order was refunded through FairTix afterwards.
+    paidOrder(user, "pi_handled", "REFUNDED");
+    unmatchedRefund("pi_handled");
+
+    List<Map<String, Object>> rows =
+        jdbcTemplate.queryForList(checks().get("refunds_on_live_orders"));
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0))
+        .containsEntry("order_id", order)
+        .containsEntry("payment_intent", "pi_early")
+        .containsEntry("refunded_before_order", true);
+  }
+
+  private UUID paidOrder(UUID user, String paymentIntentId, String status) {
+    UUID order = UUID.randomUUID();
+    jdbcTemplate.update(
+        "INSERT INTO orders (id, user_id, status, total_amount, currency, created_at)"
+            + " VALUES (?, ?, ?, 50.00, 'USD', now())",
+        order, user, status);
+    jdbcTemplate.update(
+        "INSERT INTO payment_records (id, order_id, user_id, amount, currency, status, transaction_id, created_at)"
+            + " VALUES (?, ?, ?, 50.00, 'USD', 'SUCCESS', ?, now())",
+        UUID.randomUUID(), order, user, paymentIntentId);
+    return order;
+  }
+
+  private void unmatchedRefund(String paymentIntentId) {
+    // Same details format as StripeWebhookController writes.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_REFUND_UNMATCHED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), new UUID(0L, 0L),
+        "Stripe refund with no payment record yet: stripe_intent=" + paymentIntentId
+            + ", charge=ch_x, amount_refunded_cents=5000");
   }
 
   @Test

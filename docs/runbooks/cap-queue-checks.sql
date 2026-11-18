@@ -180,3 +180,37 @@ WHERE NOT EXISTS (
 )
 GROUP BY f.payment_intent, f.user_id
 ORDER BY first_failed_at DESC;
+
+-- name: refunds_on_live_orders
+-- Orders whose money Stripe refunded with no refund request behind it. The
+-- order is live and its money is gone. Expect no rows. Two sources:
+--   REFUND_ON_LIVE_ORDER: the order existed when Stripe's charge.refunded
+--     arrived, had no active refund request, and Stripe had refunded more than
+--     its completed refund requests add up to (typically a Dashboard refund).
+--   STRIPE_REFUND_UNMATCHED: the intent had no payment record yet. Most of these
+--     are charges refunded from stripe_charges_without_order and never match an
+--     order. One that matches a COMPLETED order is a refund that landed while
+--     checkout was creating the order (refunded_before_order = true).
+-- Webhook redeliveries repeat audit rows; they are grouped per order.
+SELECT o.id                                            AS order_id,
+       o.status                                        AS order_status,
+       r.payment_intent,
+       MAX(r.amount_refunded_cents)                    AS amount_refunded_cents,
+       bool_or(r.action = 'STRIPE_REFUND_UNMATCHED')   AS refunded_before_order,
+       MIN(r.created_at)                               AS first_seen_at,
+       COUNT(*)                                        AS events
+FROM (
+  SELECT a.action,
+         a.created_at,
+         substring(a.details from 'stripe_intent=([^,]+)') AS payment_intent,
+         substring(a.details from 'amount_refunded_cents=([0-9]+)')::bigint
+                                                       AS amount_refunded_cents
+  FROM audit_logs a
+  WHERE a.action IN ('REFUND_ON_LIVE_ORDER', 'STRIPE_REFUND_UNMATCHED')
+    AND a.created_at > now() - interval '14 days'
+) r
+JOIN payment_records p ON p.transaction_id = r.payment_intent
+JOIN orders o ON o.id = p.order_id
+WHERE r.action = 'REFUND_ON_LIVE_ORDER' OR o.status = 'COMPLETED'
+GROUP BY o.id, o.status, r.payment_intent
+ORDER BY first_seen_at DESC;
