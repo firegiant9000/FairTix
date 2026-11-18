@@ -79,6 +79,43 @@ class OnlinePaymentIntentRepositoryIT extends PostgresIT {
     assertThat(reloaded.getInvalidatedAt()).isNotNull();
   }
 
+  @Test
+  void invalidateActiveByStripePaymentIntentId_isOneShotAndSkipsInvalidatedRows() {
+    OnlinePaymentIntent a = repository.saveAndFlush(intent("pi_completed"));
+
+    assertThat(repository.invalidateActiveByStripePaymentIntentId(
+        "pi_completed", IntentInvalidationReason.COMPLETED, Instant.now())).isEqualTo(1);
+    assertThat(repository.invalidateActiveByStripePaymentIntentId(
+        "pi_completed", IntentInvalidationReason.COMPLETED, Instant.now())).isEqualTo(0);
+    assertThat(repository.invalidateActiveByStripePaymentIntentId(
+        "pi_unknown", IntentInvalidationReason.COMPLETED, Instant.now())).isEqualTo(0);
+
+    OnlinePaymentIntent reloaded = repository.findById(a.getId()).orElseThrow();
+    assertThat(reloaded.getStatus()).isEqualTo(OnlinePaymentIntentStatus.INVALIDATED);
+    assertThat(reloaded.getInvalidatedReason()).isEqualTo(IntentInvalidationReason.COMPLETED);
+  }
+
+  @Test
+  void completedRow_isDeletedByRetentionAfter30Days() {
+    OnlinePaymentIntent old = repository.saveAndFlush(intent("pi_completed_old"));
+    repository.invalidateActiveByStripePaymentIntentId(
+        "pi_completed_old", IntentInvalidationReason.COMPLETED,
+        Instant.now().minus(Duration.ofDays(31)));
+    OnlinePaymentIntent recent = repository.saveAndFlush(
+        new OnlinePaymentIntent(user.getId(), "f".repeat(64), 4000L, ROUTING, "pi_completed_new"));
+    repository.invalidateActiveByStripePaymentIntentId(
+        "pi_completed_new", IntentInvalidationReason.COMPLETED,
+        Instant.now().minus(Duration.ofDays(1)));
+
+    int deleted = repository.deleteInvalidatedBefore(Instant.now().minus(Duration.ofDays(30)));
+
+    assertThat(deleted).isEqualTo(1);
+    assertThat(repository.findAll())
+        .extracting(OnlinePaymentIntent::getId)
+        .containsExactly(recent.getId())
+        .doesNotContain(old.getId());
+  }
+
   private UUID insertRow(String piId, String holdHash, String status, String createdAgo,
       String invalidatedAgo) {
     UUID id = UUID.randomUUID();

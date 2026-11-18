@@ -223,6 +223,21 @@ public class PaymentController {
     }
   }
 
+  /**
+   * Ends the intent's ACTIVE {@code online_payment_intents} row once its order exists, so the
+   * retention job can delete it. Never throws: the order is already committed and the customer
+   * has paid, so a failure here is logged and the checkout still succeeds. A row left ACTIVE is
+   * harmless (its holds are consumed) and only costs storage.
+   */
+  private void completeOnlineIntentSafely(String paymentIntentId) {
+    try {
+      onlinePaymentIntentService.markCompleted(paymentIntentId);
+    } catch (RuntimeException ex) {
+      log.warn("Order created, but its online intent row could not be ended: stripe_intent={}",
+          paymentIntentId, ex);
+    }
+  }
+
   /** Verification returned false; answered as 402 like before. */
   private static final class PaymentNotVerifiedException extends ResponseStatusException {
     PaymentNotVerifiedException() {
@@ -413,6 +428,8 @@ public class PaymentController {
         }
         throw ex;
       }
+      // The order has committed. Before the sales-cap write, so a failure there can't skip it.
+      completeOnlineIntentSafely(paymentIntentId);
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();
       // Record against the rolling sales cap. The cap was pre-checked at intent
       // creation, but recording happens here once the charge is verified so we

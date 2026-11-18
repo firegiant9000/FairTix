@@ -280,6 +280,8 @@ class OnlinePaymentIntentServiceTest {
         .thenThrow(new DataIntegrityViolationException("dup"))
         .thenAnswer(inv -> inv.getArgument(0));
     when(repo.existsByStripePaymentIntentId("pi_dead")).thenReturn(true);
+    when(stripe.retrievePaymentIntent("pi_dead"))
+        .thenReturn(intent("pi_dead", "canceled", "secret_dead"));
 
     assertEquals("secret_new", service.clientSecretFor(USER, HOLDS, AMOUNT, null));
 
@@ -295,11 +297,28 @@ class OnlinePaymentIntentServiceTest {
     stubCreate(intent("pi_dead", "requires_payment_method", "secret_dead"));
     when(repo.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("dup"));
     when(repo.existsByStripePaymentIntentId("pi_dead")).thenReturn(true);
+    when(stripe.retrievePaymentIntent("pi_dead"))
+        .thenReturn(intent("pi_dead", "canceled", "secret_dead"));
 
     assertThrows(PaymentRetryConflictException.class,
         () -> service.clientSecretFor(USER, HOLDS, AMOUNT, null));
 
     verify(stripe, times(2)).createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+  }
+
+  @Test
+  void replayOfCompletedIntent_paid_isReturnedNotReplaced() {
+    // A concurrent checkout ended the row (COMPLETED) between the lookup and the create.
+    noRow();
+    stubCreate(intent("pi_paid", "requires_payment_method", "secret_paid"));
+    when(repo.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("dup"));
+    when(repo.existsByStripePaymentIntentId("pi_paid")).thenReturn(true);
+    when(stripe.retrievePaymentIntent("pi_paid"))
+        .thenReturn(intent("pi_paid", "succeeded", "secret_paid"));
+
+    assertEquals("secret_paid", service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    verify(stripe, times(1)).createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
   }
 
   @Test
@@ -352,5 +371,17 @@ class OnlinePaymentIntentServiceTest {
 
     assertThrows(PaymentRetryConflictException.class,
         () -> service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+  }
+
+  @Test
+  void markCompleted_invalidatesTheActiveRowForTheIntent() {
+    when(repo.invalidateActiveByStripePaymentIntentId(
+        "pi_done", IntentInvalidationReason.COMPLETED, NOW)).thenReturn(1);
+
+    assertEquals(1, service.markCompleted("pi_done"));
+
+    verify(repo).invalidateActiveByStripePaymentIntentId(
+        "pi_done", IntentInvalidationReason.COMPLETED, NOW);
+    verifyNoInteractions(stripe, audit);
   }
 }

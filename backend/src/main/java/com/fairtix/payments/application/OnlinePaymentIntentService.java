@@ -104,8 +104,14 @@ public class OnlinePaymentIntentService {
       return secret;
     }
     // Insert failed, no active winner, and the id already has a row: Stripe replayed an intent
-    // we already invalidated (rows are invalidated only after Stripe confirmed canceled).
-    // Create once more keyed on it.
+    // whose row was ended. That is either a canceled intent, or (reason COMPLETED) a paid one
+    // whose order a concurrent checkout committed after the lookup above. The replay carries the
+    // creation-time status, so ask Stripe: a paid or in-flight intent is returned as is (checkout
+    // then answers with the existing order), never replaced with a second payable one.
+    StripeIntent current = stripe.retrievePaymentIntent(created.id());
+    if (PAID_OR_IN_FLIGHT.contains(current.status())) {
+      return current.clientSecret();
+    }
     StripeIntent replacement = stripe.createPaymentIntent(amountCents, "usd", connect, userId,
         StripeIdempotencyKeys.onlineIntent(userId, holdIds, amountCents, connect, created.id()));
     secret = insert(userId, holdHash, amountCents, routing, replacement);
@@ -114,6 +120,16 @@ public class OnlinePaymentIntentService {
     }
     throw new PaymentRetryConflictException(
         "Replacement payment intent " + replacement.id() + " was already used; retry", null);
+  }
+
+  /**
+   * Ends the ACTIVE row for an intent whose order has been created, so retention can delete it.
+   * Returns the number of rows changed: 0 when there is no ACTIVE row (already ended, or an
+   * intent created before rows were stored).
+   */
+  public int markCompleted(String stripePaymentIntentId) {
+    return repository.invalidateActiveByStripePaymentIntentId(
+        stripePaymentIntentId, IntentInvalidationReason.COMPLETED, clock.instant());
   }
 
   /**
