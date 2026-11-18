@@ -45,8 +45,8 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  * is more than {@code holds.confirmed-grace-minutes} (default 15) in the past, a
  * {@code BOOKED} seat returns to {@code AVAILABLE} and the hold becomes
  * {@code EXPIRED}. A hold whose seat is already {@code SOLD} (left
- * {@code CONFIRMED} by the MVP {@code createOrder} path before it released its
- * holds) becomes {@code RELEASED} and the seat stays sold.
+ * {@code CONFIRMED} by the since-removed unpaid {@code createOrder} path before
+ * it released its holds) becomes {@code RELEASED} and the seat stays sold.
  *
  * <p>Red on commit {@code 6408921}: the sweep was an empty stub (before it, only
  * ACTIVE holds were swept), so an expired CONFIRMED hold kept its seat BOOKED
@@ -137,10 +137,10 @@ class ConfirmedHoldExpiryIT extends PostgresIT {
   }
 
   @Test
-  void createOrder_releasesHolds() {
+  void checkout_releasesHolds() {
     SeatHold hold = confirmedHold();
 
-    orderService.createOrder(buyer.getId(), List.of(hold.getId()));
+    orderService.createOrderWithPayment(buyer.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
 
     assertThat(holdStatus(hold)).isEqualTo("RELEASED");
     assertThat(seatStatus()).isEqualTo("SOLD");

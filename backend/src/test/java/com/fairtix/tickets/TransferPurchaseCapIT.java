@@ -11,6 +11,7 @@ import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.orders.application.OrderService;
 import com.fairtix.orders.application.PurchaseCapExceededException;
+import com.fairtix.payments.domain.PaymentStatus;
 import com.fairtix.support.PostgresIT;
 import com.fairtix.tickets.application.TransferService;
 import com.fairtix.users.domain.User;
@@ -103,7 +104,8 @@ class TransferPurchaseCapIT extends PostgresIT {
     SeatHold hold =
         seatHoldService.createHold(event.getId(), List.of(seat.getId()), user.getId(), 10).get(0);
     seatHoldService.confirmHold(hold.getId(), user.getId());
-    orderService.createOrder(user.getId(), List.of(hold.getId()));
+    orderService.createOrderWithPayment(
+        user.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
     return jdbcTemplate.queryForObject(
         "SELECT id FROM tickets WHERE seat_id = ?", UUID.class, seat.getId());
   }
