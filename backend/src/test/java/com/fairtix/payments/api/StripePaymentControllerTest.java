@@ -13,6 +13,7 @@ import com.fairtix.orders.application.OrderService;
 import com.fairtix.orders.domain.Order;
 import com.fairtix.orders.domain.OrderStatus;
 import com.fairtix.orders.infrastructure.OrderRepository;
+import com.fairtix.payments.application.OnlinePaymentIntentService;
 import com.fairtix.payments.application.PaymentIntentNotOwnedException;
 import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.queue.application.QueueService;
@@ -78,6 +79,9 @@ class StripePaymentControllerTest {
 
   @MockitoSpyBean
   private QueueService queueService;
+
+  @MockitoSpyBean
+  private OnlinePaymentIntentService onlinePaymentIntentService;
 
   private MockMvc mockMvc;
   private User user;
@@ -168,6 +172,87 @@ class StripePaymentControllerTest {
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.paymentStatus").value("SUCCESS"))
         .andExpect(jsonPath("$.orderStatus").value("COMPLETED"));
+  }
+
+  private void insertActiveIntentRow(String paymentIntentId) {
+    entityManager.flush(); // the user row must exist for the FK
+    jdbcTemplate.update(
+        "INSERT INTO online_payment_intents (id, user_id, hold_set_hash, amount_cents,"
+            + " routing_hash, stripe_payment_intent_id, status)"
+            + " VALUES (?, ?, ?, 5000, ?, ?, 'ACTIVE')",
+        java.util.UUID.randomUUID(), user.getId(), "a".repeat(64), "b".repeat(64),
+        paymentIntentId);
+  }
+
+  @Test
+  void checkout_completesTheActiveOnlineIntentRow() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+    insertActiveIntentRow("pi_row_done");
+
+    String body = """
+        { "holdIds": ["%s"], "paymentIntentId": "pi_row_done" }
+        """.formatted(confirmedHold.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isCreated());
+
+    assertThat(jdbcTemplate.queryForMap(
+        "SELECT status, invalidated_reason FROM online_payment_intents"
+            + " WHERE stripe_payment_intent_id = 'pi_row_done'"))
+        .containsEntry("status", "INVALIDATED")
+        .containsEntry("invalidated_reason", "COMPLETED");
+  }
+
+  @Test
+  void intentAfterCompletedCheckout_isRefusedWithoutCreatingAnIntent() throws Exception {
+    // Ending the row is safe only because the order consumes the holds: /intent must then
+    // refuse them rather than create a second payable intent for a paid hold set.
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+    insertActiveIntentRow("pi_paid_once");
+
+    String body = """
+        { "holdIds": ["%s"], "paymentIntentId": "pi_paid_once" }
+        """.formatted(confirmedHold.getId());
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isCreated());
+
+    mockMvc.perform(post("/api/payments/intent")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("""
+                { "holdIds": ["%s"] }
+                """.formatted(confirmedHold.getId())))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("HOLD_CONFLICT"));
+
+    verify(stripePaymentService, never())
+        .createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+  }
+
+  @Test
+  void checkout_intentRowInvalidationFails_stillReturns201() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+    doThrow(new org.springframework.dao.DataAccessResourceFailureException("db down"))
+        .when(onlinePaymentIntentService).markCompleted(anyString());
+
+    String body = """
+        { "holdIds": ["%s"], "paymentIntentId": "pi_row_fail" }
+        """.formatted(confirmedHold.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.orderStatus").value("COMPLETED"));
+
+    verify(onlinePaymentIntentService).markCompleted("pi_row_fail");
   }
 
   @Test

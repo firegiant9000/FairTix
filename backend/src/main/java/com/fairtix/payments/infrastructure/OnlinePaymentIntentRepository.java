@@ -33,6 +33,19 @@ public interface OnlinePaymentIntentRepository extends JpaRepository<OnlinePayme
       @Param("at") Instant at);
 
   /**
+   * One-shot by intent id: only an ACTIVE row is invalidated. The intent id is unique, so this
+   * changes 0 or 1 rows.
+   */
+  @Transactional
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Query("UPDATE OnlinePaymentIntent i SET i.status = com.fairtix.payments.domain.OnlinePaymentIntentStatus.INVALIDATED,"
+      + " i.invalidatedReason = :reason, i.invalidatedAt = :at"
+      + " WHERE i.stripePaymentIntentId = :intentId"
+      + " AND i.status = com.fairtix.payments.domain.OnlinePaymentIntentStatus.ACTIVE")
+  int invalidateActiveByStripePaymentIntentId(@Param("intentId") String stripePaymentIntentId,
+      @Param("reason") IntentInvalidationReason reason, @Param("at") Instant at);
+
+  /**
    * Deletes only INVALIDATED rows, by invalidation time. ACTIVE rows are never deleted: confirmed
    * holds can be extended indefinitely, and losing the row would let the next /intent create a
    * second payable intent for the same hold set.
