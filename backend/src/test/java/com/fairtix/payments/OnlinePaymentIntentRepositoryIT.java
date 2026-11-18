@@ -79,18 +79,32 @@ class OnlinePaymentIntentRepositoryIT extends PostgresIT {
     assertThat(reloaded.getInvalidatedAt()).isNotNull();
   }
 
-  @Test
-  void deleteCreatedBefore_removesOnlyOldRows() {
+  private UUID insertRow(String piId, String holdHash, String status, String createdAgo,
+      String invalidatedAgo) {
+    UUID id = UUID.randomUUID();
     jdbcTemplate.update(
         "INSERT INTO online_payment_intents (id, user_id, hold_set_hash, amount_cents, routing_hash,"
-            + " stripe_payment_intent_id, status, created_at)"
-            + " VALUES (?, ?, ?, 100, ?, 'pi_old', 'INVALIDATED', NOW() - INTERVAL '31 days')",
-        UUID.randomUUID(), user.getId(), "c".repeat(64), ROUTING);
+            + " stripe_payment_intent_id, status, invalidated_reason, created_at, invalidated_at)"
+            + " VALUES (?, ?, ?, 100, ?, ?, ?, ?, NOW() - CAST(? AS INTERVAL),"
+            + " NOW() - CAST(? AS INTERVAL))",
+        id, user.getId(), holdHash, ROUTING, piId, status,
+        invalidatedAgo == null ? null : "CANCELED", createdAgo, invalidatedAgo);
+    return id;
+  }
+
+  @Test
+  void deleteInvalidatedBefore_removesOnlyRowsInvalidatedBeforeCutoff() {
+    insertRow("pi_old_invalidated", "c".repeat(64), "INVALIDATED", "40 days", "31 days");
+    UUID oldActive = insertRow("pi_old_active", "d".repeat(64), "ACTIVE", "45 days", null);
+    UUID recentlyInvalidated =
+        insertRow("pi_recent_invalidated", "e".repeat(64), "INVALIDATED", "45 days", "1 day");
     OnlinePaymentIntent fresh = repository.saveAndFlush(intent("pi_fresh"));
 
-    int deleted = repository.deleteCreatedBefore(Instant.now().minus(Duration.ofDays(30)));
+    int deleted = repository.deleteInvalidatedBefore(Instant.now().minus(Duration.ofDays(30)));
 
     assertThat(deleted).isEqualTo(1);
-    assertThat(repository.findAll()).extracting(OnlinePaymentIntent::getId).containsExactly(fresh.getId());
+    assertThat(repository.findAll())
+        .extracting(OnlinePaymentIntent::getId)
+        .containsExactlyInAnyOrder(oldActive, recentlyInvalidated, fresh.getId());
   }
 }
