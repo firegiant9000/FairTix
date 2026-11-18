@@ -15,17 +15,13 @@ import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.users.infrastructure.UserRepository;
-import org.redisson.api.RScoredSortedSet;
-import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
@@ -36,7 +32,6 @@ public class TransferService {
 
     private static final Logger log = LoggerFactory.getLogger(TransferService.class);
     private static final int TRANSFER_EXPIRY_DAYS = 7;
-    private static final String VELOCITY_KEY_PREFIX = "transfer:velocity:";
 
     private final TicketRepository ticketRepository;
     private final TicketTransferRequestRepository transferRepository;
@@ -44,15 +39,9 @@ public class TransferService {
     private final AuditService auditService;
     private final NotificationGate notificationGate;
     private final EmailTemplateService emailTemplateService;
-    private final RedissonClient redissonClient;
+    private final TransferVelocityLimiter velocityLimiter;
     private final RiskScoringService riskScoringService;
     private final PurchaseCapGuard purchaseCapGuard;
-
-    @Value("${fairtix.transfer.velocity.max-per-window:5}")
-    private int velocityMaxPerWindow;
-
-    @Value("${fairtix.transfer.velocity.window-hours:24}")
-    private int velocityWindowHours;
 
     public TransferService(TicketRepository ticketRepository,
                            TicketTransferRequestRepository transferRepository,
@@ -60,7 +49,7 @@ public class TransferService {
                            AuditService auditService,
                            NotificationGate notificationGate,
                            EmailTemplateService emailTemplateService,
-                           RedissonClient redissonClient,
+                           TransferVelocityLimiter velocityLimiter,
                            RiskScoringService riskScoringService,
                            PurchaseCapGuard purchaseCapGuard) {
         this.purchaseCapGuard = purchaseCapGuard;
@@ -70,7 +59,7 @@ public class TransferService {
         this.auditService = auditService;
         this.notificationGate = notificationGate;
         this.emailTemplateService = emailTemplateService;
-        this.redissonClient = redissonClient;
+        this.velocityLimiter = velocityLimiter;
         this.riskScoringService = riskScoringService;
     }
 
@@ -83,8 +72,6 @@ public class TransferService {
                     "tier=" + tier);
             throw new UserFlaggedForAbuseException();
         }
-
-        checkVelocity(fromUserId);
 
         var ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket not found: " + ticketId));
@@ -100,6 +87,12 @@ public class TransferService {
         transferRepository.findByTicket_IdAndStatus(ticketId, TransferStatus.PENDING).ifPresent(r -> {
             throw new IllegalStateException("A pending transfer request already exists for this ticket");
         });
+
+        // The slot is taken here, after the checks on the sender's own ticket and
+        // before the recipient lookup: a 404 for an unknown email reveals whether an
+        // account exists, so every lookup counts toward the limit, while mistakes
+        // about the sender's own ticket do not.
+        velocityLimiter.acquire(fromUserId);
 
         var toUser = userRepository.findByEmail(toEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("No user found with email: " + toEmail));
@@ -248,21 +241,6 @@ public class TransferService {
 
     public List<TicketTransferRequest> listOutgoing(UUID userId) {
         return transferRepository.findByFromUser_Id(userId);
-    }
-
-    private void checkVelocity(UUID userId) {
-        RScoredSortedSet<String> velocitySet = redissonClient.getScoredSortedSet(
-                VELOCITY_KEY_PREFIX + userId);
-        long windowStartMillis = Instant.now()
-                .minus(velocityWindowHours, ChronoUnit.HOURS)
-                .toEpochMilli();
-        velocitySet.removeRangeByScore(Double.NEGATIVE_INFINITY, false,
-                (double) windowStartMillis, true);
-        if (velocitySet.size() >= velocityMaxPerWindow) {
-            throw new TransferVelocityExceededException(velocityMaxPerWindow, velocityWindowHours);
-        }
-        velocitySet.add((double) Instant.now().toEpochMilli(), UUID.randomUUID().toString());
-        velocitySet.expire(Duration.ofHours(velocityWindowHours + 1));
     }
 
     @Scheduled(fixedDelay = 60_000)
