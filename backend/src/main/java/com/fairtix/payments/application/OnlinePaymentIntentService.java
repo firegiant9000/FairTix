@@ -90,7 +90,7 @@ public class OnlinePaymentIntentService {
     StripeIntent created = stripe.createPaymentIntent(amountCents, "usd", connect, userId,
         StripeIdempotencyKeys.onlineIntent(userId, holdIds, amountCents, connect, replaces));
     if ("canceled".equals(created.status())) {
-      // Stripe replayed a dead intent for the original key; key a fresh one on it.
+      // Defensive only: an idempotent replay carries the creation-time status, not this one.
       String deadId = created.id();
       created = stripe.createPaymentIntent(amountCents, "usd", connect, userId,
           StripeIdempotencyKeys.onlineIntent(userId, holdIds, amountCents, connect, deadId));
@@ -99,13 +99,42 @@ public class OnlinePaymentIntentService {
             "Replacement payment intent " + created.id() + " was already canceled; retry", null);
       }
     }
+    String secret = insert(userId, holdHash, amountCents, routing, created);
+    if (secret != null) {
+      return secret;
+    }
+    // Insert failed, no active winner, and the id already has a row: Stripe replayed an intent
+    // we already invalidated (rows are invalidated only after Stripe confirmed canceled).
+    // Create once more keyed on it.
+    StripeIntent replacement = stripe.createPaymentIntent(amountCents, "usd", connect, userId,
+        StripeIdempotencyKeys.onlineIntent(userId, holdIds, amountCents, connect, created.id()));
+    secret = insert(userId, holdHash, amountCents, routing, replacement);
+    if (secret != null) {
+      return secret;
+    }
+    throw new PaymentRetryConflictException(
+        "Replacement payment intent " + replacement.id() + " was already used; retry", null);
+  }
+
+  /**
+   * Inserts the row. Returns the secret on success or when a concurrent winner stored the same
+   * intent; returns null when there is no active winner and the intent id is already stored (a
+   * replay of an invalidated intent); throws on any other conflict.
+   */
+  private String insert(UUID userId, String holdHash, long amountCents, String routing,
+      StripeIntent created) {
     try {
       repository.saveAndFlush(
           new OnlinePaymentIntent(userId, holdHash, amountCents, routing, created.id()));
+      return created.clientSecret();
     } catch (DataIntegrityViolationException e) {
       Optional<OnlinePaymentIntent> found = repository
           .findByUserIdAndHoldSetHashAndStatus(userId, holdHash, OnlinePaymentIntentStatus.ACTIVE);
       if (found.isEmpty()) {
+        if (repository.existsByStripePaymentIntentId(created.id())) {
+          log.warn("Stripe replayed an already-invalidated intent: {}", created.id());
+          return null;
+        }
         log.warn("Online intent insert failed and no active row found: created={}",
             created.id(), e);
         throw new PaymentRetryConflictException(
@@ -120,6 +149,5 @@ public class OnlinePaymentIntentService {
       throw new PaymentRetryConflictException(
           "Concurrent payment intent creation; retry", e);
     }
-    return created.clientSecret();
   }
 }

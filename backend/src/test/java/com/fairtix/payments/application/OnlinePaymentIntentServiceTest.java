@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -263,6 +264,55 @@ class OnlinePaymentIntentServiceTest {
         () -> service.clientSecretFor(USER, HOLDS, AMOUNT, null));
 
     verify(repo, never()).saveAndFlush(any());
+    verify(stripe, times(2)).createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+  }
+
+  @Test
+  void replayOfInvalidatedIntent_staleStatus_createsReplacementKeyedOnIt() {
+    noRow();
+    String originalKey = StripeIdempotencyKeys.onlineIntent(USER, HOLDS, AMOUNT, null);
+    String replacementKey = StripeIdempotencyKeys.onlineIntent(USER, HOLDS, AMOUNT, null, "pi_dead");
+    when(stripe.createPaymentIntent(AMOUNT, "usd", null, USER, originalKey))
+        .thenReturn(intent("pi_dead", "requires_payment_method", "secret_dead"));
+    when(stripe.createPaymentIntent(AMOUNT, "usd", null, USER, replacementKey))
+        .thenReturn(intent("pi_new", "requires_payment_method", "secret_new"));
+    when(repo.saveAndFlush(any()))
+        .thenThrow(new DataIntegrityViolationException("dup"))
+        .thenAnswer(inv -> inv.getArgument(0));
+    when(repo.existsByStripePaymentIntentId("pi_dead")).thenReturn(true);
+
+    assertEquals("secret_new", service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    ArgumentCaptor<OnlinePaymentIntent> saved = ArgumentCaptor.forClass(OnlinePaymentIntent.class);
+    verify(repo, times(2)).saveAndFlush(saved.capture());
+    assertEquals("pi_dead", saved.getAllValues().get(0).getStripePaymentIntentId());
+    assertEquals("pi_new", saved.getAllValues().get(1).getStripePaymentIntentId());
+  }
+
+  @Test
+  void replayOfInvalidatedIntent_twice_throwsRetryConflict() {
+    noRow();
+    stubCreate(intent("pi_dead", "requires_payment_method", "secret_dead"));
+    when(repo.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("dup"));
+    when(repo.existsByStripePaymentIntentId("pi_dead")).thenReturn(true);
+
+    assertThrows(PaymentRetryConflictException.class,
+        () -> service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    verify(stripe, times(2)).createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+  }
+
+  @Test
+  void insertRace_noWinner_unknownId_throwsRetryConflict() {
+    noRow();
+    stubCreate(intent("pi_new", "requires_payment_method", "secret_new"));
+    when(repo.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("dup"));
+    when(repo.existsByStripePaymentIntentId("pi_new")).thenReturn(false);
+
+    assertThrows(PaymentRetryConflictException.class,
+        () -> service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    verify(stripe, times(1)).createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
   }
 
   @Test

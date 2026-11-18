@@ -18,7 +18,12 @@ public interface OnlinePaymentIntentRepository extends JpaRepository<OnlinePayme
   Optional<OnlinePaymentIntent> findByUserIdAndHoldSetHashAndStatus(
       UUID userId, String holdSetHash, OnlinePaymentIntentStatus status);
 
-  /** One-shot: only an ACTIVE row is invalidated. Returns the number of rows changed (0 or 1). */
+  boolean existsByStripePaymentIntentId(String stripePaymentIntentId);
+
+  /**
+   * One-shot: only an ACTIVE row is invalidated. Returns the number of rows changed (0 or 1).
+   * Clears the persistence context so later reads see the new status.
+   */
   @Transactional
   @Modifying(clearAutomatically = true, flushAutomatically = true)
   @Query("UPDATE OnlinePaymentIntent i SET i.status = com.fairtix.payments.domain.OnlinePaymentIntentStatus.INVALIDATED,"
