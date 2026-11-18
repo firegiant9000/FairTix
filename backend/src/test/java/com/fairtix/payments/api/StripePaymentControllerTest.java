@@ -45,8 +45,10 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -109,7 +111,8 @@ class StripePaymentControllerTest {
   void createIntent_returnsClientSecret() throws Exception {
     // ConnectContext may be null (no Connect org); the key is always the
     // deterministic online-intent key (exposure gate (b)).
-    doReturn("pi_test_secret_xyz").when(stripePaymentService)
+    doReturn(new StripePaymentService.StripeIntent("pi_test_xyz", "requires_payment_method",
+        "pi_test_secret_xyz")).when(stripePaymentService)
         .createPaymentIntent(anyLong(), anyString(), any(), eq(user.getId()),
             org.mockito.ArgumentMatchers.startsWith("fairtix-pi2-"));
 
@@ -123,6 +126,28 @@ class StripePaymentControllerTest {
             .content(body))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.clientSecret").value("pi_test_secret_xyz"));
+
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM online_payment_intents WHERE user_id = ? AND status = 'ACTIVE'",
+        Integer.class, user.getId())).isEqualTo(1);
+  }
+
+  @Test
+  void createIntent_duplicateHoldIds_returns400() throws Exception {
+    String body = """
+        { "holdIds": ["%s", "%s"] }
+        """.formatted(confirmedHold.getId(), confirmedHold.getId());
+
+    mockMvc.perform(post("/api/payments/intent")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isBadRequest());
+
+    verify(stripePaymentService, never())
+        .createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM online_payment_intents", Integer.class)).isZero();
   }
 
   @Test
