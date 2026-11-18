@@ -76,7 +76,7 @@ class StripeOrderFailureIT extends PostgresIT {
         .get(0);
     seatHoldService.confirmHold(hold.getId(), buyer.getId());
 
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(eq(INTENT), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(eq(INTENT), anyLong(), any());
     doThrow(new IllegalStateException("simulated failure while recording the payment"))
         .when(stripePaymentService)
         .recordStripePaymentInOrderTransaction(anyString(), any(), any(), any(), anyString());

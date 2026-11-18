@@ -89,7 +89,7 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
     Seat seat = seatRepository.save(new Seat(event, "A", "1", "1", new BigDecimal("40.00")));
     hold = seatHoldService.createHold(event.getId(), List.of(seat.getId()), buyer.getId(), 10).get(0);
     seatHoldService.confirmHold(hold.getId(), buyer.getId());
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(eq(INTENT), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(eq(INTENT), anyLong(), any());
   }
 
   /**

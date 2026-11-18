@@ -31,6 +31,10 @@ public final class StripeIdempotencyKeys {
    * way, gets the same intent back. A different hold set, amount, or Connect
    * routing (account, fee, descriptor) is a different payment, so it gets a new
    * key instead of Stripe's "same key, different parameters" error.
+   *
+   * <p>The prefix is versioned: {@code fairtix-pi2-} since intents carry the
+   * caller in their metadata, so a request made after that change never reuses
+   * a key first sent without it.
    */
   public static String onlineIntent(UUID userId, Collection<UUID> holdIds, long amountCents,
       StripePaymentService.ConnectContext connect) {
@@ -39,7 +43,7 @@ public final class StripeIdempotencyKeys {
     String routing = connect == null ? "direct"
         : connect.organizationId() + "|" + connect.connectedAccountId() + "|"
             + connect.applicationFeeAmountCents() + "|" + connect.statementDescriptorSuffix();
-    return "fairtix-pi-" + sha256Hex(userId + "|" + holds + "|" + amountCents + "|" + routing);
+    return "fairtix-pi2-" + sha256Hex(userId + "|" + holds + "|" + amountCents + "|" + routing);
   }
 
   /** One key per pending box-office sale row. */

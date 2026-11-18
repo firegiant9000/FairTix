@@ -13,6 +13,7 @@ import com.fairtix.orders.application.OrderService;
 import com.fairtix.orders.domain.Order;
 import com.fairtix.orders.domain.OrderStatus;
 import com.fairtix.orders.infrastructure.OrderRepository;
+import com.fairtix.payments.application.PaymentIntentNotOwnedException;
 import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.queue.application.QueueService;
 import com.fairtix.payments.application.StripePaymentService;
@@ -39,6 +40,7 @@ import java.time.Instant;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
@@ -108,8 +110,8 @@ class StripePaymentControllerTest {
     // ConnectContext may be null (no Connect org); the key is always the
     // deterministic online-intent key (exposure gate (b)).
     doReturn("pi_test_secret_xyz").when(stripePaymentService)
-        .createPaymentIntent(anyLong(), anyString(), any(),
-            org.mockito.ArgumentMatchers.startsWith("fairtix-pi-"));
+        .createPaymentIntent(anyLong(), anyString(), any(), eq(user.getId()),
+            org.mockito.ArgumentMatchers.startsWith("fairtix-pi2-"));
 
     String body = """
         { "holdIds": ["%s"] }
@@ -125,7 +127,7 @@ class StripePaymentControllerTest {
 
   @Test
   void checkout_withStripeIntentId_succeeds() throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
 
     String body = """
         {
@@ -145,7 +147,7 @@ class StripePaymentControllerTest {
 
   @Test
   void checkout_withStripeIntentId_issuesTicket() throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
 
     String body = """
         {
@@ -172,7 +174,7 @@ class StripePaymentControllerTest {
 
   @Test
   void checkout_withStripeIntentId_failsWhenNotSucceeded() throws Exception {
-    doReturn(false).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(false).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
 
     String body = """
         {
@@ -195,7 +197,7 @@ class StripePaymentControllerTest {
    */
   @Test
   void checkout_amountMismatch_writesOrderFailedAuditForRunbook() throws Exception {
-    doReturn(false).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(false).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
 
     String body = """
         {
@@ -226,7 +228,7 @@ class StripePaymentControllerTest {
   @Test
   void checkout_withRefundedIntent_isRejectedWithoutOrderFailedAudit() throws Exception {
     doThrow(new PaymentRefundedException("pi_refunded", "refunded"))
-        .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+        .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
 
     String body = """
         {
@@ -251,10 +253,50 @@ class StripePaymentControllerTest {
         .isEqualTo(HoldStatus.CONFIRMED);
   }
 
+  @Test
+  void checkout_verifiesIntentForTheCaller() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_caller")))
+        .andExpect(status().isCreated());
+
+    verify(stripePaymentService).verifyPaymentSucceeded(eq("pi_caller"), anyLong(), eq(user.getId()));
+  }
+
+  /**
+   * An intent that isn't the caller's is refused before any order or audit row:
+   * it must not show up in stripe_charges_without_order as a charge to refund.
+   */
+  @Test
+  void checkout_intentNotOwnedByCaller_isRejectedWithoutOrderOrAudit() throws Exception {
+    doThrow(new PaymentIntentNotOwnedException("pi_not_owned", user.getId(), "other_user"))
+        .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_not_owned")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_NOT_USABLE"));
+
+    Integer orderFailedRows = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action LIKE 'STRIPE_ORDER_%' AND user_id = ?",
+        Integer.class, user.getId());
+    org.assertj.core.api.Assertions.assertThat(orderFailedRows).isZero();
+    org.assertj.core.api.Assertions.assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM orders WHERE user_id = ?", Integer.class, user.getId())).isZero();
+    org.assertj.core.api.Assertions.assertThat(
+        seatHoldRepository.findById(confirmedHold.getId()).orElseThrow().getStatus())
+        .isEqualTo(HoldStatus.CONFIRMED);
+  }
+
   /** A lost response: the order was created, then the client resubmits the same intent. */
   @Test
   void checkout_replayedIntent_returnsExistingOrderWithoutFailureAudit() throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
     String body = checkoutBody(confirmedHold.getId(), "pi_replay");
 
     String first = mockMvc.perform(post("/api/payments/checkout")
@@ -275,7 +317,7 @@ class StripePaymentControllerTest {
         .andExpect(jsonPath("$.orderStatus").value("COMPLETED"));
 
     // The replay is answered from the payment record, not a second verification.
-    verify(stripePaymentService, times(1)).verifyPaymentSucceeded(anyString(), anyLong());
+    verify(stripePaymentService, times(1)).verifyPaymentSucceeded(anyString(), anyLong(), any());
     Integer orders = jdbcTemplate.queryForObject(
         "SELECT COUNT(*) FROM orders WHERE user_id = ?", Integer.class, user.getId());
     org.assertj.core.api.Assertions.assertThat(orders).isEqualTo(1);
@@ -288,7 +330,7 @@ class StripePaymentControllerTest {
 
   @Test
   void checkout_intentUsedByAnotherUser_isRejectedWithoutLeakingOrder() throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
     String first = mockMvc.perform(post("/api/payments/checkout")
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
             .contentType(MediaType.APPLICATION_JSON)
@@ -319,7 +361,7 @@ class StripePaymentControllerTest {
 
   @Test
   void checkout_intentReplayedForDifferentHolds_isRejected() throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
     mockMvc.perform(post("/api/payments/checkout")
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
             .contentType(MediaType.APPLICATION_JSON)
@@ -341,7 +383,7 @@ class StripePaymentControllerTest {
   /** A refunded order must not be replayed as a confirmation. */
   @Test
   void checkout_replayOfRefundedOrder_answersPaymentRefunded() throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
     String body = checkoutBody(confirmedHold.getId(), "pi_replay_refunded");
     String first = mockMvc.perform(post("/api/payments/checkout")
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
@@ -371,7 +413,7 @@ class StripePaymentControllerTest {
    */
   @Test
   void checkout_losingConcurrentSubmit_returnsTheOrderTheWinnerCreated() throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
     doAnswer(inv -> {
       inv.callRealMethod();
       throw new IllegalArgumentException("Hold is not confirmed (status: RELEASED)");
@@ -396,7 +438,7 @@ class StripePaymentControllerTest {
    */
   @Test
   void checkout_losingSubmitWhoseReplayRefuses_answersWithReplayConflict() throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
     doAnswer(inv -> {
       inv.callRealMethod();
       throw new IllegalArgumentException("Hold is not confirmed (status: RELEASED)");
@@ -416,7 +458,7 @@ class StripePaymentControllerTest {
   @Test
   void checkout_losingSubmitWhoseReplayFindsRefundedOrder_answersPaymentRefunded()
       throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
     doAnswer(inv -> {
       inv.callRealMethod();
       throw new IllegalArgumentException("Hold is not confirmed (status: RELEASED)");
@@ -439,7 +481,7 @@ class StripePaymentControllerTest {
   /** The replay lookup itself fails: the original order failure is the answer. */
   @Test
   void checkout_failedSubmitWhoseReplayLookupFails_answersWithOriginalError() throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
     doAnswer(inv -> {
       inv.callRealMethod();
       throw new IllegalArgumentException("Hold is not confirmed (status: RELEASED)");
@@ -461,7 +503,7 @@ class StripePaymentControllerTest {
    */
   @Test
   void checkout_replayForQueuedEvent_returnsExistingOrder() throws Exception {
-    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
     Event event = confirmedHold.getSeat().getEvent();
     event.updateQueueSettings(true, null);
     eventRepository.save(event);

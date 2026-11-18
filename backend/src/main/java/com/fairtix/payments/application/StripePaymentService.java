@@ -24,6 +24,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -33,6 +38,18 @@ public class StripePaymentService {
 
   /** Stripe refund metadata key carrying our refund request id. */
   static final String REFUND_ID_METADATA = "fairtix_refund_id";
+
+  /** Online PaymentIntent metadata key carrying the user it was created for. */
+  static final String USER_ID_METADATA = "fairtix_user_id";
+
+  /**
+   * How long an online intent without {@link #USER_ID_METADATA} (created before
+   * that metadata was added) is still accepted at checkout. Matches Stripe's
+   * idempotency window, after which such an intent can't be handed out again.
+   */
+  static final Duration UNBOUND_INTENT_GRACE = Duration.ofHours(24);
+
+  private Clock clock = Clock.systemUTC();
 
   @Value("${stripe.enabled:false}")
   private boolean stripeEnabled;
@@ -47,6 +64,11 @@ public class StripePaymentService {
       AuditService auditService) {
     this.paymentRecordRepository = paymentRecordRepository;
     this.auditService = auditService;
+  }
+
+  /** For tests of the unbound-intent grace window. */
+  void setClock(Clock clock) {
+    this.clock = clock;
   }
 
   @PostConstruct
@@ -136,14 +158,19 @@ public class StripePaymentService {
    * Statement descriptor suffix surfaces the org name on the customer's
    * statement (FAIRTIX*ORGNAME).
    *
+   * <p>The intent records {@code userId} in {@link #USER_ID_METADATA}, so checkout
+   * can confirm it belongs to the caller ({@link #verifyPaymentSucceeded(String, long, UUID)}).
+   *
    * <p>{@code idempotencyKey} comes from {@link StripeIdempotencyKeys#onlineIntent}.
    */
   public String createPaymentIntent(long amountCents, String currency, ConnectContext connect,
-      String idempotencyKey) {
+      UUID userId, String idempotencyKey) {
+    Objects.requireNonNull(userId, "userId");
     try {
       PaymentIntentCreateParams.Builder builder = PaymentIntentCreateParams.builder()
           .setAmount(amountCents)
-          .setCurrency(currency);
+          .setCurrency(currency)
+          .putMetadata(USER_ID_METADATA, userId.toString());
       if (connect != null && connect.connectedAccountId() != null) {
         builder.setOnBehalfOf(connect.connectedAccountId())
             .setTransferData(PaymentIntentCreateParams.TransferData.builder()
@@ -193,11 +220,34 @@ public class StripePaymentService {
    * (full or partial) or open dispute throws {@link PaymentRefundedException}:
    * such an intent must not become an order. This runs once, before the order is
    * written; a refund that lands during order creation is not caught here.
+   *
+   * <p>No owner check: for box-office (card-present) intents, which have no
+   * customer account. Online checkout uses {@link #verifyPaymentSucceeded(String, long, UUID)}.
    */
   public boolean verifyPaymentSucceeded(String paymentIntentId, long expectedAmountCents) {
+    return verify(paymentIntentId, expectedAmountCents, null);
+  }
+
+  /**
+   * As {@link #verifyPaymentSucceeded(String, long)}, but first requires that the
+   * intent was created for {@code userId}, whatever its status: otherwise throws
+   * {@link PaymentIntentNotOwnedException}. An intent without
+   * {@link #USER_ID_METADATA} (created before it existed) is accepted only within
+   * {@link #UNBOUND_INTENT_GRACE} of its creation.
+   */
+  public boolean verifyPaymentSucceeded(String paymentIntentId, long expectedAmountCents,
+      UUID userId) {
+    Objects.requireNonNull(userId, "userId");
+    return verify(paymentIntentId, expectedAmountCents, userId);
+  }
+
+  private boolean verify(String paymentIntentId, long expectedAmountCents, UUID userId) {
     try {
       PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId,
           PaymentIntentRetrieveParams.builder().addExpand("latest_charge").build(), null);
+      if (userId != null) {
+        requireCreatedFor(intent, paymentIntentId, userId);
+      }
       boolean succeeded = "succeeded".equals(intent.getStatus())
           && intent.getAmountReceived() == expectedAmountCents;
       if (!succeeded) {
@@ -224,6 +274,25 @@ public class StripePaymentService {
     } catch (StripeException e) {
       throw new RuntimeException("Failed to verify Stripe payment: " + e.getMessage(), e);
     }
+  }
+
+  private void requireCreatedFor(PaymentIntent intent, String paymentIntentId, UUID userId) {
+    Map<String, String> metadata = intent.getMetadata();
+    String owner = metadata == null ? null : metadata.get(USER_ID_METADATA);
+    if (owner != null) {
+      if (owner.equals(userId.toString())) {
+        return;
+      }
+      throw new PaymentIntentNotOwnedException(paymentIntentId, userId, "other_user");
+    }
+    Long created = intent.getCreated();
+    if (created != null
+        && Instant.ofEpochSecond(created).isAfter(clock.instant().minus(UNBOUND_INTENT_GRACE))) {
+      log.info("Accepting PaymentIntent {} without {} (created before it was recorded)",
+          paymentIntentId, USER_ID_METADATA);
+      return;
+    }
+    throw new PaymentIntentNotOwnedException(paymentIntentId, userId, "unbound");
   }
 
   /**
