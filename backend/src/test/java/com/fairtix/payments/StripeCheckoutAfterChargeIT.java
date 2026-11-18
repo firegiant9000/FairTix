@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
@@ -67,6 +68,7 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
   @Autowired private SeatHoldService seatHoldService;
   @Autowired private JdbcTemplate jdbcTemplate;
   @Autowired private DataSource dataSource;
+  @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
 
   @MockitoSpyBean private StripePaymentService stripePaymentService;
   @MockitoSpyBean private OrderService orderService;
@@ -133,6 +135,39 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
   }
 
   /**
+   * Two submits with the same intent race. The other request's order commits, and
+   * this request's own order creation then fails. It answers with the committed
+   * order instead of an error, and writes no refund row.
+   */
+  @Test
+  void losingConcurrentSubmit_returnsTheCommittedOrder() throws Exception {
+    // The winner commits in a transaction of its own, as the other request would;
+    // only then does this request's attempt fail and roll back.
+    var winner = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+    winner.setPropagationBehavior(
+        org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    doAnswer(inv -> {
+      winner.execute(status -> {
+        try {
+          return inv.callRealMethod();
+        } catch (Throwable t) {
+          throw new IllegalStateException(t);
+        }
+      });
+      throw new IllegalArgumentException("Hold is not confirmed (status: RELEASED)");
+    }).when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+
+    checkout()
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.orderStatus").value("COMPLETED"));
+
+    assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
+    assertThat(count(
+        "SELECT COUNT(*) FROM audit_logs WHERE action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')"))
+        .isZero();
+  }
+
+  /**
    * The audit write fails too (for example the pool is exhausted). The customer
    * still gets the retryable 409 for the original error, not a 500 for the audit.
    */
@@ -171,14 +206,17 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
   }
 
   /**
-   * A double submit: the first checkout creates the order, the second with the
-   * same intent finds the holds no longer confirmed and fails. Nothing is owed to
-   * the customer, so no refund row is written.
+   * A double submit, or a resubmit after a lost response: the first checkout
+   * creates the order, the second with the same intent gets that order back.
+   * Nothing is owed to the customer, so no refund row is written.
    */
   @Test
-  void secondCheckoutForAFulfilledIntent_failsWithoutARefundRow() throws Exception {
-    checkout().andExpect(status().isCreated());
-    checkout().andExpect(status().is4xxClientError());
+  void secondCheckoutForAFulfilledIntent_returnsTheOrderWithoutARefundRow() throws Exception {
+    String first = checkout().andExpect(status().isCreated())
+        .andReturn().getResponse().getContentAsString();
+    String orderId = com.jayway.jsonpath.JsonPath.read(first, "$.orderId");
+    checkout().andExpect(status().isCreated())
+        .andExpect(jsonPath("$.orderId").value(orderId));
 
     assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
     assertThat(count(

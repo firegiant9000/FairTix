@@ -14,6 +14,7 @@ import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.domain.Plan;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.payments.application.PaymentFailedException;
+import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.payments.application.PaymentSimulationService;
 import com.fairtix.payments.application.StripeIdempotencyKeys;
 import com.fairtix.payments.application.StripePaymentService;
@@ -226,6 +227,46 @@ public class PaymentController {
     }
   }
 
+  /**
+   * Answers a checkout whose intent already has an order: the first response was
+   * lost (dropped connection, gateway timeout) and the customer pressed Complete
+   * Order again. Without this, every resubmit fails on the holds the order already
+   * released and writes a false {@code STRIPE_ORDER_FAILED} row.
+   *
+   * <p>Returns null when the intent has no payment record yet. Returns the existing
+   * order when the record belongs to this user and the order covers exactly the
+   * requested holds. Any other match is refused with a 409 that names neither the
+   * order nor its owner.
+   */
+  private PaymentResponse replayStripeCheckout(UUID userId, java.util.List<UUID> holdIds,
+      String paymentIntentId) {
+    if (paymentIntentId == null || paymentIntentId.isBlank()) {
+      return null;
+    }
+    var record = paymentRecordRepository.findByTransactionId(paymentIntentId).orElse(null);
+    if (record == null) {
+      return null;
+    }
+    Order order = userId.equals(record.getUserId())
+        ? orderService.findOrderForHolds(record.getOrderId(), holdIds).orElse(null)
+        : null;
+    if (order == null) {
+      log.warn("Checkout refused: stripe_intent={} already paid for a different order"
+          + " (requesting user {})", paymentIntentId, userId);
+      throw new ResponseStatusException(HttpStatus.CONFLICT,
+          "This payment has already been used for a different order");
+    }
+    if (order.getStatus() == OrderStatus.REFUNDED) {
+      // An order refunded through FairTix gets the client's refunded screen, not a
+      // confirmation. The replay does not call Stripe: a refund or dispute made
+      // only at Stripe leaves the order COMPLETED, and the order (and its tickets)
+      // does exist, so it is returned. The charge.refunded webhook alerts on such
+      // refunds (REFUND_ON_LIVE_ORDER).
+      throw new PaymentRefundedException(paymentIntentId, "order refunded");
+    }
+    return PaymentResponse.from(record, order.getStatus());
+  }
+
   @Operation(summary = "Create Stripe PaymentIntent",
       description = "Calculates total for the given holds and returns a Stripe client secret. "
           + "Only available when stripe.enabled=true.")
@@ -284,6 +325,16 @@ public class PaymentController {
 
     verifiedEmailGuard.requireVerified(principal.getUserId(), "purchasing tickets");
 
+    // Before the queue check: creating the order completes the queue entry, so a
+    // resubmit after a lost response would otherwise be refused there.
+    if (stripeEnabled) {
+      PaymentResponse replay = replayStripeCheckout(
+          principal.getUserId(), request.holdIds(), request.paymentIntentId());
+      if (replay != null) {
+        return replay;
+      }
+    }
+
     request.holdIds().stream()
         .flatMap(holdId -> seatHoldRepository.findById(holdId).stream())
         .map(hold -> hold.getSeat().getEvent())
@@ -323,6 +374,32 @@ public class PaymentController {
       } catch (RuntimeException ex) {
         auditStripeOrderNotCreatedSafely(
             principal.getUserId(), request.holdIds(), paymentIntentId, ex);
+        // A concurrent submit with the same intent may have created the order while
+        // this one failed on the released holds or the unique transaction id. If the
+        // lookup itself fails (or refuses), keep the original failure on record.
+        PaymentResponse replay;
+        try {
+          replay = replayStripeCheckout(principal.getUserId(), request.holdIds(), paymentIntentId);
+        } catch (RuntimeException replayFailure) {
+          if (replayFailure instanceof ResponseStatusException
+              || replayFailure instanceof PaymentRefundedException) {
+            // A deliberate answer about this intent (other user, other holds, refunded).
+            // Expected on double submits, so no stack trace.
+            log.warn("Checkout failed and the replay refused the intent:"
+                + " stripe_intent={}, error={}, replay={}", paymentIntentId,
+                ex.getClass().getSimpleName(), replayFailure.getClass().getSimpleName());
+            replayFailure.addSuppressed(ex);
+            throw replayFailure;
+          }
+          log.warn("Checkout failed and the replay lookup failed:"
+              + " stripe_intent={}, error={}", paymentIntentId,
+              ex.getClass().getSimpleName(), replayFailure);
+          ex.addSuppressed(replayFailure);
+          throw ex;
+        }
+        if (replay != null) {
+          return replay;
+        }
         throw ex;
       }
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();
