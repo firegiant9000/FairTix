@@ -582,6 +582,21 @@ class StripePaymentServiceTest {
     }
   }
 
+  @Test
+  void cancelPaymentIntent_otherInvalidRequestCode_throws() throws Exception {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent open = stubIntent("pi_1", "requires_payment_method", "sec_1");
+      InvalidRequestException missing = new InvalidRequestException("no such intent", null,
+          "req_1", "resource_missing", 404, null);
+      when(open.cancel(any(PaymentIntentCancelParams.class))).thenThrow(missing);
+      mocked.when(() -> PaymentIntent.retrieve("pi_1")).thenReturn(open);
+
+      assertThatThrownBy(() -> service.cancelPaymentIntent("pi_1"))
+          .isExactlyInstanceOf(RuntimeException.class)
+          .hasCause(missing);
+    }
+  }
+
   private static RefundCollection emptyRefunds() {
     RefundCollection page = mock(RefundCollection.class);
     when(page.getData()).thenReturn(List.of());

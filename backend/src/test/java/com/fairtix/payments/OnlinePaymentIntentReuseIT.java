@@ -87,7 +87,7 @@ class OnlinePaymentIntentReuseIT extends PostgresIT {
 
   /** Both requests pass the lookup before either inserts; one row remains, one secret is returned. */
   @Test
-  @Timeout(30)
+  @Timeout(45)
   void concurrentIntentCalls_writeOneRow_andReturnTheSameSecret() throws Exception {
     // Two simultaneous hold extensions bump the same seat version, so one request would
     // lose with CONCURRENT_MODIFICATION before reaching the intent service. That race is
@@ -105,7 +105,7 @@ class OnlinePaymentIntentReuseIT extends PostgresIT {
       Callable<MvcResult> call = () -> requestIntent().andReturn();
       Future<MvcResult> first = pool.submit(call);
       Future<MvcResult> second = pool.submit(call);
-      for (MvcResult result : List.of(first.get(20, TimeUnit.SECONDS), second.get(20, TimeUnit.SECONDS))) {
+      for (MvcResult result : List.of(first.get(15, TimeUnit.SECONDS), second.get(15, TimeUnit.SECONDS))) {
         assertThat(result.getResponse().getStatus())
             .as(result.getResponse().getContentAsString()).isEqualTo(200);
         assertThat(result.getResponse().getContentAsString()).contains("sec_race");
@@ -136,6 +136,11 @@ class OnlinePaymentIntentReuseIT extends PostgresIT {
 
     verify(stripePaymentService, never())
         .createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+    verify(stripePaymentService).retrievePaymentIntent("pi_stored");
+    assertThat(count("SELECT COUNT(*) FROM online_payment_intents WHERE status = 'ACTIVE'"
+        + " AND stripe_payment_intent_id = 'pi_stored'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM online_payment_intents WHERE status = 'ACTIVE'"))
+        .isEqualTo(1);
   }
 
   private org.springframework.test.web.servlet.ResultActions requestIntent() throws Exception {

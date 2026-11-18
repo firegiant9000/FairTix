@@ -123,6 +123,14 @@ class StripeIdempotencyKeysTest {
   }
 
   @Test
+  void onlineIntent_legacyKeyIsUnchanged() {
+    // Literal computed independently (sha256sum) from the base-format input
+    // "<user>|<sorted holds>|<amount>|direct"; changing it would orphan in-flight Stripe keys.
+    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_B, HOLD_A), 5000L, null))
+        .isEqualTo("fairtix-pi2-8894bd974b141f00763772f2b325eaeb2f3c90f373622a34798c10bb320eadd4");
+  }
+
+  @Test
   void replacementKey_nullMatchesOriginal() {
     assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null, null))
         .isEqualTo(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null));
