@@ -39,6 +39,9 @@ public class StripePaymentService {
   /** Stripe refund metadata key carrying our refund request id. */
   static final String REFUND_ID_METADATA = "fairtix_refund_id";
 
+  /** PaymentIntent metadata key naming a non-online channel (box office). */
+  static final String CHANNEL_METADATA = "fairtix_channel";
+
   /** Online PaymentIntent metadata key carrying the user it was created for. */
   static final String USER_ID_METADATA = "fairtix_user_id";
 
@@ -113,7 +116,7 @@ public class StripePaymentService {
         }
         builder.putMetadata("fairtix_org_id", connect.organizationId());
       }
-      builder.putMetadata("fairtix_channel", "box_office");
+      builder.putMetadata(CHANNEL_METADATA, "box_office");
       return PaymentIntent.create(builder.build(), keyed(idempotencyKey));
     } catch (IdempotencyException e) {
       throw retryConflict(e);
@@ -285,6 +288,13 @@ public class StripePaymentService {
       }
       throw new PaymentIntentNotOwnedException(paymentIntentId, userId, "other_user");
     }
+    // Box-office intents carry a channel and never a user, and are still created
+    // after deploy: they are never online-checkout intents.
+    if (metadata != null && metadata.containsKey(CHANNEL_METADATA)) {
+      throw new PaymentIntentNotOwnedException(paymentIntentId, userId, "other_channel");
+    }
+    // Only online intents created before USER_ID_METADATA existed get here; once
+    // UNBOUND_INTENT_GRACE has passed since that deploy, none is accepted.
     Long created = intent.getCreated();
     if (created != null
         && Instant.ofEpochSecond(created).isAfter(clock.instant().minus(UNBOUND_INTENT_GRACE))) {

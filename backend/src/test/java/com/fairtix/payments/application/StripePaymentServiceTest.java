@@ -269,6 +269,25 @@ class StripePaymentServiceTest {
     }
   }
 
+  /**
+   * A box-office intent carries no user, and is created after deploy too: the
+   * grace window for pre-deploy online intents must never cover it.
+   */
+  @Test
+  void verifyForUser_recentBoxOfficeIntent_throwsNotOwned() {
+    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent intent = boundIntent(null);
+      when(intent.getMetadata()).thenReturn(Map.of("fairtix_channel", "box_office"));
+      when(intent.getCreated()).thenReturn(NOW.minus(Duration.ofMinutes(5)).getEpochSecond());
+      stubVerifyRetrieve(mocked, "pi_box_office", intent);
+
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_box_office", 5000L, OWNER))
+          .isInstanceOf(PaymentIntentNotOwnedException.class)
+          .hasMessageContaining("other_channel");
+    }
+  }
+
   /** The box-office path has no customer account and keeps the unbound check. */
   @Test
   void verifyWithoutUser_ignoresIntentOwner() throws Exception {
