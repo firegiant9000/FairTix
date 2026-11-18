@@ -19,6 +19,7 @@ import com.fairtix.auth.application.WeakPasswordException;
 import com.fairtix.payments.api.PaymentProcessingException;
 import com.fairtix.payments.application.PaymentDeclinedException;
 import com.fairtix.payments.application.PaymentFailedException;
+import com.fairtix.payments.application.PaymentIntentNotOwnedException;
 import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.payments.application.PaymentRetryConflictException;
 import com.fairtix.refunds.application.RefundFinaliseException;
@@ -404,6 +405,16 @@ public class GlobalExceptionHandler {
         "This payment has been refunded or disputed, so it can't complete an order."
             + " Please contact support.",
         req);
+  }
+
+  @ExceptionHandler(PaymentIntentNotOwnedException.class)
+  public ResponseEntity<Map<String, Object>> handlePaymentIntentNotOwned(
+      PaymentIntentNotOwnedException ex, HttpServletRequest req) {
+    log.warn("Rejected PaymentIntent at checkout: stripe_intent={}, user={}, reason={}",
+        ex.getPaymentIntentId(), ex.getUserId(), ex.getReason());
+    // 409, not 403: the client treats 401/403 as an expired session.
+    return error(HttpStatus.CONFLICT, "PAYMENT_NOT_USABLE",
+        "This payment can't be used for this checkout. Please start checkout again.", req);
   }
 
   @ExceptionHandler(PaymentDeclinedException.class)

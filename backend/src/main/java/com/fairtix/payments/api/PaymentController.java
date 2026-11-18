@@ -306,6 +306,7 @@ public class PaymentController {
       salesCapService.checkCanCharge(UUID.fromString(connect.organizationId()), amountCents);
     }
     String clientSecret = stripePaymentService.createPaymentIntent(amountCents, "usd", connect,
+        principal.getUserId(),
         StripeIdempotencyKeys.onlineIntent(principal.getUserId(), request.holdIds(), amountCents,
             connect));
     return new PaymentIntentResponse(clientSecret);
@@ -360,7 +361,10 @@ public class PaymentController {
                   "Hold not found or not owned by current user: " + id)))
           .reduce(BigDecimal.ZERO, BigDecimal::add);
       long expectedAmountCents = expectedTotal.multiply(BigDecimal.valueOf(100)).longValue();
-      if (!stripePaymentService.verifyPaymentSucceeded(paymentIntentId, expectedAmountCents)) {
+      // Throws PaymentIntentNotOwnedException (409, no audit row) for an intent
+      // that wasn't created for this user, before any order or failure audit.
+      if (!stripePaymentService.verifyPaymentSucceeded(
+          paymentIntentId, expectedAmountCents, principal.getUserId())) {
         // Almost always a paid charge whose amount no longer matches the holds, so
         // it goes on record for stripe_charges_without_order like a failed order.
         var notVerified = new PaymentNotVerifiedException();

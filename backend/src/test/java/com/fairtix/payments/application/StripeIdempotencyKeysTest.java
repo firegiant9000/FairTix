@@ -84,4 +84,15 @@ class StripeIdempotencyKeysTest {
     assertThat(StripeIdempotencyKeys.boxOfficeIntent(id)).isEqualTo("fairtix-bo-" + id);
     assertThat(StripeIdempotencyKeys.connectAccount(id)).isEqualTo("fairtix-acct-" + id);
   }
+
+  /**
+   * Online intents now carry the caller in their metadata. Stripe rejects a
+   * reused key whose parameters differ, so the key must not collide with one
+   * sent before that change.
+   */
+  @Test
+  void onlineIntent_usesVersionedPrefix() {
+    assertThat(StripeIdempotencyKeys.onlineIntent(USER, List.of(HOLD_A), 5000L, null))
+        .startsWith("fairtix-pi2-");
+  }
 }

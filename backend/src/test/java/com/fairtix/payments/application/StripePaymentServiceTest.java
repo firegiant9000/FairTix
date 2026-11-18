@@ -23,6 +23,10 @@ import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.slf4j.MDC;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -181,6 +185,136 @@ class StripePaymentServiceTest {
     }
   }
 
+  // --- The intent belongs to the user who created it ---
+
+  private static final UUID OWNER = UUID.randomUUID();
+  private static final Instant NOW = Instant.parse("2026-11-18T12:00:00Z");
+
+  private static PaymentIntent boundIntent(String ownerId) {
+    PaymentIntent intent = succeededIntent(5000L, 0L);
+    when(intent.getMetadata()).thenReturn(
+        ownerId == null ? Map.of() : Map.of("fairtix_user_id", ownerId));
+    return intent;
+  }
+
+  @Test
+  void verifyForUser_intentOfCaller_returnsTrue() throws Exception {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      stubVerifyRetrieve(mocked, "pi_own", boundIntent(OWNER.toString()));
+
+      assertTrue(service.verifyPaymentSucceeded("pi_own", 5000L, OWNER));
+    }
+  }
+
+  @Test
+  void verifyForUser_intentOfAnotherUser_throwsNotOwned() {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      stubVerifyRetrieve(mocked, "pi_other", boundIntent(UUID.randomUUID().toString()));
+
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_other", 5000L, OWNER))
+          .isInstanceOf(PaymentIntentNotOwnedException.class);
+    }
+  }
+
+  /** Ownership is checked first: another user's intent never reads as "not verified". */
+  @Test
+  void verifyForUser_unsucceededIntentOfAnotherUser_throwsNotOwned() {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent intent = mock(PaymentIntent.class);
+      when(intent.getStatus()).thenReturn("requires_payment_method");
+      when(intent.getMetadata()).thenReturn(Map.of("fairtix_user_id", UUID.randomUUID().toString()));
+      stubVerifyRetrieve(mocked, "pi_other_open", intent);
+
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_other_open", 5000L, OWNER))
+          .isInstanceOf(PaymentIntentNotOwnedException.class);
+    }
+  }
+
+  /** Created before intents carried their user: accepted while recent. */
+  @Test
+  void verifyForUser_unboundIntentWithinGrace_returnsTrue() throws Exception {
+    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent intent = boundIntent(null);
+      when(intent.getCreated()).thenReturn(NOW.minus(Duration.ofHours(23)).getEpochSecond());
+      stubVerifyRetrieve(mocked, "pi_unbound_recent", intent);
+
+      assertTrue(service.verifyPaymentSucceeded("pi_unbound_recent", 5000L, OWNER));
+    }
+  }
+
+  @Test
+  void verifyForUser_unboundIntentPastGrace_throwsNotOwned() {
+    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent intent = boundIntent(null);
+      when(intent.getCreated()).thenReturn(NOW.minus(Duration.ofHours(25)).getEpochSecond());
+      stubVerifyRetrieve(mocked, "pi_unbound_old", intent);
+
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_unbound_old", 5000L, OWNER))
+          .isInstanceOf(PaymentIntentNotOwnedException.class);
+    }
+  }
+
+  @Test
+  void verifyForUser_unboundIntentWithoutCreated_throwsNotOwned() {
+    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent intent = boundIntent(null);
+      when(intent.getMetadata()).thenReturn(null);
+      stubVerifyRetrieve(mocked, "pi_unbound_nocreated", intent);
+
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_unbound_nocreated", 5000L, OWNER))
+          .isInstanceOf(PaymentIntentNotOwnedException.class);
+    }
+  }
+
+  /**
+   * A box-office intent carries no user, and is created after deploy too: the
+   * grace window for pre-deploy online intents must never cover it.
+   */
+  @Test
+  void verifyForUser_recentBoxOfficeIntent_throwsNotOwned() {
+    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent intent = boundIntent(null);
+      when(intent.getMetadata()).thenReturn(Map.of("fairtix_channel", "box_office"));
+      when(intent.getCreated()).thenReturn(NOW.minus(Duration.ofMinutes(5)).getEpochSecond());
+      stubVerifyRetrieve(mocked, "pi_box_office", intent);
+
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_box_office", 5000L, OWNER))
+          .isInstanceOf(PaymentIntentNotOwnedException.class)
+          .hasMessageContaining("other_channel");
+    }
+  }
+
+  /** The box-office path has no customer account and keeps the unbound check. */
+  @Test
+  void verifyWithoutUser_ignoresIntentOwner() throws Exception {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      stubVerifyRetrieve(mocked, "pi_bo", boundIntent(UUID.randomUUID().toString()));
+
+      assertTrue(service.verifyPaymentSucceeded("pi_bo", 5000L));
+    }
+  }
+
+  @Test
+  void createPaymentIntent_recordsCallerInMetadata() throws Exception {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent intent = mock(PaymentIntent.class);
+      when(intent.getClientSecret()).thenReturn("pi_secret");
+      mocked.when(() -> PaymentIntent.create(any(PaymentIntentCreateParams.class), any(RequestOptions.class)))
+          .thenReturn(intent);
+
+      service.createPaymentIntent(5000L, "usd", null, OWNER, "fairtix-pi2-m1");
+
+      ArgumentCaptor<PaymentIntentCreateParams> params =
+          ArgumentCaptor.forClass(PaymentIntentCreateParams.class);
+      mocked.verify(() -> PaymentIntent.create(params.capture(), any(RequestOptions.class)));
+      assertThat(params.getValue().getMetadata()).containsEntry("fairtix_user_id", OWNER.toString());
+    }
+  }
+
   @Test
   void createPaymentIntent_cardDeclined_throwsPaymentDeclined() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
@@ -188,7 +322,7 @@ class StripePaymentServiceTest {
       mocked.when(() -> PaymentIntent.create(any(PaymentIntentCreateParams.class), any(RequestOptions.class)))
           .thenThrow(declined);
 
-      assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd", null, "fairtix-pi-t1"))
+      assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd", null, OWNER, "fairtix-pi2-t1"))
           .isInstanceOf(PaymentDeclinedException.class)
           .hasMessageContaining("Your card was declined");
     }
@@ -200,7 +334,7 @@ class StripePaymentServiceTest {
       mocked.when(() -> PaymentIntent.create(any(PaymentIntentCreateParams.class), any(RequestOptions.class)))
           .thenThrow(new ApiConnectionException("connection reset"));
 
-      assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd", null, "fairtix-pi-t2"))
+      assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd", null, OWNER, "fairtix-pi2-t2"))
           .isExactlyInstanceOf(RuntimeException.class)
           .hasMessageStartingWith("Failed to create Stripe payment intent")
           .hasCauseInstanceOf(ApiConnectionException.class);
@@ -326,13 +460,13 @@ class StripePaymentServiceTest {
       mocked.when(() -> PaymentIntent.create(any(PaymentIntentCreateParams.class), any(RequestOptions.class)))
           .thenReturn(intent);
 
-      assertThat(service.createPaymentIntent(5000L, "usd", null, "fairtix-pi-k1")).isEqualTo("pi_secret");
+      assertThat(service.createPaymentIntent(5000L, "usd", null, OWNER, "fairtix-pi2-k1")).isEqualTo("pi_secret");
 
       ArgumentCaptor<PaymentIntentCreateParams> params =
           ArgumentCaptor.forClass(PaymentIntentCreateParams.class);
       ArgumentCaptor<RequestOptions> opts = ArgumentCaptor.forClass(RequestOptions.class);
       mocked.verify(() -> PaymentIntent.create(params.capture(), opts.capture()));
-      assertThat(opts.getValue().getIdempotencyKey()).isEqualTo("fairtix-pi-k1");
+      assertThat(opts.getValue().getIdempotencyKey()).isEqualTo("fairtix-pi2-k1");
       Map<String, String> metadata = params.getValue().getMetadata();
       assertThat(metadata == null ? Map.<String, String>of() : metadata).doesNotContainKey("requestId");
     } finally {
@@ -372,7 +506,7 @@ class StripePaymentServiceTest {
       mocked.when(() -> PaymentIntent.create(any(PaymentIntentCreateParams.class)))
           .thenThrow(idempotencyError());
 
-      assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd", null, "fairtix-pi-k2"))
+      assertThatThrownBy(() -> service.createPaymentIntent(5000L, "usd", null, OWNER, "fairtix-pi2-k2"))
           .isInstanceOf(PaymentRetryConflictException.class);
     }
   }
