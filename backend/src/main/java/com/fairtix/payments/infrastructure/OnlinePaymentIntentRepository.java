@@ -32,8 +32,15 @@ public interface OnlinePaymentIntentRepository extends JpaRepository<OnlinePayme
   int invalidate(@Param("id") UUID id, @Param("reason") IntentInvalidationReason reason,
       @Param("at") Instant at);
 
+  /**
+   * Deletes only INVALIDATED rows, by invalidation time. ACTIVE rows are never deleted: confirmed
+   * holds can be extended indefinitely, and losing the row would let the next /intent create a
+   * second payable intent for the same hold set.
+   */
   @Transactional
   @Modifying
-  @Query("DELETE FROM OnlinePaymentIntent i WHERE i.createdAt < :cutoff")
-  int deleteCreatedBefore(@Param("cutoff") Instant cutoff);
+  @Query("DELETE FROM OnlinePaymentIntent i"
+      + " WHERE i.status = com.fairtix.payments.domain.OnlinePaymentIntentStatus.INVALIDATED"
+      + " AND i.invalidatedAt < :cutoff")
+  int deleteInvalidatedBefore(@Param("cutoff") Instant cutoff);
 }

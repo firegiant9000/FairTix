@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 class OnlinePaymentIntentRetentionSchedulerTest {
 
   @Test
-  void deleteOldRows_usesThirtyDayCutoffFromClock() {
+  void deleteOldRows_deletesRowsInvalidatedBeforeThirtyDayCutoff() {
     OnlinePaymentIntentRepository repository = mock(OnlinePaymentIntentRepository.class);
     OnlinePaymentIntentRetentionScheduler scheduler =
         new OnlinePaymentIntentRetentionScheduler(repository);
@@ -20,6 +20,6 @@ class OnlinePaymentIntentRetentionSchedulerTest {
 
     scheduler.deleteOldRows();
 
-    verify(repository).deleteCreatedBefore(Instant.parse("2026-10-19T03:30:00Z"));
+    verify(repository).deleteInvalidatedBefore(Instant.parse("2026-10-19T03:30:00Z"));
   }
 }

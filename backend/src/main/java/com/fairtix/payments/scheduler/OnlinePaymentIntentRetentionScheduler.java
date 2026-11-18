@@ -34,8 +34,8 @@ public class OnlinePaymentIntentRetentionScheduler {
   public void deleteOldRows() {
     MDC.put("requestId", "sched-deleteOldOnlineIntents-" + UUID.randomUUID());
     try {
-      int deleted = repository.deleteCreatedBefore(clock.instant().minus(RETENTION));
-      log.info("Deleted {} online payment intent rows older than {} days", deleted,
+      int deleted = repository.deleteInvalidatedBefore(clock.instant().minus(RETENTION));
+      log.info("Deleted {} online payment intent rows invalidated more than {} days ago", deleted,
           RETENTION.toDays());
     } finally {
       MDC.remove("requestId");
