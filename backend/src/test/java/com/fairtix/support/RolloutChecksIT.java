@@ -167,6 +167,27 @@ class RolloutChecksIT extends PostgresIT {
     assertThat(busy).containsEntry("busy_only", true);
     // Not safe to refund yet: checkout with this intent could still create the order.
     assertThat(((Number) busy.get("holds_still_confirmed")).intValue()).isEqualTo(1);
+    assertThat(busy).containsEntry("not_verified", false);
+  }
+
+  /** A 402 on verification is listed, marked so it is checked in Stripe first. */
+  @Test
+  void stripeChargesWithoutOrder_marksPaymentNotVerifiedRows() throws Exception {
+    UUID user = newUser("mismatch@test.com");
+    UUID holdId = UUID.randomUUID();
+    // Same details format as PaymentController writes for PaymentNotVerified.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), user,
+        "Payment not verified (amount_received differs from the holds' total, or the intent"
+            + " has not succeeded); order not created: stripe_intent=pi_mismatch, holdIds="
+            + List.of(holdId) + ", error=PaymentNotVerified");
+
+    Map<String, Object> row = jdbcTemplate.queryForList(checks().get("stripe_charges_without_order"))
+        .stream().filter(r -> "pi_mismatch".equals(r.get("payment_intent"))).findFirst().orElseThrow();
+    assertThat(row).containsEntry("not_verified", true);
+    assertThat(((Number) row.get("holds_still_confirmed")).intValue()).isZero();
   }
 
   /**

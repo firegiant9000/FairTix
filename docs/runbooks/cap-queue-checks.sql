@@ -112,7 +112,24 @@ GROUP BY granted;
 -- name: stripe_charges_without_order
 -- PaymentIntents that succeeded at Stripe but never got an order, last 14 days.
 -- Checkout writes STRIPE_ORDER_FAILED when the order failed, and
--- STRIPE_ORDER_BUSY when the purchase-cap lock stayed busy. Intents that got an
+-- STRIPE_ORDER_BUSY when the purchase-cap lock stayed busy. STRIPE_ORDER_FAILED
+-- with error=PaymentNotVerified in its details means checkout answered 402
+-- because verification failed: almost always a paid intent whose amount no
+-- longer matches the holds (a seat price changed, or a hold was swapped).
+-- not_verified = true marks a row with any such attempt. For those, open the
+-- intent in Stripe first: if it never succeeded there is nothing to refund.
+-- Their listed holds are the ones submitted, which may not be the ones the
+-- intent paid for, so holds_still_confirmed = 0 is not enough on its own. A
+-- retry with the paid holds can still create the order. Before refunding, also
+-- confirm that the user has no ACTIVE or CONFIRMED hold at all for the event
+-- (an ACTIVE hold can still be confirmed and checked out with this intent).
+-- Take <user_id> from the row's user_id column and replace the two ids:
+--   SELECT h.id FROM seat_holds h JOIN seats s ON s.id = h.seat_id
+--   WHERE h.owner_id = '<user_id>' AND h.status IN ('ACTIVE', 'CONFIRMED')
+--     AND s.event_id = (SELECT s2.event_id FROM seat_holds h2
+--                       JOIN seats s2 ON s2.id = h2.seat_id
+--                       WHERE h2.id = '<a listed hold id>');
+-- Refund only if that returns no rows. Intents that got an
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --
@@ -148,6 +165,7 @@ SELECT f.payment_intent,
        MAX(f.created_at)                         AS last_failed_at,
        COUNT(*)                                  AS failed_attempts,
        bool_and(f.action = 'STRIPE_ORDER_BUSY')  AS busy_only,
+       bool_or(f.not_verified)                   AS not_verified,
        -- MAX ignores NULL, so one unreadable attempt must make the whole row NULL.
        CASE WHEN COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0 THEN NULL
             ELSE MAX(f.holds_still_confirmed)
@@ -160,6 +178,7 @@ FROM (
          a.user_id,
          a.action,
          a.created_at,
+         a.details LIKE '%error=PaymentNotVerified%' AS not_verified,
          CASE WHEN a.details ~ 'holdIds=\[[^]]*[0-9a-f]{8}-' THEN
            (SELECT COUNT(*)
             FROM seat_holds h

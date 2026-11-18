@@ -170,6 +170,41 @@ class StripePaymentControllerTest {
         .andExpect(status().isPaymentRequired());
   }
 
+  /**
+   * A paid intent whose amount no longer matches the holds (price change, swapped
+   * hold) must be on record for the runbook check stripe_charges_without_order,
+   * in the format its regexes parse.
+   */
+  @Test
+  void checkout_amountMismatch_writesOrderFailedAuditForRunbook() throws Exception {
+    doReturn(false).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong());
+
+    String body = """
+        {
+          "holdIds": ["%s"],
+          "paymentIntentId": "pi_amount_mismatch"
+        }
+        """.formatted(confirmedHold.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isPaymentRequired());
+
+    java.util.List<String> details = jdbcTemplate.queryForList(
+        "SELECT details FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED' AND user_id = ?",
+        String.class, user.getId());
+    org.assertj.core.api.Assertions.assertThat(details).hasSize(1);
+    org.assertj.core.api.Assertions.assertThat(details.get(0))
+        .contains("stripe_intent=pi_amount_mismatch,")
+        .contains("holdIds=[" + confirmedHold.getId() + "]")
+        .contains("error=PaymentNotVerified");
+    org.assertj.core.api.Assertions.assertThat(
+        seatHoldRepository.findById(confirmedHold.getId()).orElseThrow().getStatus())
+        .isEqualTo(HoldStatus.CONFIRMED);
+  }
+
   @Test
   void checkout_withRefundedIntent_isRejectedWithoutOrderFailedAudit() throws Exception {
     doThrow(new PaymentRefundedException("pi_refunded", "refunded"))
