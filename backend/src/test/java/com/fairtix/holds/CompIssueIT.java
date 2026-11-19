@@ -127,6 +127,51 @@ class CompIssueIT extends PostgresIT {
         .hasMessageContaining("Purchase cap");
   }
 
+  /**
+   * Registration keeps the email as typed. A comp addressed in another case reaches the
+   * same account, so it counts toward her cap instead of a new stub user's.
+   */
+  @Test
+  void compToARegisteredEmailInAnotherCase_isRefusedOverHerCap() {
+    setCap(1);
+    User alice = newUser("Alice@Example.com");
+    SeatHold hold =
+        seatHoldService.createHold(event.getId(), List.of(seatA.getId()), alice.getId(), 10).get(0);
+    seatHoldService.confirmHold(hold.getId(), alice.getId());
+    orderService.createOrderWithPayment(alice.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
+
+    assertThatThrownBy(() -> compService.issueComp(comp(seatB, "alice@example.com"), staff.getId()))
+        .isInstanceOf(PurchaseCapExceededException.class);
+
+    assertThat(compTickets()).isZero();
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM users WHERE lower(email) = 'alice@example.com'", Integer.class))
+        .as("no stub user beside her account").isEqualTo(1);
+  }
+
+  /**
+   * An older comp stub in lower case sits beside her account (created before the lookup
+   * ignored case). The comp still resolves to her registered account and its cap.
+   */
+  @Test
+  void compWithAnOldStubBesideTheAccount_isCountedAgainstTheRegisteredAccount() {
+    setCap(1);
+    User stub = new User();
+    stub.setEmail("alice@example.com");
+    stub.setPassword("comp:oldstub");
+    stub.setEmailVerified(false);
+    userRepository.save(stub); // created first, so the oldest match
+    User alice = newUser("Alice@Example.com");
+    SeatHold hold =
+        seatHoldService.createHold(event.getId(), List.of(seatA.getId()), alice.getId(), 10).get(0);
+    seatHoldService.confirmHold(hold.getId(), alice.getId());
+    orderService.createOrderWithPayment(alice.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
+
+    assertThatThrownBy(() -> compService.issueComp(comp(seatB, "alice@example.com"), staff.getId()))
+        .isInstanceOf(PurchaseCapExceededException.class);
+    assertThat(compTickets()).isZero();
+  }
+
   /** A name-only comp has no recipient account and does not use up the issuer's cap. */
   @Test
   void nameOnlyComps_onACappedEvent_areNotCountedAgainstTheIssuer() {
