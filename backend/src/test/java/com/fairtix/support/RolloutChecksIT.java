@@ -264,6 +264,44 @@ class RolloutChecksIT extends PostgresIT {
   }
 
   /**
+   * An unbound charge doesn't age out after 14 days: it stays until its refund webhook
+   * or the owner's review is on record. Other charges still age out.
+   */
+  @Test
+  void stripeChargesWithoutOrder_keepsUnboundRowsUntilRefundedOrReviewed() throws Exception {
+    UUID user = newUser("unbound-old@test.com");
+    for (String pi : List.of("pi_unbound_open", "pi_unbound_refunded", "pi_unbound_reviewed")) {
+      jdbcTemplate.update(
+          "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+              + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now() - interval '20 days')",
+          UUID.randomUUID(), user,
+          "Charge succeeded, but the intent predates owner binding and is past its grace window,"
+              + " so no checkout can complete it; order not created: stripe_intent=" + pi
+              + ", holdIds=" + List.of(UUID.randomUUID()) + ", error=PaymentIntentUnbound");
+    }
+    failedStripeOrder(user, "pi_bound_old", "STRIPE_ORDER_FAILED", UUID.randomUUID(), "20 days");
+    // Same details format as StripeWebhookController writes.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_REFUND_UNMATCHED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), new UUID(0L, 0L),
+        "Stripe refund with no payment record yet: stripe_intent=pi_unbound_refunded"
+            + ", charge=ch_x, amount_refunded_cents=5000");
+    // Same format as the runbook's STRIPE_CHARGE_REVIEWED insert.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_CHARGE_REVIEWED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), new UUID(0L, 0L),
+        "Unbound charge kept, not refunded: stripe_intent=pi_unbound_reviewed, reason=test");
+
+    List<Object> listed = jdbcTemplate.queryForList(checks().get("stripe_charges_without_order"))
+        .stream().map(row -> row.get("payment_intent")).toList();
+    assertThat(listed).contains("pi_unbound_open")
+        .doesNotContain("pi_unbound_refunded", "pi_unbound_reviewed", "pi_bound_old");
+    assertThat(chargeWithoutOrder("pi_unbound_open")).containsEntry("escalate", true);
+  }
+
+  /**
    * One attempt with readable hold ids (none confirmed) and one without: MAX alone
    * would ignore the NULL and show 0, listing the charge as safe to refund.
    */

@@ -131,12 +131,16 @@ GROUP BY granted;
 --                       WHERE h2.id = '<a listed hold id>');
 -- Refund only if that returns no rows. Intents that got an
 -- order on a later attempt have a payment_records row (transaction_id is the
--- intent id) and are left out here. Expect no rows. A charge refunded without an
--- order stays listed until its attempts leave the 14-day window, so check
--- Stripe for an existing refund before acting on a row.
+-- intent id) and are left out here. Expect no rows.
+--
+-- Every row, before any refund: a charge already refunded without an order stays
+-- listed (until its attempts leave the 14-day window, or for unbound rows until
+-- the refund's webhook arrives), and Stripe keeps a refunded intent "succeeded".
+-- So open the charge in Stripe and refund only if amount_refunded is 0 and
+-- refunded is false. A second refund after a partial one pays out twice.
 --
 -- unbound = true rows: none of the hold rules below or above apply; only this
--- paragraph does. They come from STRIPE_ORDER_FAILED with
+-- paragraph and the refund check above do. They come from STRIPE_ORDER_FAILED with
 -- error=PaymentIntentUnbound: checkout answered 409 PAYMENT_NOT_USABLE to a
 -- paid intent with no fairtix_user_id and no fairtix_channel metadata, more
 -- than 24 hours old. No checkout can ever use that intent, so its holds don't
@@ -151,14 +155,24 @@ GROUP BY granted;
 --   2. SELECT 1 FROM box_office_sales
 --      WHERE stripe_payment_intent_id = '<payment_intent>';
 --      returns no rows.
---   3. The amount charged equals the listed holds' seat prices:
---      SELECT SUM(s.price) FROM seat_holds h JOIN seats s ON s.id = h.seat_id
+--   3. The intent's amount_received (in cents) equals the listed holds' seat
+--      prices (in currency units) times 100:
+--      SELECT SUM(s.price) * 100 FROM seat_holds h JOIN seats s ON s.id = h.seat_id
 --      WHERE h.id IN ('<listed hold ids>');
---      (a seat price changed since the charge also explains a difference).
+--      Seat prices at hold time are not stored, so any mismatch fails this
+--      check, even one a later price change might explain.
 --   4. The charge has no dispute, open or closed.
 -- If any of 1 to 3 fails, don't refund: investigate where the charge came from.
 -- user_id is whoever submitted the intent, not a verified owner; a second
 -- submitter shows up as a second row for the same intent.
+-- Unbound rows don't age out of this check: their attempts stay listed past
+-- 14 days until a refund webhook for the intent (STRIPE_REFUND_UNMATCHED) is on
+-- record, or the owner records a decision not to refund:
+--   INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)
+--   VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000000',
+--           'STRIPE_CHARGE_REVIEWED', 'PAYMENT',
+--           'Unbound charge kept, not refunded: stripe_intent=<payment_intent>, reason=<why>',
+--           now());
 --
 -- Rows that are not unbound: refund only when holds_still_confirmed = 0. While any of the charge's
 -- holds is still CONFIRMED, any later checkout request with this intent id (a
@@ -223,12 +237,19 @@ FROM (
          END AS holds_still_confirmed
   FROM audit_logs a
   WHERE a.action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')
-    AND a.created_at > now() - interval '14 days'
+    AND (a.created_at > now() - interval '14 days'
+         OR a.details LIKE '%error=PaymentIntentUnbound%')
 ) f
 WHERE NOT EXISTS (
   SELECT 1 FROM payment_records p WHERE p.transaction_id = f.payment_intent
 )
 GROUP BY f.payment_intent, f.user_id
+-- An unbound charge is done once refunded or reviewed (see the comment above).
+HAVING NOT (bool_or(f.unbound) AND EXISTS (
+  SELECT 1 FROM audit_logs r
+  WHERE r.action IN ('STRIPE_REFUND_UNMATCHED', 'STRIPE_CHARGE_REVIEWED')
+    AND position('stripe_intent=' || f.payment_intent || ',' IN r.details) > 0
+))
 ORDER BY first_failed_at DESC;
 
 -- name: refunds_on_live_orders
