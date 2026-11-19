@@ -20,6 +20,7 @@ import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.application.SeatHoldService;
 import com.fairtix.inventory.domain.Seat;
 import com.fairtix.inventory.domain.SeatHold;
+import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.payments.application.StripeIdempotencyKeys;
 import com.fairtix.payments.application.StripePaymentService;
@@ -40,6 +41,8 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.mockito.Mockito;
+import org.mockito.stubbing.Answer;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -71,6 +74,7 @@ class OnlinePaymentIntentReuseIT extends PostgresIT {
 
   @MockitoSpyBean private StripePaymentService stripePaymentService;
   @MockitoSpyBean private SeatHoldService seatHoldService;
+  @MockitoSpyBean private SeatHoldRepository seatHoldRepository;
 
   private User buyer;
   private SeatHold hold;
@@ -93,9 +97,8 @@ class OnlinePaymentIntentReuseIT extends PostgresIT {
   @Test
   @Timeout(45)
   void concurrentIntentCalls_writeOneRow_andReturnTheSameSecret() throws Exception {
-    // Two simultaneous hold extensions bump the same seat version, so one request would
-    // lose with CONCURRENT_MODIFICATION before reaching the intent service. That race is
-    // not what this test is about, so the extension is skipped here.
+    // Concurrent hold extensions serialize on the hold-row lock; that race has its own
+    // test below, so the extension is skipped here to keep this one on the insert race.
     doNothing().when(seatHoldService).extendConfirmedHoldsForPayment(any(), any());
     CyclicBarrier barrier = new CyclicBarrier(2);
     doAnswer(inv -> {
@@ -119,6 +122,52 @@ class OnlinePaymentIntentReuseIT extends PostgresIT {
     }
 
     assertThat(count("SELECT COUNT(*) FROM online_payment_intents WHERE status = 'ACTIVE'")).isEqualTo(1);
+  }
+
+  /**
+   * A double click: both requests run the real hold extension. Both load the hold and
+   * its seat before either extends, so the first commit's seat version bump leaves the
+   * second holding a stale seat. Both must still get the secret.
+   */
+  @Test
+  @Timeout(45)
+  void concurrentIntentCalls_withRealExtension_bothSucceed() throws Exception {
+    // The repository is an interface proxy, so Spring spies it with a mock whose default
+    // answer delegates to the real bean; callRealMethod() would fail, so use that answer.
+    Answer<?> real = Mockito.mockingDetails(seatHoldRepository)
+        .getMockCreationSettings().getDefaultAnswer();
+    CyclicBarrier loaded = new CyclicBarrier(2);
+    doAnswer(inv -> {
+      loaded.await(10, TimeUnit.SECONDS);
+      return real.answer(inv);
+    }).when(seatHoldRepository).extendExpiry(any(), any(), any());
+    StripeIntent intent = new StripeIntent("pi_double", "requires_payment_method", "sec_double");
+    doReturn(intent).when(stripePaymentService)
+        .createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+    // The extensions now run one after the other, so the later call usually finds the
+    // stored row and retrieves it.
+    doReturn(intent).when(stripePaymentService).retrievePaymentIntent("pi_double");
+    jdbcTemplate.update("UPDATE seat_holds SET expires_at = now() + interval '1 minute' WHERE id = ?",
+        hold.getId());
+
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try {
+      Callable<MvcResult> call = () -> requestIntent().andReturn();
+      Future<MvcResult> first = pool.submit(call);
+      Future<MvcResult> second = pool.submit(call);
+      for (MvcResult result : List.of(first.get(20, TimeUnit.SECONDS), second.get(20, TimeUnit.SECONDS))) {
+        assertThat(result.getResponse().getStatus())
+            .as(result.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(result.getResponse().getContentAsString()).contains("sec_double");
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+
+    assertThat(count("SELECT COUNT(*) FROM online_payment_intents WHERE status = 'ACTIVE'")).isEqualTo(1);
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT expires_at > now() + interval '9 minutes' FROM seat_holds WHERE id = ?",
+        Boolean.class, hold.getId())).isTrue();
   }
 
   /** The stored intent is older than Stripe's key window; it is retrieved, not created again. */
