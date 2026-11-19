@@ -232,6 +232,26 @@ test('a refunded payment gets a final screen with no retry', async () => {
   expect(mockNavigate).toHaveBeenCalledWith('/my-holds');
 });
 
+test('an unusable payment gets its own final screen that does not claim the payment went through', async () => {
+  mockPost({
+    status: 409,
+    code: 'PAYMENT_NOT_USABLE',
+    message: "This payment can't be used for this checkout. Please start checkout again.",
+  });
+  mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
+
+  renderCheckout();
+  await clickPay();
+
+  expect(await screen.findByText(/this payment can't be used to complete this order/i)).toBeInTheDocument();
+  expect(screen.getByText(/if you were charged, contact support/i)).toBeInTheDocument();
+  expect(screen.queryByText(/your payment went through/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /try again|complete order/i })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /back to my holds/i }));
+  expect(mockNavigate).toHaveBeenCalledWith('/my-holds');
+  expect(checkoutCalls()).toHaveLength(1);
+});
+
 test('Try Again after a card decline returns to the card form', async () => {
   mockPost({ status: 422, code: 'CARD_DECLINED', message: 'Your card was declined.' });
   mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });

@@ -141,7 +141,60 @@ GROUP BY granted;
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --
--- Refund a row only when holds_still_confirmed = 0. While any of the charge's
+-- Every row, before any refund: a charge already refunded without an order stays
+-- listed (until its attempts leave the 14-day window, or for unbound rows until
+-- the owner's review is on record), and Stripe keeps a refunded intent "succeeded".
+-- So open the charge in Stripe and refund only if amount_refunded is 0 and
+-- refunded is false. A second refund after a partial one pays out twice.
+--
+-- unbound = true rows: none of the hold rules below or above apply; only this
+-- paragraph and the refund check above do. They come from STRIPE_ORDER_FAILED with
+-- error=PaymentIntentUnbound: checkout answered 409 PAYMENT_NOT_USABLE to a
+-- paid intent with no fairtix_user_id and no fairtix_channel metadata, more
+-- than 24 hours old. No checkout can ever use that intent, so its holds don't
+-- gate a refund and contacting the customer to finish the order doesn't apply.
+-- Nothing on the intent proves FairTix online checkout created it (it may be a
+-- Dashboard charge, or a box-office intent from before fairtix_channel
+-- existed), so these rows are always escalate = true and only the repo owner
+-- refunds them, once all of these hold:
+--   1. In Stripe, the intent's metadata has neither fairtix_user_id nor
+--      fairtix_channel (fairtix_org_id may be present: Connect online intents
+--      carry it), and it was created before the owner-binding deploy (#293).
+--   2. SELECT 1 FROM box_office_sales
+--      WHERE stripe_payment_intent_id = '<payment_intent>';
+--      returns no rows.
+--   3. The intent's amount_received (in cents) equals one attempt's holds'
+--      seat prices (in currency units) times 100. Each attempt records the
+--      holds it submitted; list them with:
+--        SELECT created_at, substring(details from 'holdIds=\[([^]]*)\]') AS hold_ids
+--        FROM audit_logs
+--        WHERE action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')
+--          AND position('stripe_intent=<payment_intent>,' IN details) > 0
+--        ORDER BY created_at;
+--      then, per attempt:
+--        SELECT SUM(s.price) * 100 FROM seat_holds h JOIN seats s ON s.id = h.seat_id
+--        WHERE h.id IN ('<that attempt''s hold ids>');
+--      The check passes if any attempt's total matches. Seat prices at hold
+--      time are not stored, so a mismatch fails it, even one a later price
+--      change might explain.
+--   4. The charge has no dispute, open or closed.
+-- If any of 1 to 3 fails, don't refund: investigate where the charge came from.
+-- user_id is whoever submitted the intent, not a verified owner; a second
+-- submitter shows up as a second row for the same intent.
+-- Unbound rows don't age out of this check: their attempts stay listed past
+-- 14 days until the owner records the outcome, after a full refund or a
+-- decision not to refund. A refund webhook alone doesn't clear the row, because
+-- a partial refund leaves part of the charge without an order. The checks
+-- session is read-only, so run this in a separate, writable session (don't turn
+-- off default_transaction_read_only here), with the owner's own user id and no
+-- customer details in reason:
+--   INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)
+--   VALUES (gen_random_uuid(), '<owner user id>',
+--           'STRIPE_CHARGE_REVIEWED', 'PAYMENT',
+--           'Unbound charge reviewed: stripe_intent=<payment_intent>, outcome=<refunded|kept>, reason=<why>',
+--           now());
+--
+-- Rows that are not unbound: refund only when holds_still_confirmed = 0. While any of the charge's
 -- holds is still CONFIRMED, any later checkout request with this intent id (a
 -- customer retry, a double submit, a direct API call) can still create the
 -- order. Before refunding, check the charge in Stripe for any dispute (open or
@@ -158,8 +211,9 @@ GROUP BY granted;
 -- readable hold ids: do not refund, investigate. busy_only = true means every
 -- attempt so far failed on a busy lock.
 --
--- escalate = true: the first failure is more than 7 days old and the charge is
--- still not refundable (some hold CONFIRMED, or unreadable hold ids). Attempts
+-- escalate = true: any unbound row, whatever its age or holds (see above), or
+-- the first failure is more than 7 days old and the charge is still not
+-- refundable (some hold CONFIRMED, or unreadable hold ids). For the latter: attempts
 -- drop out of this 14-day window one by one, so after day 14 a row describes
 -- only its later attempts and can turn "refundable" (0) without being so:
 -- never refund an intent that was escalated on the strength of a later 0. Don't
@@ -174,13 +228,15 @@ SELECT f.payment_intent,
        COUNT(*)                                  AS failed_attempts,
        bool_and(f.action = 'STRIPE_ORDER_BUSY')  AS busy_only,
        bool_or(f.not_verified)                   AS not_verified,
+       bool_or(f.unbound)                        AS unbound,
        -- MAX ignores NULL, so one unreadable attempt must make the whole row NULL.
        CASE WHEN COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0 THEN NULL
             ELSE MAX(f.holds_still_confirmed)
        END                                       AS holds_still_confirmed,
-       MIN(f.created_at) < now() - interval '7 days'
-         AND (COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0
-              OR MAX(f.holds_still_confirmed) > 0) AS escalate
+       bool_or(f.unbound)
+         OR (MIN(f.created_at) < now() - interval '7 days'
+             AND (COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0
+                  OR MAX(f.holds_still_confirmed) > 0)) AS escalate
 FROM (
   SELECT substring(a.details from 'stripe_intent=([^,]+)') AS payment_intent,
          a.user_id,
@@ -189,6 +245,7 @@ FROM (
          (a.details LIKE '%error=PaymentNotVerified%'
            OR a.details LIKE '%error=IntentNotBound%'
            OR a.details LIKE '%error=BindingNotChecked%') AS not_verified,
+         a.details LIKE '%error=PaymentIntentUnbound%' AS unbound,
          CASE WHEN a.details ~ 'holdIds=\[[^]]*[0-9a-f]{8}-' THEN
            (SELECT COUNT(*)
             FROM seat_holds h
@@ -202,12 +259,19 @@ FROM (
          END AS holds_still_confirmed
   FROM audit_logs a
   WHERE a.action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')
-    AND a.created_at > now() - interval '14 days'
+    AND (a.created_at > now() - interval '14 days'
+         OR a.details LIKE '%error=PaymentIntentUnbound%')
 ) f
 WHERE NOT EXISTS (
   SELECT 1 FROM payment_records p WHERE p.transaction_id = f.payment_intent
 )
 GROUP BY f.payment_intent, f.user_id
+-- An unbound charge is done once the owner has reviewed it (see the comment above).
+HAVING NOT (bool_or(f.unbound) AND EXISTS (
+  SELECT 1 FROM audit_logs r
+  WHERE r.action = 'STRIPE_CHARGE_REVIEWED'
+    AND position('stripe_intent=' || f.payment_intent || ',' IN r.details) > 0
+))
 ORDER BY first_failed_at DESC;
 
 -- name: refunds_on_live_orders

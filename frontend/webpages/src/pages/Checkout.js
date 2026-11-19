@@ -14,12 +14,27 @@ const stripePromise = stripeEnabled
 
 // A Stripe checkout reaches the server only after confirmCardPayment succeeded,
 // so its failure means "charged, no order" unless the server says the card was
-// declined (422) or the payment was refunded (PAYMENT_REFUNDED, its own screen).
+// declined (422), the payment was refunded (PAYMENT_REFUNDED) or the payment
+// can't be used for this checkout (PAYMENT_NOT_USABLE); each of those last two
+// gets its own final screen.
 // A 402 here means the charged amount didn't match the order total: still paid.
+function finalScreenFor(code) {
+  switch (code) {
+    case 'PAYMENT_REFUNDED': return 'refunded';
+    case 'PAYMENT_NOT_USABLE': return 'not-usable';
+    default: return null;
+  }
+}
+
+const NOT_USABLE_MESSAGE =
+  "This payment can't be used to complete this order, so no order was created. "
+  + 'If you were charged, contact support and the payment will be refunded. '
+  + 'To buy these seats, go back to My Holds and start checkout again.';
+
 function isPaidButNotOrdered(payload, err) {
   if (!payload.paymentIntentId) return false;
   if (err.status === 422 && err.code === 'CARD_DECLINED') return false;
-  return err.code !== 'PAYMENT_REFUNDED';
+  return !finalScreenFor(err.code);
 }
 
 function StripeCardForm({ holds, total, clientSecret, onSuccess, onError, onCancel, submitting, setSubmitting }) {
@@ -84,7 +99,7 @@ function Checkout() {
 
   const [cardNumber, setCardNumber] = useState('');
   const [paymentError, setPaymentError] = useState('');
-  const [paymentState, setPaymentState] = useState('form'); // form | processing | success | failed | refunded | step-up
+  const [paymentState, setPaymentState] = useState('form'); // form | processing | success | failed | refunded | not-usable | step-up
   const [stepUpAction, setStepUpAction] = useState(null);
   const [stepUpCaptchaToken, setStepUpCaptchaToken] = useState('');
   const [stepUpError, setStepUpError] = useState('');
@@ -213,19 +228,24 @@ function Checkout() {
         return;
       }
       setPaidRetryPayload(isPaidButNotOrdered(payload, err) ? payload : null);
-      // A refunded intent can never complete an order, and the same holds get the
-      // same intent back, so neither Try Again nor the card form can help.
-      setPaymentState(err.code === 'PAYMENT_REFUNDED' ? 'refunded' : 'failed');
+      // A refunded or unusable intent can never complete an order, so neither Try
+      // Again nor the card form can help: each gets a final screen.
+      setPaymentState(finalScreenFor(err.code) || 'failed');
       // After a charge, the server's 402 "payment has not succeeded" means the
       // amount didn't match; saying the payment failed would contradict the screen.
       const amountMismatch = payload.paymentIntentId && err.status === 402;
-      setPaymentError(
-        amountMismatch
-          ? "The amount charged doesn't match your order total. Please contact support."
-          : err.body?.failureReason
-            || err.message
-            || 'Payment declined. Please check your card details or try a different card.'
-      );
+      let message;
+      if (amountMismatch) {
+        message = "The amount charged doesn't match your order total. Please contact support.";
+      } else if (err.code === 'PAYMENT_NOT_USABLE') {
+        // The server can't tell the client whether this intent was charged.
+        message = NOT_USABLE_MESSAGE;
+      } else {
+        message = err.body?.failureReason
+          || err.message
+          || 'Payment declined. Please check your card details or try a different card.';
+      }
+      setPaymentError(message);
     } finally {
       setSubmitting(false);
     }
@@ -539,7 +559,7 @@ function Checkout() {
         </div>
       )}
 
-      {paymentState === 'refunded' && (
+      {(paymentState === 'refunded' || paymentState === 'not-usable') && (
         <div className="checkout-payment-failed">
           <div className="checkout-error">{paymentError}</div>
           <div className="checkout-actions">

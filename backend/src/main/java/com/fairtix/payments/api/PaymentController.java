@@ -15,6 +15,7 @@ import com.fairtix.organizations.domain.Plan;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.payments.application.OnlinePaymentIntentService;
 import com.fairtix.payments.application.PaymentFailedException;
+import com.fairtix.payments.application.PaymentIntentNotOwnedException;
 import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.payments.application.PaymentSimulationService;
 import com.fairtix.payments.application.StripePaymentService;
@@ -174,6 +175,10 @@ public class PaymentController {
    *       created) and the customer has paid. A direct API call with an intent that
    *       never succeeded lands here too; the runbook checks the intent in Stripe
    *       before refunding.
+   *   <li>A paid intent with no owner, past the grace window for intents created
+   *       before owner binding: {@code STRIPE_ORDER_FAILED} with
+   *       {@code error=PaymentIntentUnbound}. Checkout answers 409
+   *       {@code PAYMENT_NOT_USABLE}, and no later attempt can use this intent.
    *   <li>The intent was not created for this user, hold set and routing:
    *       {@code STRIPE_ORDER_FAILED} with {@code error=IntentNotBound}; if checking
    *       the binding failed, {@code error=BindingNotChecked}. The listed holds may
@@ -193,6 +198,10 @@ public class PaymentController {
     if (busy) {
       summary = "Charge succeeded, order not created yet (purchase-cap lock busy; a retry can complete it): ";
       error = ex.getClass().getSimpleName();
+    } else if (ex instanceof PaymentIntentNotOwnedException) {
+      summary = "Charge succeeded, but the intent predates owner binding and is past its grace"
+          + " window, so no checkout can complete it; order not created: ";
+      error = "PaymentIntentUnbound";
     } else if (ex instanceof PaymentNotVerifiedException) {
       summary = "Payment not verified (amount_received differs from the holds' total,"
           + " or the intent has not succeeded); order not created: ";
@@ -457,10 +466,24 @@ public class PaymentController {
                   "Hold not found or not owned by current user: " + id)))
           .reduce(BigDecimal.ZERO, BigDecimal::add);
       long expectedAmountCents = expectedTotal.multiply(BigDecimal.valueOf(100)).longValue();
-      // Throws PaymentIntentNotOwnedException (409, no audit row) for an intent
-      // that wasn't created for this user, before any order or failure audit.
-      if (!stripePaymentService.verifyPaymentSucceeded(
-          paymentIntentId, expectedAmountCents, principal.getUserId())) {
+      // Throws PaymentIntentNotOwnedException (409) for an intent that wasn't created
+      // for this user, before any order.
+      boolean verified;
+      try {
+        verified = stripePaymentService.verifyPaymentSucceeded(
+            paymentIntentId, expectedAmountCents, principal.getUserId());
+      } catch (PaymentIntentNotOwnedException notOwned) {
+        // Only a paid pre-deploy intent past the grace window goes on record: it has no
+        // owner, so no checkout can ever complete it, and its charge needs a refund.
+        // Another user's or channel's intent is not this caller's charge to report.
+        if (PaymentIntentNotOwnedException.REASON_UNBOUND.equals(notOwned.getReason())
+            && notOwned.isPaid()) {
+          auditStripeOrderNotCreatedSafely(
+              principal.getUserId(), request.holdIds(), paymentIntentId, notOwned);
+        }
+        throw notOwned;
+      }
+      if (!verified) {
         // Almost always a paid charge whose amount no longer matches the holds, so
         // it goes on record for stripe_charges_without_order like a failed order.
         var notVerified = new PaymentNotVerifiedException();

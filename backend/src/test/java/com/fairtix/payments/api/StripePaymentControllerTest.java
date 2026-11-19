@@ -92,6 +92,9 @@ class StripePaymentControllerTest {
   @MockitoSpyBean
   private OrganizationRepository organizationRepository;
 
+  @MockitoSpyBean
+  private com.fairtix.audit.application.AuditService auditService;
+
   private MockMvc mockMvc;
   private User user;
   private SeatHold confirmedHold;
@@ -534,7 +537,7 @@ class StripePaymentControllerTest {
    */
   @Test
   void checkout_intentNotOwnedByCaller_isRejectedWithoutOrderOrAudit() throws Exception {
-    doThrow(new PaymentIntentNotOwnedException("pi_not_owned", user.getId(), "other_user"))
+    doThrow(new PaymentIntentNotOwnedException("pi_not_owned", user.getId(), "other_user", true))
         .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
 
     mockMvc.perform(post("/api/payments/checkout")
@@ -553,6 +556,92 @@ class StripePaymentControllerTest {
     org.assertj.core.api.Assertions.assertThat(
         seatHoldRepository.findById(confirmedHold.getId()).orElseThrow().getStatus())
         .isEqualTo(HoldStatus.CONFIRMED);
+  }
+
+  /**
+   * A paid intent created before intents carried their user, submitted after the grace
+   * window: it can never complete an order, so its charge goes on record for
+   * stripe_charges_without_order, in the format the runbook query parses.
+   */
+  @Test
+  void checkout_paidUnboundIntentPastGrace_writesOrderFailedAuditForRunbook() throws Exception {
+    doThrow(new PaymentIntentNotOwnedException("pi_unbound_paid", user.getId(), "unbound", true))
+        .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_unbound_paid")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_NOT_USABLE"));
+
+    java.util.List<String> details = jdbcTemplate.queryForList(
+        "SELECT details FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED' AND user_id = ?",
+        String.class, user.getId());
+    org.assertj.core.api.Assertions.assertThat(details).hasSize(1);
+    org.assertj.core.api.Assertions.assertThat(details.get(0))
+        .contains("stripe_intent=pi_unbound_paid,")
+        .contains("holdIds=[" + confirmedHold.getId() + "]")
+        .contains("error=PaymentIntentUnbound");
+    org.assertj.core.api.Assertions.assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM orders WHERE user_id = ?", Integer.class, user.getId())).isZero();
+  }
+
+  /** A failed audit write must not change the answer: still 409 PAYMENT_NOT_USABLE. */
+  @Test
+  void checkout_paidUnboundIntent_auditFailure_stillAnswersNotUsable() throws Exception {
+    doThrow(new PaymentIntentNotOwnedException("pi_unbound_audit_down", user.getId(), "unbound", true))
+        .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+    doThrow(new org.springframework.dao.DataAccessResourceFailureException("audit down"))
+        .when(auditService).log(any(), eq("STRIPE_ORDER_FAILED"), anyString(), any(), anyString());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_unbound_audit_down")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_NOT_USABLE"));
+
+    verify(auditService).log(eq(user.getId()), eq("STRIPE_ORDER_FAILED"), eq("PAYMENT"),
+        org.mockito.ArgumentMatchers.isNull(), anyString());
+  }
+
+  /** A paid box-office intent is not this caller's charge: no row, like another user's. */
+  @Test
+  void checkout_paidOtherChannelIntent_isRejectedWithoutAudit() throws Exception {
+    doThrow(new PaymentIntentNotOwnedException("pi_box_office", user.getId(), "other_channel", true))
+        .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_box_office")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_NOT_USABLE"));
+
+    Integer orderFailedRows = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action LIKE 'STRIPE_ORDER_%' AND user_id = ?",
+        Integer.class, user.getId());
+    org.assertj.core.api.Assertions.assertThat(orderFailedRows).isZero();
+  }
+
+  /** An unbound intent that was never paid has no charge to refund. */
+  @Test
+  void checkout_unpaidUnboundIntentPastGrace_isRejectedWithoutAudit() throws Exception {
+    doThrow(new PaymentIntentNotOwnedException("pi_unbound_unpaid", user.getId(), "unbound", false))
+        .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_unbound_unpaid")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_NOT_USABLE"));
+
+    Integer orderFailedRows = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action LIKE 'STRIPE_ORDER_%' AND user_id = ?",
+        Integer.class, user.getId());
+    org.assertj.core.api.Assertions.assertThat(orderFailedRows).isZero();
   }
 
   /** A lost response: the order was created, then the client resubmits the same intent. */

@@ -10,16 +10,25 @@ import java.util.UUID;
  */
 public class PaymentIntentNotOwnedException extends RuntimeException {
 
+  /** No owner, and past the grace window for intents created before owner binding. */
+  public static final String REASON_UNBOUND = "unbound";
+
   private final String paymentIntentId;
   private final UUID userId;
   private final String reason;
+  private final boolean paid;
 
-  /** @param reason {@code "other_user"}, {@code "other_channel"} or {@code "unbound"}; for logs only. */
-  public PaymentIntentNotOwnedException(String paymentIntentId, UUID userId, String reason) {
+  /**
+   * @param reason {@code "other_user"}, {@code "other_channel"} or {@code "unbound"}
+   * @param paid whether the intent has succeeded at Stripe, so money was taken
+   */
+  public PaymentIntentNotOwnedException(String paymentIntentId, UUID userId, String reason,
+      boolean paid) {
     super("PaymentIntent " + paymentIntentId + " is not usable by user " + userId + ": " + reason);
     this.paymentIntentId = paymentIntentId;
     this.userId = userId;
     this.reason = reason;
+    this.paid = paid;
   }
 
   public String getPaymentIntentId() {
@@ -32,5 +41,9 @@ public class PaymentIntentNotOwnedException extends RuntimeException {
 
   public String getReason() {
     return reason;
+  }
+
+  public boolean isPaid() {
+    return paid;
   }
 }
