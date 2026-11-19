@@ -264,20 +264,16 @@ class RolloutChecksIT extends PostgresIT {
   }
 
   /**
-   * An unbound charge doesn't age out after 14 days: it stays until its refund webhook
-   * or the owner's review is on record. Other charges still age out.
+   * An unbound charge doesn't age out after 14 days: it stays until the owner's review
+   * is on record. A refund webhook alone doesn't clear it (the refund may be partial),
+   * nor does a review of another intent whose id merely starts with this one. Other
+   * charges still age out.
    */
   @Test
-  void stripeChargesWithoutOrder_keepsUnboundRowsUntilRefundedOrReviewed() throws Exception {
+  void stripeChargesWithoutOrder_keepsUnboundRowsUntilReviewed() throws Exception {
     UUID user = newUser("unbound-old@test.com");
     for (String pi : List.of("pi_unbound_open", "pi_unbound_refunded", "pi_unbound_reviewed")) {
-      jdbcTemplate.update(
-          "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
-              + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now() - interval '20 days')",
-          UUID.randomUUID(), user,
-          "Charge succeeded, but the intent predates owner binding and is past its grace window,"
-              + " so no checkout can complete it; order not created: stripe_intent=" + pi
-              + ", holdIds=" + List.of(UUID.randomUUID()) + ", error=PaymentIntentUnbound");
+      unboundFailure(user, pi, "20 days");
     }
     failedStripeOrder(user, "pi_bound_old", "STRIPE_ORDER_FAILED", UUID.randomUUID(), "20 days");
     // Same details format as StripeWebhookController writes.
@@ -286,19 +282,49 @@ class RolloutChecksIT extends PostgresIT {
             + " VALUES (?, ?, 'STRIPE_REFUND_UNMATCHED', 'PAYMENT', ?, now())",
         UUID.randomUUID(), new UUID(0L, 0L),
         "Stripe refund with no payment record yet: stripe_intent=pi_unbound_refunded"
-            + ", charge=ch_x, amount_refunded_cents=5000");
-    // Same format as the runbook's STRIPE_CHARGE_REVIEWED insert.
-    jdbcTemplate.update(
-        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
-            + " VALUES (?, ?, 'STRIPE_CHARGE_REVIEWED', 'PAYMENT', ?, now())",
-        UUID.randomUUID(), new UUID(0L, 0L),
-        "Unbound charge kept, not refunded: stripe_intent=pi_unbound_reviewed, reason=test");
+            + ", charge=ch_x, amount_refunded_cents=2000");
+    chargeReviewed(user, "pi_unbound_reviewed");
+    chargeReviewed(user, "pi_unbound_open_2");
 
     List<Object> listed = jdbcTemplate.queryForList(checks().get("stripe_charges_without_order"))
         .stream().map(row -> row.get("payment_intent")).toList();
-    assertThat(listed).contains("pi_unbound_open")
-        .doesNotContain("pi_unbound_refunded", "pi_unbound_reviewed", "pi_bound_old");
+    assertThat(listed).contains("pi_unbound_open", "pi_unbound_refunded")
+        .doesNotContain("pi_unbound_reviewed", "pi_bound_old");
     assertThat(chargeWithoutOrder("pi_unbound_open")).containsEntry("escalate", true);
+  }
+
+  /** One unbound attempt makes the whole intent unbound, whatever its earlier attempts. */
+  @Test
+  void stripeChargesWithoutOrder_mixedBoundAndUnboundAttempts_areUnbound() throws Exception {
+    UUID user = newUser("unbound-mixed@test.com");
+    failedStripeOrder(user, "pi_mixed_unbound", "STRIPE_ORDER_BUSY", UUID.randomUUID(), "2 days");
+    unboundFailure(user, "pi_mixed_unbound", "0 seconds");
+
+    Map<String, Object> row = chargeWithoutOrder("pi_mixed_unbound");
+    assertThat(((Number) row.get("failed_attempts")).intValue()).isEqualTo(2);
+    assertThat(row).containsEntry("unbound", true);
+    assertThat(row).containsEntry("busy_only", false);
+    assertThat(row).containsEntry("escalate", true);
+  }
+
+  // Same details format as PaymentController writes for PaymentIntentUnbound.
+  private void unboundFailure(UUID user, String paymentIntentId, String age) {
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now() - CAST(? AS interval))",
+        UUID.randomUUID(), user,
+        "Charge succeeded, but the intent predates owner binding and is past its grace window,"
+            + " so no checkout can complete it; order not created: stripe_intent=" + paymentIntentId
+            + ", holdIds=" + List.of(UUID.randomUUID()) + ", error=PaymentIntentUnbound", age);
+  }
+
+  // Same format as the runbook's STRIPE_CHARGE_REVIEWED insert.
+  private void chargeReviewed(UUID owner, String paymentIntentId) {
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_CHARGE_REVIEWED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), owner,
+        "Unbound charge reviewed: stripe_intent=" + paymentIntentId + ", outcome=kept, reason=test");
   }
 
   /**

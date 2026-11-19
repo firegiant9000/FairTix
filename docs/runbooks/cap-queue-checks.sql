@@ -135,7 +135,7 @@ GROUP BY granted;
 --
 -- Every row, before any refund: a charge already refunded without an order stays
 -- listed (until its attempts leave the 14-day window, or for unbound rows until
--- the refund's webhook arrives), and Stripe keeps a refunded intent "succeeded".
+-- the owner's review is on record), and Stripe keeps a refunded intent "succeeded".
 -- So open the charge in Stripe and refund only if amount_refunded is 0 and
 -- refunded is false. A second refund after a partial one pays out twice.
 --
@@ -155,23 +155,35 @@ GROUP BY granted;
 --   2. SELECT 1 FROM box_office_sales
 --      WHERE stripe_payment_intent_id = '<payment_intent>';
 --      returns no rows.
---   3. The intent's amount_received (in cents) equals the listed holds' seat
---      prices (in currency units) times 100:
---      SELECT SUM(s.price) * 100 FROM seat_holds h JOIN seats s ON s.id = h.seat_id
---      WHERE h.id IN ('<listed hold ids>');
---      Seat prices at hold time are not stored, so any mismatch fails this
---      check, even one a later price change might explain.
+--   3. The intent's amount_received (in cents) equals one attempt's holds'
+--      seat prices (in currency units) times 100. Each attempt records the
+--      holds it submitted; list them with:
+--        SELECT created_at, substring(details from 'holdIds=\[([^]]*)\]') AS hold_ids
+--        FROM audit_logs
+--        WHERE action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')
+--          AND position('stripe_intent=<payment_intent>,' IN details) > 0
+--        ORDER BY created_at;
+--      then, per attempt:
+--        SELECT SUM(s.price) * 100 FROM seat_holds h JOIN seats s ON s.id = h.seat_id
+--        WHERE h.id IN ('<that attempt''s hold ids>');
+--      The check passes if any attempt's total matches. Seat prices at hold
+--      time are not stored, so a mismatch fails it, even one a later price
+--      change might explain.
 --   4. The charge has no dispute, open or closed.
 -- If any of 1 to 3 fails, don't refund: investigate where the charge came from.
 -- user_id is whoever submitted the intent, not a verified owner; a second
 -- submitter shows up as a second row for the same intent.
 -- Unbound rows don't age out of this check: their attempts stay listed past
--- 14 days until a refund webhook for the intent (STRIPE_REFUND_UNMATCHED) is on
--- record, or the owner records a decision not to refund:
+-- 14 days until the owner records the outcome, after a full refund or a
+-- decision not to refund. A refund webhook alone doesn't clear the row, because
+-- a partial refund leaves part of the charge without an order. The checks
+-- session is read-only, so run this in a separate, writable session (don't turn
+-- off default_transaction_read_only here), with the owner's own user id and no
+-- customer details in reason:
 --   INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)
---   VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000000',
+--   VALUES (gen_random_uuid(), '<owner user id>',
 --           'STRIPE_CHARGE_REVIEWED', 'PAYMENT',
---           'Unbound charge kept, not refunded: stripe_intent=<payment_intent>, reason=<why>',
+--           'Unbound charge reviewed: stripe_intent=<payment_intent>, outcome=<refunded|kept>, reason=<why>',
 --           now());
 --
 -- Rows that are not unbound: refund only when holds_still_confirmed = 0. While any of the charge's
@@ -244,10 +256,10 @@ WHERE NOT EXISTS (
   SELECT 1 FROM payment_records p WHERE p.transaction_id = f.payment_intent
 )
 GROUP BY f.payment_intent, f.user_id
--- An unbound charge is done once refunded or reviewed (see the comment above).
+-- An unbound charge is done once the owner has reviewed it (see the comment above).
 HAVING NOT (bool_or(f.unbound) AND EXISTS (
   SELECT 1 FROM audit_logs r
-  WHERE r.action IN ('STRIPE_REFUND_UNMATCHED', 'STRIPE_CHARGE_REVIEWED')
+  WHERE r.action = 'STRIPE_CHARGE_REVIEWED'
     AND position('stripe_intent=' || f.payment_intent || ',' IN r.details) > 0
 ))
 ORDER BY first_failed_at DESC;
