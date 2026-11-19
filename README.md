@@ -48,11 +48,37 @@ webhooks.
   (`RiskScoringService`), runs a scheduled behaviour sweep, and gates high-risk
   actions behind a step-up challenge (`StepUpGateService`, `StepUpFilter`).
   Admins can review flags through `FraudAdminController`.
-- **Stripe webhooks are signature-verified.**
+- **Purchase caps and the waiting room are serialised in PostgreSQL.**
+  [`TransactionLock`](backend/src/main/java/com/fairtix/common/TransactionLock.java)
+  wraps a transaction-level advisory lock (`pg_advisory_xact_lock`) with a
+  bounded wait (`fairtix.transaction-lock.wait-ms`, 3 s by default; a timeout is
+  a retryable 409). The per-(event, user) cap lock in
+  [`PurchaseCapGuard`](backend/src/main/java/com/fairtix/tickets/application/PurchaseCapGuard.java)
+  covers holds, checkout, comps and transfer accepts, and counts held, bought
+  and comped tickets. A per-user lock serialises the five-active-holds limit, a
+  per-event lock the comp limit. Locks are taken in one order (hold limit or
+  comp limit, then the cap, then row locks) so they cannot deadlock. Queue
+  admission is read from the database; the Redis admitted set is a copy written
+  after commit, so a Redis failure cannot grant or revoke checkout.
+- **Stripe payments are idempotent and bound to what they pay for.** Every
+  Stripe write carries a deterministic idempotency key
+  ([`StripeIdempotencyKeys`](backend/src/main/java/com/fairtix/payments/application/StripeIdempotencyKeys.java)),
+  and Stripe is called outside database transactions. One PaymentIntent is kept
+  per user and hold set (`online_payment_intents`), carries its owner in its
+  metadata, and at checkout must match the stored user, hold set and payout
+  routing. A resubmit after a lost response gets the existing order back; a
+  refunded or disputed intent is refused. A charge that succeeds without an
+  order is audited (`STRIPE_ORDER_FAILED` / `STRIPE_ORDER_BUSY`) for the manual
+  refund runbook in [docs/runbooks](docs/runbooks).
+- **Stripe webhooks are signature-verified and deduplicated.**
   [`StripeWebhookController`](backend/src/main/java/com/fairtix/payments/api/StripeWebhookController.java)
-  reconstructs every event with `Webhook.constructEvent` and rejects anything
-  that fails verification. Refund completion is not yet idempotent against a
-  redelivered event; see Limitations.
+  reconstructs every event with `Webhook.constructEvent`, rejects anything that
+  fails verification, and records each handled event id in
+  `stripe_webhook_events` in the same transaction as its handling, so a
+  redelivered event is answered 200 without being processed again.
+- **Mail goes out after commit.** Transfer, refund and order mail is sent once
+  the transaction commits, so a mail failure cannot roll back the change and a
+  rolled-back change sends no mail.
 - **Rate limiting and abuse controls.** Per-route limits keyed by user or IP
   through Redisson rate limiters (`RateLimitService`), login-attempt tracking,
   reCAPTCHA on login, and velocity limits on ticket transfers.
@@ -64,7 +90,7 @@ webhooks.
 
 ```mermaid
 flowchart LR
-  B[Browser<br/>React 18] -->|REST + JWT| API[Spring Boot 4 API<br/>Java 21]
+  B[Browser<br/>React 18] -->|REST, HttpOnly<br/>cookie auth| API[Spring Boot 4 API<br/>Java 21]
   B -->|SSE| API
   API --> PG[(PostgreSQL 16<br/>seats, holds, orders,<br/>tickets, fraud flags)]
   API --> R[(Redis<br/>queue state, rate limits,<br/>login attempts, step-up)]
@@ -75,12 +101,13 @@ flowchart LR
   SCH --> R
 ```
 
-The backend is organised by domain (`events`, `inventory`, `queue`, `orders`,
-`payments`, `refunds`, `tickets`, `fraud`, `auth`, `users`, `venues`,
-`analytics`, `audit`, `support`, `notifications`), each split into `api`,
+The backend is organised by domain, one package per module under
+`backend/src/main/java/com/fairtix/` (among them `events`, `inventory`,
+`holds`, `queue`, `orders`, `payments`, `refunds`, `tickets`, `boxoffice`,
+`organizations`, `fraud`, `auth`, `users` and `audit`), each split into `api`,
 `application`, `domain` and `infrastructure` layers. Schema changes are
-forward-only Flyway migrations under
-`backend/src/main/resources/db/migration` (47 so far).
+forward-only Flyway migrations under `backend/src/main/resources/db/migration`
+(`ls backend/src/main/resources/db/migration | wc -l` for the current count).
 
 ## Tech stack
 
@@ -90,7 +117,7 @@ forward-only Flyway migrations under
 | Database | PostgreSQL 16, Flyway migrations |
 | Cache and coordination | Redis 7 via Redisson |
 | Payments | Stripe (checkout and signed webhooks), disabled by default |
-| Frontend | React 18 (Create React App), served on port 3000 |
+| Frontend | React 18 (Create React App), dev server on port 3000 |
 | Email | Spring Mail; MailHog in development |
 | Build and test | Maven wrapper, JUnit 5, Jest |
 | CI | GitHub Actions: build, tests, OWASP Dependency-Check, Trivy |
@@ -112,12 +139,28 @@ Set `POSTGRES_PASSWORD` and `JWT_SECRET` in `.env` before the first start
 placeholder; the backend refuses to start otherwise). Nothing else is required to
 see the app: Stripe and reCAPTCHA stay off until you set their keys.
 
+Compose runs the backend, PostgreSQL, Redis and MailHog; the frontend is not
+in Compose. Start it separately (Node 20); it proxies API calls to :8080:
+
+```bash
+cd frontend/webpages && npm install && npm start
+```
+
 | Service | URL |
 | --- | --- |
-| Frontend | http://localhost:3000 |
+| Frontend (`npm start`) | http://localhost:3000 |
 | API | http://localhost:8080 |
 | Swagger UI | http://localhost:8080/swagger-ui.html |
 | MailHog | http://localhost:8025 |
+
+**Demo data and the first admin.** No migration or startup code creates a
+user. For a local demo, run `./scripts/demo-seed.sh` from the repo root: it
+registers `admin@fairtix.demo` (ADMIN), `userA@fairtix.demo` and
+`userB@fairtix.demo` with a fixed, published password, and refuses any API
+other than localhost. The demo events come from Flyway migrations. For any
+other environment, register an account and promote it with one SQL update, as
+described in [DEPLOY.md](DEPLOY.md); later admins are promoted from the admin
+UI. The walkthrough is in [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md).
 
 `docker compose down` stops everything. Flyway applies migrations on backend
 start. Optional Stripe and reCAPTCHA setup, and the full environment-variable
@@ -138,11 +181,14 @@ no H2. Docker is therefore required for `./mvnw test` as well as `verify`; only
 the plain unit tests run without it. The `*Test` suite (surefire) covers
 seat-hold logic, queue admission, risk scoring, step-up gating, refunds, and
 webhook handling, with Redis mocked. The `*IT` suite (failsafe) adds a real
-Redis 7 container and covers the purchase flow, seat-hold contention (200
-clients, 50 seats, zero oversells), the no-ordering deadlock variant, the
-payment-failure paths, confirmed-hold expiry, and the Redis-backed rate
-limiter, login lockout and queue admission; see
-[docs/experiments/l1-contention-correctness.md](docs/experiments/l1-contention-correctness.md).
+Redis 7 container and covers the purchase flow, seat-hold contention (200 hold
+requests on 20 worker threads against 50 seats, zero oversells), the
+no-ordering deadlock variant, the payment-failure paths, confirmed-hold expiry,
+and the Redis-backed rate limiter, login lockout and queue admission.
+Concurrency tests force the overlap (latches, or a second connection holding
+the lock until PostgreSQL reports a waiter) rather than relying on timing:
+purchase cap, hold limit, comp limit, transfer versus refund, box-office
+confirm, and the webhook ledger.
 The CI workflow
 ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull
 request and on push to `main`: `./mvnw clean verify` with a Redis service
@@ -186,23 +232,39 @@ Trivy image scan.
   `Referrer-Policy: strict-origin-when-cross-origin`, HSTS on HTTPS, and a
   `default-src 'none'` CSP on `/api/**` and `/auth/**`.
 
-## Limitations
+## Known limitations
 
-- Never deployed; no real traffic, no production hardening beyond the above.
-- The SSE registry is in-memory, so the waiting room works on a single backend
-  instance only.
-- Refund webhooks are verified but not deduplicated. A redelivered
-  `charge.refunded` event can re-run refund completion.
-- The PostgreSQL test suites run a single application instance with the
-  `@Scheduled` jobs off, so multi-instance behaviour is untested.
+- **Never deployed.** No real traffic, no production hardening beyond the
+  above, and no penetration test.
+- **Single instance only.** The waiting room's SSE registry is a per-JVM map
+  (`QueueSseService`), and the `@Scheduled` jobs
+  (`grep -rn "@Scheduled(" backend/src/main/java` lists them) run on every
+  replica with no leader lock. The PostgreSQL test suites run one application
+  instance with the jobs off, so multi-instance behaviour is untested.
+- **No automatic refund when an order fails after the charge.** The charge is
+  audited and refunded by hand following
+  [docs/runbooks/cap-queue-rollout.md](docs/runbooks/cap-queue-rollout.md)
+  (check `stripe_charges_without_order`).
+- **Box office is uncapped.** Door sales by staff do not count against the
+  per-user purchase cap.
+- **Dispute webhooks are not handled.** Disputes are worked in the Stripe
+  Dashboard; checkout refuses an intent that is refunded or disputed.
+- **The load figure is one laptop run.** `QueueJoinLoadIT` (opt-in:
+  `./mvnw verify -Dit.test=QueueJoinLoadIT`) measured about 100 queue joins per
+  second per capped event, on one laptop with PostgreSQL and Redis in Docker and
+  one app instance; see the runbook. No other load test, no end-to-end browser
+  tests, no metrics or tracing.
 - The AWS lab is not built: `infra/` holds the bootstrap, canary and teardown
   code only (see [docs/infra/README.md](docs/infra/README.md)).
-- Ten `@Scheduled` jobs run on every replica; there is no leader election.
-- Stripe calls carry no idempotency keys and run inside database transactions.
 - With Redis down, the rate limiter fails closed (503) on the credential
   endpoints (login, registration, verification, password reset, step-up) and
   open everywhere else.
-- No end-to-end browser tests, no load test, no metrics or tracing.
+- Found and not yet fixed: a refund approved while a transfer of the same
+  ticket is being accepted can void the recipient's ticket; event cancellation
+  updates tickets without row locks; comp recipient lookup is case-sensitive;
+  after-commit mail still holds the request's database connection while SMTP
+  runs; a box-office card sale refused after Stripe verified the card leaves
+  the customer charged with no ticket and no audit row.
 
 ## Team and contributions
 

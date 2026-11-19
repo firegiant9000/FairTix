@@ -1,6 +1,7 @@
 package com.fairtix.tickets.application;
 
 import com.fairtix.audit.application.AuditService;
+import com.fairtix.common.AfterCommit;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
@@ -9,14 +10,16 @@ import com.fairtix.notifications.application.EmailTemplateService;
 import com.fairtix.notifications.application.NotificationGate;
 import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.orders.application.PurchaseCapExceededException;
+import com.fairtix.refunds.domain.RefundStatus;
+import com.fairtix.refunds.infrastructure.RefundRepository;
 import com.fairtix.tickets.domain.TicketStatus;
 import com.fairtix.tickets.domain.TicketTransferRequest;
 import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.users.infrastructure.UserRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import org.slf4j.MDC;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -30,7 +33,6 @@ import java.util.UUID;
 @Service
 public class TransferService {
 
-    private static final Logger log = LoggerFactory.getLogger(TransferService.class);
     private static final int TRANSFER_EXPIRY_DAYS = 7;
 
     private final TicketRepository ticketRepository;
@@ -42,6 +44,8 @@ public class TransferService {
     private final TransferVelocityLimiter velocityLimiter;
     private final RiskScoringService riskScoringService;
     private final PurchaseCapGuard purchaseCapGuard;
+    private final RefundRepository refundRepository;
+    private final EntityManager entityManager;
 
     public TransferService(TicketRepository ticketRepository,
                            TicketTransferRequestRepository transferRepository,
@@ -51,8 +55,12 @@ public class TransferService {
                            EmailTemplateService emailTemplateService,
                            TransferVelocityLimiter velocityLimiter,
                            RiskScoringService riskScoringService,
-                           PurchaseCapGuard purchaseCapGuard) {
+                           PurchaseCapGuard purchaseCapGuard,
+                           RefundRepository refundRepository,
+                           EntityManager entityManager) {
         this.purchaseCapGuard = purchaseCapGuard;
+        this.refundRepository = refundRepository;
+        this.entityManager = entityManager;
         this.ticketRepository = ticketRepository;
         this.transferRepository = transferRepository;
         this.userRepository = userRepository;
@@ -108,24 +116,28 @@ public class TransferService {
         auditService.logInCurrentTransaction(fromUserId, "TRANSFER_REQUESTED", "TICKET", ticketId,
                 "to=" + toEmail);
 
+        UUID toUserId = toUser.getId();
+        String fromEmail = ticket.getUser().getEmail();
+        String eventTitle = ticket.getEvent().getTitle();
         String seatDesc = seatDesc(request);
-        try {
-            notificationGate.sendEmail(
-                    toUser.getId(),
-                    NotificationCategory.TICKET_TRANSFER,
-                    toEmail,
-                    "Ticket transfer request from FairTix",
-                    emailTemplateService.buildTransferRequestEmail(
-                            toEmail, ticket.getUser().getEmail(),
-                            ticket.getEvent().getTitle(), seatDesc, null));
-        } catch (Exception e) {
-            log.warn("Failed to send transfer request email to={}", toEmail, e);
-        }
+        AfterCommit.run("transfer request email, request " + request.getId(), () -> notificationGate.sendEmail(
+                toUserId,
+                NotificationCategory.TICKET_TRANSFER,
+                toEmail,
+                "Ticket transfer request from FairTix",
+                emailTemplateService.buildTransferRequestEmail(
+                        toEmail, fromEmail, eventTitle, seatDesc, null)));
 
         return request;
     }
 
-    @Transactional
+    /**
+     * Lock order: the recipient's cap lock, then the ticket row. The ticket row
+     * lock is the one {@code RefundService.finalise} takes, so an acceptance and a
+     * refund of the same ticket run one after the other, and the second sees what
+     * the first committed.
+     */
+    @Transactional(noRollbackFor = TransferNoLongerAcceptableException.class)
     public TicketTransferRequest acceptTransfer(UUID requestId, UUID toUserId) {
         var request = findRequestForRecipient(requestId, toUserId);
 
@@ -146,6 +158,37 @@ public class TransferService {
         Integer cap = event.getMaxTicketsPerUser();
         if (cap != null) {
             purchaseCapGuard.lock(event.getId(), toUserId);
+        }
+
+        // Lock the ticket, then the request, and re-read both: they were loaded
+        // without a lock, and a refund, a cancel, a reject, an expiry or another
+        // acceptance may have committed since. Ticket before request, as in
+        // RefundService.finalise; the paths that lock only the request
+        // (reject, cancel, expiry) never wait on a ticket.
+        entityManager.refresh(ticket, LockModeType.PESSIMISTIC_WRITE);
+        entityManager.refresh(request, LockModeType.PESSIMISTIC_WRITE);
+        if (request.getStatus() != TransferStatus.PENDING) {
+            throw new IllegalStateException("Transfer request is no longer pending");
+        }
+        if (ticket.getStatus() != TicketStatus.VALID) {
+            request.setStatus(TransferStatus.CANCELLED);
+            request.setResolvedAt(Instant.now());
+            transferRepository.save(request);
+            auditService.logInCurrentTransaction(toUserId, "TRANSFER_CANCELLED", "TICKET",
+                    ticket.getId(), "ticket is " + ticket.getStatus() + ", no longer transferable");
+            throw new TransferNoLongerAcceptableException(
+                    "This ticket can no longer be transferred (status: " + ticket.getStatus() + ")");
+        }
+        // A refund that is approved, or already COMPLETED by the charge.refunded
+        // webhook while finalise has not yet run (or failed and awaits a retry), is
+        // about to void the ticket; finalise also cancels this request. The ticket
+        // is still VALID here, so the order is not yet REFUNDED. Nothing is resolved.
+        if (refundRepository.existsByOrderIdAndStatusIn(ticket.getOrder().getId(),
+                List.of(RefundStatus.APPROVED, RefundStatus.COMPLETED))) {
+            throw new IllegalStateException("A refund is in progress for this ticket's order");
+        }
+
+        if (cap != null) {
             long owned = purchaseCapGuard.activeTickets(toUserId, event.getId());
             long held = purchaseCapGuard.liveHolds(toUserId, event.getId());
             if (owned + held + 1 > cap) {
@@ -157,7 +200,6 @@ public class TransferService {
         }
 
         ticket.setUser(request.getToUser());
-        ticket.setStatus(TicketStatus.VALID);
         ticketRepository.save(ticket);
 
         request.setStatus(TransferStatus.ACCEPTED);
@@ -167,19 +209,15 @@ public class TransferService {
         auditService.logInCurrentTransaction(toUserId, "TRANSFER_ACCEPTED", "TICKET", ticket.getId(),
                 "from=" + request.getFromUser().getEmail());
 
-        String seatDesc = seatDesc(request);
-        try {
-            notificationGate.sendEmail(
-                    request.getFromUser().getId(),
-                    NotificationCategory.TICKET_TRANSFER,
-                    request.getFromUser().getEmail(),
-                    "Your ticket transfer was accepted",
-                    emailTemplateService.buildTransferAcceptedEmail(
-                            request.getFromUser().getEmail(), request.getToUser().getEmail(),
-                            ticket.getEvent().getTitle(), seatDesc));
-        } catch (Exception e) {
-            log.warn("Failed to send transfer accepted email", e);
-        }
+        // Sent after the commit, so not while the cap lock and ticket row are held.
+        MailToSender mail = MailToSender.of(request, seatDesc(request));
+        AfterCommit.run("transfer accepted email, request " + request.getId(), () -> notificationGate.sendEmail(
+                mail.fromUserId(),
+                NotificationCategory.TICKET_TRANSFER,
+                mail.fromEmail(),
+                "Your ticket transfer was accepted",
+                emailTemplateService.buildTransferAcceptedEmail(
+                        mail.fromEmail(), mail.toEmail(), mail.eventTitle(), mail.seatDesc())));
 
         return request;
     }
@@ -187,6 +225,7 @@ public class TransferService {
     @Transactional
     public TicketTransferRequest rejectTransfer(UUID requestId, UUID toUserId) {
         var request = findRequestForRecipient(requestId, toUserId);
+        lockPending(request);
 
         request.setStatus(TransferStatus.REJECTED);
         request.setResolvedAt(Instant.now());
@@ -195,19 +234,14 @@ public class TransferService {
         auditService.logInCurrentTransaction(toUserId, "TRANSFER_REJECTED", "TICKET", request.getTicket().getId(),
                 "from=" + request.getFromUser().getEmail());
 
-        String seatDesc = seatDesc(request);
-        try {
-            notificationGate.sendEmail(
-                    request.getFromUser().getId(),
-                    NotificationCategory.TICKET_TRANSFER,
-                    request.getFromUser().getEmail(),
-                    "Your ticket transfer was declined",
-                    emailTemplateService.buildTransferRejectedEmail(
-                            request.getFromUser().getEmail(), request.getToUser().getEmail(),
-                            request.getTicket().getEvent().getTitle(), seatDesc));
-        } catch (Exception e) {
-            log.warn("Failed to send transfer rejected email", e);
-        }
+        MailToSender mail = MailToSender.of(request, seatDesc(request));
+        AfterCommit.run("transfer rejected email, request " + request.getId(), () -> notificationGate.sendEmail(
+                mail.fromUserId(),
+                NotificationCategory.TICKET_TRANSFER,
+                mail.fromEmail(),
+                "Your ticket transfer was declined",
+                emailTemplateService.buildTransferRejectedEmail(
+                        mail.fromEmail(), mail.toEmail(), mail.eventTitle(), mail.seatDesc())));
 
         return request;
     }
@@ -224,6 +258,7 @@ public class TransferService {
         if (request.getStatus() != TransferStatus.PENDING) {
             throw new IllegalStateException("Only PENDING requests can be cancelled");
         }
+        lockPending(request);
 
         request.setStatus(TransferStatus.CANCELLED);
         request.setResolvedAt(Instant.now());
@@ -248,10 +283,20 @@ public class TransferService {
     public void expireStaleRequests() {
         MDC.put("requestId", "sched-expireStaleRequests-" + UUID.randomUUID());
         try {
+            // Locked one by one below, in id order: the order RefundService.finalise
+            // locks requests in, so a sweep and a refund cannot deadlock.
             List<TicketTransferRequest> expired =
-                    transferRepository.findByStatusAndExpiresAtBefore(TransferStatus.PENDING, Instant.now());
+                    transferRepository.findByStatusAndExpiresAtBefore(TransferStatus.PENDING, Instant.now())
+                            .stream()
+                            .sorted(java.util.Comparator.comparing(TicketTransferRequest::getId))
+                            .toList();
 
             for (TicketTransferRequest request : expired) {
+                // Accepted, rejected or cancelled since the query: leave it.
+                entityManager.refresh(request, LockModeType.PESSIMISTIC_WRITE);
+                if (request.getStatus() != TransferStatus.PENDING) {
+                    continue;
+                }
                 request.setStatus(TransferStatus.EXPIRED);
                 request.setResolvedAt(Instant.now());
                 transferRepository.save(request);
@@ -259,19 +304,14 @@ public class TransferService {
                 auditService.logInCurrentTransaction(request.getFromUser().getId(), "TRANSFER_EXPIRED", "TICKET",
                         request.getTicket().getId(), "to=" + request.getToUser().getEmail());
 
-                String seatDesc = seatDesc(request);
-                try {
-                    notificationGate.sendEmail(
-                            request.getFromUser().getId(),
-                            NotificationCategory.TICKET_TRANSFER,
-                            request.getFromUser().getEmail(),
-                            "Your ticket transfer request expired",
-                            emailTemplateService.buildTransferExpiredEmail(
-                                    request.getFromUser().getEmail(),
-                                    request.getTicket().getEvent().getTitle(), seatDesc));
-                } catch (Exception e) {
-                    log.warn("Failed to send transfer expired email to={}", request.getFromUser().getEmail(), e);
-                }
+                MailToSender mail = MailToSender.of(request, seatDesc(request));
+                AfterCommit.run("transfer expired email, request " + request.getId(), () -> notificationGate.sendEmail(
+                        mail.fromUserId(),
+                        NotificationCategory.TICKET_TRANSFER,
+                        mail.fromEmail(),
+                        "Your ticket transfer request expired",
+                        emailTemplateService.buildTransferExpiredEmail(
+                                mail.fromEmail(), mail.eventTitle(), mail.seatDesc())));
             }
         } finally {
             MDC.remove("requestId");
@@ -291,6 +331,30 @@ public class TransferService {
         }
 
         return request;
+    }
+
+    /**
+     * Locks the request row and re-reads it. The row has no version column, so
+     * without the lock a writer that read PENDING earlier would overwrite whatever
+     * another transaction committed in between.
+     */
+    private void lockPending(TicketTransferRequest request) {
+        entityManager.refresh(request, LockModeType.PESSIMISTIC_WRITE);
+        if (request.getStatus() != TransferStatus.PENDING) {
+            throw new IllegalStateException("Transfer request is no longer pending");
+        }
+    }
+
+    /**
+     * What a mail to the sender needs, read inside the transaction: the entities
+     * may be detached by the time the after-commit send runs.
+     */
+    private record MailToSender(UUID fromUserId, String fromEmail, String toEmail,
+                                String eventTitle, String seatDesc) {
+        static MailToSender of(TicketTransferRequest request, String seatDesc) {
+            return new MailToSender(request.getFromUser().getId(), request.getFromUser().getEmail(),
+                    request.getToUser().getEmail(), request.getTicket().getEvent().getTitle(), seatDesc);
+        }
     }
 
     private String seatDesc(TicketTransferRequest r) {

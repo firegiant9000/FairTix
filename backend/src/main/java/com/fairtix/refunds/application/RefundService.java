@@ -1,6 +1,7 @@
 package com.fairtix.refunds.application;
 
 import com.fairtix.audit.application.AuditService;
+import com.fairtix.common.AfterCommit;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.domain.RiskTier;
 import com.fairtix.inventory.domain.Seat;
@@ -21,7 +22,10 @@ import com.fairtix.refunds.domain.RefundStatus;
 import com.fairtix.refunds.infrastructure.RefundRepository;
 import com.fairtix.tickets.domain.Ticket;
 import com.fairtix.tickets.domain.TicketStatus;
+import com.fairtix.tickets.domain.TicketTransferRequest;
+import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
+import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.persistence.EntityManager;
@@ -38,7 +42,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -57,6 +63,7 @@ public class RefundService {
   private final EmailTemplateService emailTemplateService;
   private final RiskScoringService riskScoringService;
   private final StripePaymentService stripePaymentService;
+  private final TicketTransferRequestRepository transferRepository;
 
   @PersistenceContext
   private EntityManager entityManager;
@@ -82,7 +89,9 @@ public class RefundService {
       NotificationGate notificationGate,
       EmailTemplateService emailTemplateService,
       RiskScoringService riskScoringService,
-      StripePaymentService stripePaymentService) {
+      StripePaymentService stripePaymentService,
+      TicketTransferRequestRepository transferRepository) {
+    this.transferRepository = transferRepository;
     this.refundRepository = refundRepository;
     this.orderRepository = orderRepository;
     this.ticketRepository = ticketRepository;
@@ -292,8 +301,15 @@ public class RefundService {
       paymentRecordRepository.save(refundRecord);
     }
 
-    // Mark tickets as REFUNDED and release seats
-    List<Ticket> tickets = ticketRepository.findAllByOrder_Id(refund.getOrderId());
+    // Mark tickets as REFUNDED and release seats. Each ticket row is locked first,
+    // in id order, and re-read: TransferService.acceptTransfer takes the same lock,
+    // so an acceptance either committed before this or waits and then sees REFUNDED.
+    List<Ticket> tickets = ticketRepository.findAllByOrder_Id(refund.getOrderId()).stream()
+        .sorted(Comparator.comparing(Ticket::getId))
+        .toList();
+    for (Ticket ticket : tickets) {
+      entityManager.refresh(ticket, LockModeType.PESSIMISTIC_WRITE);
+    }
     for (Ticket ticket : tickets) {
       ticket.setStatus(TicketStatus.REFUNDED);
       ticketRepository.save(ticket);
@@ -301,6 +317,7 @@ public class RefundService {
       seat.setStatus(SeatStatus.AVAILABLE);
       seatRepository.save(seat);
     }
+    cancelPendingTransfers(tickets, refund, actorId);
 
     if (stripeRefundInitiated) {
       // Stripe is processing; the charge.refunded webhook flips the request to
@@ -319,6 +336,32 @@ public class RefundService {
           "Refund completed for order " + refund.getOrderId() + ", amount=" + refund.getAmount());
     }
     return new FinaliseResult(refund, true);
+  }
+
+  /**
+   * A refunded ticket cannot change hands: its pending transfer request ends here.
+   * Each request row is locked and re-read before it is written (the row has no
+   * version column, so a reject or cancel committed since the query would
+   * otherwise be overwritten). Locked in request-id order, the order
+   * {@code TransferService.expireStaleRequests} uses, so the two cannot deadlock.
+   */
+  private void cancelPendingTransfers(List<Ticket> tickets, RefundRequest refund, UUID actorId) {
+    List<TicketTransferRequest> pending = tickets.stream()
+        .map(ticket -> transferRepository.findByTicket_IdAndStatus(ticket.getId(), TransferStatus.PENDING))
+        .flatMap(Optional::stream)
+        .sorted(Comparator.comparing(TicketTransferRequest::getId))
+        .toList();
+    for (TicketTransferRequest request : pending) {
+      entityManager.refresh(request, LockModeType.PESSIMISTIC_WRITE);
+      if (request.getStatus() != TransferStatus.PENDING) {
+        continue;
+      }
+      request.setStatus(TransferStatus.CANCELLED);
+      request.setResolvedAt(Instant.now());
+      transferRepository.save(request);
+      auditService.logInCurrentTransaction(actorId, "TRANSFER_CANCELLED", "TICKET",
+          request.getTicket().getId(), "ticket refunded, refund=" + refund.getId());
+    }
   }
 
   /**
@@ -396,17 +439,19 @@ public class RefundService {
 
   // -------------------------------------------------------------------------
 
+  /** Runs inside requestRefund's transaction; the mail goes out after it commits. */
   private void sendRefundRequestedEmail(UUID userId, RefundRequest refund) {
-    try {
-      User user = userRepository.findById(userId).orElse(null);
-      if (user == null) return;
-      String body = emailTemplateService.buildRefundRequestedEmail(
-          user.getEmail(), refund.getOrderId().toString(), refund.getAmount().toPlainString(), refund.getReason());
-      notificationGate.sendEmail(user.getId(), NotificationCategory.REFUND,
-          user.getEmail(), "Your FairTix refund request was received", body);
-    } catch (Exception ex) {
-      log.warn("Failed to send refund-requested email for refund {}: {}", refund.getId(), ex.getMessage());
-    }
+    User user = userRepository.findById(userId).orElse(null);
+    if (user == null) return;
+    UUID recipientId = user.getId();
+    String email = user.getEmail();
+    String orderId = refund.getOrderId().toString();
+    String amount = refund.getAmount().toPlainString();
+    String reason = refund.getReason();
+    AfterCommit.run("refund-requested email, refund " + refund.getId(), () -> notificationGate.sendEmail(
+        recipientId, NotificationCategory.REFUND, email,
+        "Your FairTix refund request was received",
+        emailTemplateService.buildRefundRequestedEmail(email, orderId, amount, reason)));
   }
 
   private void sendRefundInitiatedEmail(RefundRequest refund) {
@@ -435,16 +480,17 @@ public class RefundService {
     }
   }
 
+  /** Runs inside reviewRefund's transaction; the mail goes out after it commits. */
   private void sendRefundRejectedEmail(RefundRequest refund, String adminNotes) {
-    try {
-      User user = userRepository.findById(refund.getUserId()).orElse(null);
-      if (user == null) return;
-      String body = emailTemplateService.buildRefundRejectedEmail(
-          user.getEmail(), refund.getOrderId().toString(), refund.getReason(), adminNotes);
-      notificationGate.sendEmail(user.getId(), NotificationCategory.REFUND,
-          user.getEmail(), "Update on your FairTix refund request", body);
-    } catch (Exception ex) {
-      log.warn("Failed to send refund-rejected email for refund {}: {}", refund.getId(), ex.getMessage());
-    }
+    User user = userRepository.findById(refund.getUserId()).orElse(null);
+    if (user == null) return;
+    UUID recipientId = user.getId();
+    String email = user.getEmail();
+    String orderId = refund.getOrderId().toString();
+    String reason = refund.getReason();
+    AfterCommit.run("refund-rejected email, refund " + refund.getId(), () -> notificationGate.sendEmail(
+        recipientId, NotificationCategory.REFUND, email,
+        "Update on your FairTix refund request",
+        emailTemplateService.buildRefundRejectedEmail(email, orderId, reason, adminNotes)));
   }
 }

@@ -37,6 +37,11 @@ import java.util.concurrent.TimeUnit;
 public class QueueService {
 
     private static final String POSITION_KEY = "queue:position:";
+    /**
+     * Informational copy of the ADMITTED entries, written after commit. Never gate
+     * access on it: a failed removal, or an add and a remove from two transactions
+     * committing out of order, leaves entries the database does not have.
+     */
     private static final String ADMITTED_KEY = "queue:admitted:";
     private static final UUID SYSTEM = UUID.fromString("00000000-0000-0000-0000-000000000000");
     private static final Logger log = LoggerFactory.getLogger(QueueService.class);
@@ -168,7 +173,7 @@ public class QueueService {
 
         if (entry.getStatus() == QueueStatus.WAITING || entry.getStatus() == QueueStatus.ADMITTED) {
             if (entry.getStatus() == QueueStatus.ADMITTED) {
-                removeFromAdmittedSet(eventId, userId);
+                removeFromAdmittedSetAfterCommit(eventId, List.of(userId));
             }
             entry.expire();
             queueRepository.save(entry);
@@ -176,12 +181,13 @@ public class QueueService {
         }
     }
 
+    /**
+     * Whether the user is inside an open admission window, from the database. The
+     * Redis admitted set is not consulted: it is a copy maintained after commit,
+     * and a removal that failed (Redis down) leaves an entry behind that must not
+     * grant a hold or a checkout.
+     */
     public boolean isAdmitted(UUID eventId, UUID userId) {
-        RSet<String> admittedSet = redissonClient.getSet(ADMITTED_KEY + eventId);
-        if (admittedSet.contains(userId.toString())) {
-            return true;
-        }
-        // Redis miss — fall back to DB
         Optional<QueueEntry> entry = queueRepository.findByEventIdAndUserId(eventId, userId);
         return entry.isPresent()
                 && entry.get().getStatus() == QueueStatus.ADMITTED
@@ -230,7 +236,7 @@ public class QueueService {
         queueRepository.findByEventIdAndUserId(eventId, userId).ifPresent(entry -> {
             if (entry.getStatus() == QueueStatus.ADMITTED) {
                 entry.complete();
-                removeFromAdmittedSet(eventId, userId);
+                removeFromAdmittedSetAfterCommit(eventId, List.of(userId));
                 queueRepository.save(entry);
             }
         });
@@ -281,9 +287,12 @@ public class QueueService {
 
         for (QueueEntry entry : expiredForEvent) {
             entry.expire();
-            removeFromAdmittedSet(eventId, entry.getUserId());
         }
         queueRepository.saveAll(expiredForEvent);
+        if (!expiredForEvent.isEmpty()) {
+            removeFromAdmittedSetAfterCommit(eventId,
+                    expiredForEvent.stream().map(QueueEntry::getUserId).toList());
+        }
         if (!expiredForEvent.isEmpty()) {
             auditService.logInCurrentTransaction(SYSTEM, "QUEUE_ADMISSION_EXPIRED", "QUEUE", eventId,
                 "count=" + expiredForEvent.size());
@@ -328,8 +337,8 @@ public class QueueService {
     /**
      * Adds users to the Redis admitted set once the transaction that admitted them
      * has committed. Added earlier, a rolled-back admission would leave Redis saying
-     * "admitted" until the set expired. If the add fails, {@link #isAdmitted} still
-     * finds the admission in the database.
+     * "admitted" until the set expired. If the add fails, nothing is lost:
+     * {@link #isAdmitted} reads the database.
      */
     private void addToAdmittedSetAfterCommit(UUID eventId, List<String> userIds, boolean refreshTtl) {
         Runnable add = () -> {
@@ -357,7 +366,31 @@ public class QueueService {
         }
     }
 
-    private void removeFromAdmittedSet(UUID eventId, UUID userId) {
-        redissonClient.getSet(ADMITTED_KEY + eventId).remove(userId.toString());
+    /**
+     * Removes users from the Redis admitted set once the transaction that ended
+     * their admission has committed. A Redis error is logged and swallowed: it must
+     * not roll back that transaction, which may be a paid order. The entry it leaves
+     * behind grants nothing, since {@link #isAdmitted} reads the database.
+     */
+    private void removeFromAdmittedSetAfterCommit(UUID eventId, List<UUID> userIds) {
+        Runnable remove = () -> {
+            try {
+                RSet<String> admittedSet = redissonClient.getSet(ADMITTED_KEY + eventId);
+                admittedSet.removeAll(userIds.stream().map(UUID::toString).toList());
+            } catch (RuntimeException ex) {
+                log.warn("Could not remove {} user(s) from the admitted set of event {}: {}",
+                        userIds.size(), eventId, ex.getMessage());
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    remove.run();
+                }
+            });
+        } else {
+            remove.run();
+        }
     }
 }

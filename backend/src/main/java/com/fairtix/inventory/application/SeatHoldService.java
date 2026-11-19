@@ -1,6 +1,7 @@
 package com.fairtix.inventory.application;
 
 import com.fairtix.audit.application.AuditService;
+import com.fairtix.common.TransactionLock;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.domain.HoldStatus;
@@ -32,6 +33,7 @@ public class SeatHoldService {
   private final AuditService auditService;
   private final QueueService queueService;
   private final PurchaseCapGuard purchaseCapGuard;
+  private final TransactionLock transactionLock;
 
   @Value("${holds.duration-minutes:10}")
   private int defaultDurationMinutes;
@@ -50,7 +52,9 @@ public class SeatHoldService {
       EventRepository eventRepository,
       AuditService auditService,
       QueueService queueService,
-      PurchaseCapGuard purchaseCapGuard) {
+      PurchaseCapGuard purchaseCapGuard,
+      TransactionLock transactionLock) {
+    this.transactionLock = transactionLock;
     this.seatRepository = seatRepository;
     this.seatHoldRepository = seatHoldRepository;
     this.eventRepository = eventRepository;
@@ -69,7 +73,8 @@ public class SeatHoldService {
    * <li>Deadlock-safe: seats are locked in consistent UUID order via a single
    * batch {@code SELECT … FOR UPDATE ORDER BY id} query.</li>
    * <li>Duration is clamped to {@code holds.max-duration-minutes}.</li>
-   * <li>Active-hold count for the holder is checked before locking.</li>
+   * <li>The holder's active-hold count is checked under a per-user lock, before
+   * any seat is locked, so two overlapping requests cannot both pass it.</li>
    * </ul>
    *
    * @param eventId         the target event
@@ -86,7 +91,15 @@ public class SeatHoldService {
     Event event = eventRepository.findById(eventId)
         .orElseThrow(() -> new IllegalArgumentException("Event not found: " + eventId));
 
-    // Queue gate: if the event requires queue admission, verify before proceeding
+    // Lock order: this user's hold-limit lock, then the (event, user) cap lock,
+    // then seat rows. The hold limit spans every event, so it needs a lock of its
+    // own: the cap lock is per event and only taken when the event has a cap. An
+    // overlapping hold request by the same user, on any event, waits here and
+    // then counts this one's holds.
+    transactionLock.acquire("hold-limit:" + ownerId);
+
+    // Queue gate, checked under the hold-limit lock: a second request that waited
+    // there sees the admission the first one used up (completeQueueEntry below).
     if (event.isQueueRequired() && !queueService.isAdmitted(eventId, ownerId)) {
       throw new SeatHoldConflictException("Queue admission required to hold seats for this event");
     }
@@ -107,7 +120,7 @@ public class SeatHoldService {
       }
     }
 
-    // Soft limit: reject before acquiring any locks
+    // Hold limit, counted under the hold-limit lock and before any seat lock.
     long activeCount = seatHoldRepository.countByOwnerIdAndStatus(ownerId, HoldStatus.ACTIVE);
     long requestedDistinctSeats = seatIds.stream().distinct().count();
     if (activeCount + requestedDistinctSeats > maxActivePerHolder) {

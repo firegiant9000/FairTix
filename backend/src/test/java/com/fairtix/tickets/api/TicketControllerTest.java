@@ -10,6 +10,7 @@ import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.orders.application.OrderService;
+import com.fairtix.payments.domain.PaymentStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
@@ -98,7 +99,8 @@ class TicketControllerTest {
     hold = seatHoldRepository.save(hold);
 
     // Create the order (which issues tickets)
-    orderService.createOrder(testUser.getId(), List.of(hold.getId()));
+    orderService.createOrderWithPayment(
+        testUser.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
 
     mockMvc.perform(get("/api/tickets")
             .with(WithMockPrincipal.user(testUser.getId(), testUser.getEmail())))
@@ -138,7 +140,8 @@ class TicketControllerTest {
     hold.setStatus(HoldStatus.CONFIRMED);
     hold = seatHoldRepository.save(hold);
 
-    orderService.createOrder(testUser.getId(), List.of(hold.getId()));
+    orderService.createOrderWithPayment(
+        testUser.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
 
     // otherUser should see empty tickets, not testUser's
     mockMvc.perform(get("/api/tickets")
@@ -158,7 +161,8 @@ class TicketControllerTest {
     hold.setStatus(HoldStatus.CONFIRMED);
     hold = seatHoldRepository.save(hold);
 
-    orderService.createOrder(testUser.getId(), List.of(hold.getId()));
+    orderService.createOrderWithPayment(
+        testUser.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
 
     java.util.UUID ticketId = ticketRepository.findAllByUser_IdOrderByIssuedAtDesc(testUser.getId())
         .get(0).getId();
@@ -195,7 +199,8 @@ class TicketControllerTest {
     hold.setStatus(HoldStatus.CONFIRMED);
     hold = seatHoldRepository.save(hold);
 
-    orderService.createOrder(testUser.getId(), List.of(hold.getId()));
+    orderService.createOrderWithPayment(
+        testUser.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
 
     java.util.UUID ticketId = ticketRepository.findAllByUser_IdOrderByIssuedAtDesc(testUser.getId())
         .get(0).getId();

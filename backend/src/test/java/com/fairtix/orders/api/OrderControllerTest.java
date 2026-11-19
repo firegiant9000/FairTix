@@ -9,6 +9,8 @@ import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
+import com.fairtix.orders.infrastructure.OrderRepository;
+import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,6 +26,7 @@ import org.springframework.web.context.WebApplicationContext;
 import java.math.BigDecimal;
 import java.time.Instant;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -48,6 +51,12 @@ class OrderControllerTest {
   @Autowired
   private SeatHoldRepository seatHoldRepository;
 
+  @Autowired
+  private OrderRepository orderRepository;
+
+  @Autowired
+  private TicketRepository ticketRepository;
+
   private MockMvc mockMvc;
   private User testUser;
 
@@ -60,7 +69,6 @@ class OrderControllerTest {
     testUser = new User();
     testUser.setEmail("ordertest@example.com");
     testUser.setPassword("$2a$10$dummyhashfortest");
-    // POST /api/orders needs a verified email (VerifiedEmailGuard).
     testUser.setEmailVerified(true);
     testUser = userRepository.save(testUser);
   }
@@ -77,36 +85,13 @@ class OrderControllerTest {
         .andExpect(status().isUnauthorized());
   }
 
+  /**
+   * There is no unpaid order path: orders are created only by
+   * {@code POST /api/payments/checkout}. A verified user with a confirmed hold
+   * gets 405 here, and the seat stays BOOKED with no order and no ticket.
+   */
   @Test
-  void createOrder_emptyHoldIds_returns400() throws Exception {
-    String body = """
-        { "holdIds": [] }
-        """;
-
-    mockMvc.perform(post("/api/orders")
-            .with(WithMockPrincipal.user(testUser.getId(), testUser.getEmail()))
-            .contentType(MediaType.APPLICATION_JSON)
-            .content(body))
-        .andExpect(status().isBadRequest())
-        .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
-  }
-
-  @Test
-  void createOrder_nonExistentHold_returns400() throws Exception {
-    String body = """
-        { "holdIds": ["00000000-0000-0000-0000-000000000001"] }
-        """;
-
-    mockMvc.perform(post("/api/orders")
-            .with(WithMockPrincipal.user(testUser.getId(), testUser.getEmail()))
-            .contentType(MediaType.APPLICATION_JSON)
-            .content(body))
-        .andExpect(status().isBadRequest())
-        .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
-  }
-
-  @Test
-  void createOrder_withConfirmedHold_returns201() throws Exception {
+  void createOrder_withConfirmedHold_returns405AndCreatesNothing() throws Exception {
     // Set up: event → seat → confirmed hold
     Event event = eventRepository.save(new Event("Test Concert", null, Instant.now().plusSeconds(86400), null));
     Seat seat = seatRepository.save(new Seat(event, "A", "1", "101", new BigDecimal("50.00")));
@@ -125,11 +110,15 @@ class OrderControllerTest {
             .with(WithMockPrincipal.user(testUser.getId(), testUser.getEmail()))
             .contentType(MediaType.APPLICATION_JSON)
             .content(body))
-        .andExpect(status().isCreated())
-        .andExpect(jsonPath("$.id").exists())
-        .andExpect(jsonPath("$.userId").value(testUser.getId().toString()))
-        .andExpect(jsonPath("$.status").value("COMPLETED"))
-        .andExpect(jsonPath("$.totalAmount").value(50.00));
+        .andExpect(status().isMethodNotAllowed())
+        .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"));
+
+    assertThat(orderRepository.findAllByUser_IdOrderByCreatedAtDesc(testUser.getId())).isEmpty();
+    assertThat(ticketRepository.findAllByUser_IdOrderByIssuedAtDesc(testUser.getId())).isEmpty();
+    assertThat(seatRepository.findById(seat.getId()).orElseThrow().getStatus())
+        .isEqualTo(SeatStatus.BOOKED);
+    assertThat(seatHoldRepository.findById(hold.getId()).orElseThrow().getStatus())
+        .isEqualTo(HoldStatus.CONFIRMED);
   }
 
   @Test

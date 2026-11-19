@@ -121,6 +121,10 @@ class EventHoldServiceTest {
     assertThat(result).isSameAs(issued);
     assertThat(hold.getConvertedTicketId()).isEqualTo(ticketId);
     verify(compService).issueComp(any(), eq(actorId));
+    // The comp's advisory locks are taken before the seat row lock.
+    var order = inOrder(compService, seats);
+    order.verify(compService).lockForIssue(event.getId(), "bono@u2.test", actorId);
+    order.verify(seats).findAndLockById(seatId);
   }
 
   private Seat mockSeat(UUID id, SeatStatus status) {

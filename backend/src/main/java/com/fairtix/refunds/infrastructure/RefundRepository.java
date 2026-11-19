@@ -20,6 +20,9 @@ public interface RefundRepository extends JpaRepository<RefundRequest, UUID> {
 
   Optional<RefundRequest> findByOrderIdAndStatusIn(UUID orderId, List<RefundStatus> statuses);
 
+  /** Exists, not find: an order can carry more than one {@code COMPLETED} refund row. */
+  boolean existsByOrderIdAndStatusIn(UUID orderId, List<RefundStatus> statuses);
+
   Page<RefundRequest> findAllByOrderByCreatedAtDesc(Pageable pageable);
 
   Page<RefundRequest> findAllByStatusOrderByCreatedAtDesc(RefundStatus status, Pageable pageable);

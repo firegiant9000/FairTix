@@ -4,6 +4,7 @@ import com.fairtix.audit.application.AuditService;
 import com.fairtix.payments.domain.PaymentRecord;
 import com.fairtix.payments.domain.PaymentStatus;
 import com.fairtix.payments.infrastructure.PaymentRecordRepository;
+import com.fairtix.payments.infrastructure.StripeWebhookEventRepository;
 import com.fairtix.refunds.domain.RefundRequest;
 import com.fairtix.refunds.domain.RefundStatus;
 import com.fairtix.refunds.infrastructure.RefundRepository;
@@ -36,6 +37,7 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
@@ -55,6 +57,7 @@ class StripeWebhookControllerTest {
   @MockitoBean private PaymentRecordRepository paymentRecordRepository;
   @MockitoBean private RefundRepository refundRepository;
   @MockitoBean private AuditService auditService;
+  @MockitoBean private StripeWebhookEventRepository webhookEventRepository;
 
   private MockMvc mockMvc;
 
@@ -63,6 +66,36 @@ class StripeWebhookControllerTest {
     mockMvc = MockMvcBuilders.webAppContextSetup(context)
         .apply(springSecurity())
         .build();
+    // Every event is new unless a test says otherwise (StripeWebhookLedgerIT covers the table).
+    when(webhookEventRepository.insertIfAbsent(anyString(), anyString())).thenReturn(1);
+  }
+
+  /** Stripe redelivers an event: the second delivery is answered 200 and not processed. */
+  @Test
+  void redeliveredEvent_isAnswered200_withoutProcessingItAgain() throws Exception {
+    String piId = "pi_redelivered";
+    when(paymentRecordRepository.findByTransactionId(piId)).thenReturn(Optional.empty());
+    when(webhookEventRepository.insertIfAbsent("evt_test", "payment_intent.succeeded"))
+        .thenReturn(1, 0);
+    String payload = paymentIntentEvent("payment_intent.succeeded", piId);
+
+    postSigned(payload);
+    postSigned(payload);
+
+    verify(paymentRecordRepository, times(1)).findByTransactionId(piId);
+    verify(auditService, times(1)).logInCurrentTransaction(eq(new UUID(0L, 0L)),
+        eq("STRIPE_UNMATCHED_PAYMENT"), eq("PAYMENT"), isNull(), contains(piId));
+  }
+
+  /** Only the event types this controller handles go in the ledger. */
+  @Test
+  void unhandledEventType_isNotRecorded() throws Exception {
+    postSigned("""
+        { "id": "evt_unhandled", "object": "event", "type": "customer.created",
+          "api_version": "%s", "data": { "object": { "id": "cus_1", "object": "customer" } } }
+        """.formatted(Stripe.API_VERSION));
+
+    verify(webhookEventRepository, never()).insertIfAbsent(anyString(), anyString());
   }
 
   // --- helpers ---
@@ -164,7 +197,7 @@ class StripeWebhookControllerTest {
             .content(payload))
         .andExpect(status().isOk());
 
-    verify(auditService, never()).log(eq(new UUID(0L, 0L)), eq("STRIPE_UNMATCHED_PAYMENT"), anyString(), any(), anyString());
+    verify(auditService, never()).logInCurrentTransaction(eq(new UUID(0L, 0L)), eq("STRIPE_UNMATCHED_PAYMENT"), anyString(), any(), anyString());
   }
 
   @Test
@@ -179,7 +212,7 @@ class StripeWebhookControllerTest {
             .content(payload))
         .andExpect(status().isOk());
 
-    verify(auditService).log(eq(new UUID(0L, 0L)), eq("STRIPE_UNMATCHED_PAYMENT"), eq("PAYMENT"),
+    verify(auditService).logInCurrentTransaction(eq(new UUID(0L, 0L)), eq("STRIPE_UNMATCHED_PAYMENT"), eq("PAYMENT"),
         isNull(), contains("paymentIntentId=" + piId));
   }
 
@@ -211,7 +244,7 @@ class StripeWebhookControllerTest {
             .content(payload))
         .andExpect(status().isOk());
 
-    verify(auditService).log(eq(new UUID(0L, 0L)), eq("STRIPE_PAYMENT_FAILED"), eq("PAYMENT"),
+    verify(auditService).logInCurrentTransaction(eq(new UUID(0L, 0L)), eq("STRIPE_PAYMENT_FAILED"), eq("PAYMENT"),
         isNull(), eq("paymentIntentId=" + piId + " failed: Your card was declined."));
     // Audit only: no order, payment or refund state changes on a failed intent.
     verify(paymentRecordRepository, never()).save(any());
@@ -245,7 +278,7 @@ class StripeWebhookControllerTest {
     // A conditional update, never a full-row save (see RefundWebhookRaceIT).
     verify(refundRepository).completeIfActive(eq(refundRequest.getId()), any());
     verify(refundRepository, never()).save(any());
-    verify(auditService).log(eq(new UUID(0L, 0L)), eq("REFUND_COMPLETED"), eq("REFUND"), any(), anyString());
+    verify(auditService).logInCurrentTransaction(eq(new UUID(0L, 0L)), eq("REFUND_COMPLETED"), eq("REFUND"), any(), anyString());
   }
 
   @Test
@@ -268,8 +301,8 @@ class StripeWebhookControllerTest {
             .content(payload))
         .andExpect(status().isOk());
 
-    verify(auditService, never()).log(any(), eq("REFUND_COMPLETED"), any(), any(), anyString());
-    verify(auditService, never()).log(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
+    verify(auditService, never()).logInCurrentTransaction(any(), eq("REFUND_COMPLETED"), any(), any(), anyString());
+    verify(auditService, never()).logInCurrentTransaction(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
   }
 
   /** A refund nobody requested (Dashboard, or one landing during order creation). */
@@ -283,7 +316,7 @@ class StripeWebhookControllerTest {
 
     postSigned(chargeRefundedEvent(piId));
 
-    verify(auditService).log(eq(new UUID(0L, 0L)), eq("REFUND_ON_LIVE_ORDER"), eq("ORDER"),
+    verify(auditService).logInCurrentTransaction(eq(new UUID(0L, 0L)), eq("REFUND_ON_LIVE_ORDER"), eq("ORDER"),
         eq(orderId), contains("stripe_intent=" + piId));
     verify(refundRepository, never()).completeIfActive(any(), any());
   }
@@ -300,7 +333,7 @@ class StripeWebhookControllerTest {
 
     postSigned(chargeRefundedEvent(piId, 5000));
 
-    verify(auditService, never()).log(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
+    verify(auditService, never()).logInCurrentTransaction(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
   }
 
   /** Stripe refunded more than our completed requests account for. */
@@ -315,7 +348,7 @@ class StripeWebhookControllerTest {
 
     postSigned(chargeRefundedEvent(piId, 5000));
 
-    verify(auditService).log(eq(new UUID(0L, 0L)), eq("REFUND_ON_LIVE_ORDER"), eq("ORDER"),
+    verify(auditService).logInCurrentTransaction(eq(new UUID(0L, 0L)), eq("REFUND_ON_LIVE_ORDER"), eq("ORDER"),
         eq(orderId), contains("amount_refunded_cents=5000"));
   }
 
@@ -331,9 +364,9 @@ class StripeWebhookControllerTest {
 
     postSigned(chargeRefundedEvent(piId, 5000));
 
-    verify(auditService).log(eq(new UUID(0L, 0L)), eq("STRIPE_REFUND_UNMATCHED"), eq("PAYMENT"),
+    verify(auditService).logInCurrentTransaction(eq(new UUID(0L, 0L)), eq("STRIPE_REFUND_UNMATCHED"), eq("PAYMENT"),
         isNull(), eq("Stripe refund with no payment record yet: stripe_intent=" + piId
             + ", charge=ch_test, amount_refunded_cents=5000"));
-    verify(auditService, never()).log(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
+    verify(auditService, never()).logInCurrentTransaction(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
   }
 }

@@ -36,6 +36,9 @@ import com.fairtix.tickets.domain.Ticket;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
+import jakarta.persistence.PersistenceContext;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -86,6 +89,9 @@ public class BoxOfficeService {
   private final OrgSalesCapService salesCapService;
   private final AuditService auditService;
   private final TransactionTemplate transactionTemplate;
+
+  @PersistenceContext
+  private EntityManager entityManager;
 
   public BoxOfficeService(BoxOfficeSessionRepository sessions,
                           BoxOfficeSaleRepository sales,
@@ -319,29 +325,71 @@ public class BoxOfficeService {
    * Verifies the intent against Stripe before transitioning seats SOLD; if
    * Stripe says the intent did not succeed we leave seats BOOKED so the user
    * can retry on the reader (or the staff member can release).
+   *
+   * <p>Not {@code @Transactional}: the Stripe call runs between two transactions,
+   * with no transaction or row lock held (under open-in-view the request may
+   * still hold its JDBC connection). 1) check the session and read the sale;
+   * 2) verify with Stripe; 3) lock and re-read the sale row, check the session
+   * and the sale again and complete it. A concurrent confirm of the same intent
+   * waits on the row lock and then returns the sale the first one completed.
    */
-  @Transactional
   public BoxOfficeSale confirmCardSale(UUID sessionId, UUID organizationId, UUID staffUserId,
                                        String paymentIntentId,
                                        String customerEmail, String customerName) {
-    requireOpenSession(sessionId, organizationId, staffUserId);
-    BoxOfficeSale pending = sales.findByStripePaymentIntentId(paymentIntentId)
-        .orElseThrow(() -> new ResourceNotFoundException(
-            "No pending box-office sale found for intent " + paymentIntentId));
-    if (!pending.getSessionId().equals(sessionId)
-        || !pending.getOrganizationId().equals(organizationId)) {
-      throw new AccessDeniedException("Sale does not belong to this session");
-    }
-    if (pending.getOrderId() != null) {
+    BoxOfficeSale found = transactionTemplate.execute(status ->
+        findSaleToConfirm(sessionId, organizationId, staffUserId, paymentIntentId, false));
+    if (found.getOrderId() != null) {
       // Already confirmed — return existing
-      return pending;
+      return found;
     }
-    long expectedAmountCents = pending.getAmount()
+    long expectedAmountCents = found.getAmount()
         .multiply(BigDecimal.valueOf(100)).longValueExact();
     if (!stripePaymentService.verifyPaymentSucceeded(paymentIntentId, expectedAmountCents)) {
       throw new BoxOfficeStateException("Card-present payment did not succeed: " + paymentIntentId);
     }
 
+    return transactionTemplate.execute(status -> {
+      // Locked and re-read: a concurrent confirm of the same intent may have
+      // completed the sale while this one was talking to Stripe.
+      BoxOfficeSale pending = findSaleToConfirm(sessionId, organizationId, staffUserId,
+          paymentIntentId, true);
+      if (pending.getOrderId() != null) {
+        return pending;
+      }
+      return completeCardSale(pending, organizationId, staffUserId, paymentIntentId,
+          expectedAmountCents, customerEmail, customerName);
+    });
+  }
+
+  /**
+   * @param lockAndReload re-read the session and the sale from the database, the
+   *     sale under a row lock. Under open-in-view the request's persistence context
+   *     still holds the copies read before the Stripe check, and a query returns
+   *     those rather than the row a concurrent confirm or close committed since.
+   */
+  private BoxOfficeSale findSaleToConfirm(UUID sessionId, UUID organizationId, UUID staffUserId,
+                                          String paymentIntentId, boolean lockAndReload) {
+    if (lockAndReload) {
+      sessions.findById(sessionId).ifPresent(entityManager::refresh);
+    }
+    requireOpenSession(sessionId, organizationId, staffUserId);
+    BoxOfficeSale pending = sales.findByStripePaymentIntentId(paymentIntentId)
+        .orElseThrow(() -> new ResourceNotFoundException(
+            "No pending box-office sale found for intent " + paymentIntentId));
+    if (lockAndReload) {
+      entityManager.refresh(pending, LockModeType.PESSIMISTIC_WRITE);
+    }
+    if (!pending.getSessionId().equals(sessionId)
+        || !pending.getOrganizationId().equals(organizationId)) {
+      throw new AccessDeniedException("Sale does not belong to this session");
+    }
+    return pending;
+  }
+
+  private BoxOfficeSale completeCardSale(BoxOfficeSale pending, UUID organizationId,
+                                         UUID staffUserId, String paymentIntentId,
+                                         long expectedAmountCents,
+                                         String customerEmail, String customerName) {
     UUID eventId = pending.getEventId();
     List<UUID> seatIds = seatHoldRepository.findAllByOwnerIdAndStatus(staffUserId, HoldStatus.ACTIVE)
         .stream()

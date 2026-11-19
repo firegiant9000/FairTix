@@ -1,17 +1,13 @@
 package com.fairtix.orders.api;
 
-import com.fairtix.auth.application.VerifiedEmailGuard;
 import com.fairtix.auth.domain.CustomUserPrincipal;
 import com.fairtix.orders.application.OrderService;
-import com.fairtix.orders.dto.CreateOrderRequest;
 import com.fairtix.orders.dto.OrderResponse;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import jakarta.validation.Valid;
 
-import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -19,29 +15,19 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.UUID;
 
-@Tag(name = "Orders", description = "Order creation and retrieval")
+/**
+ * Read-only: orders are created by {@code POST /api/payments/checkout}, which
+ * takes the payment and checks queue clearance first.
+ */
+@Tag(name = "Orders", description = "Order retrieval")
 @RestController
 @PreAuthorize("isAuthenticated()")
 public class OrderController {
 
     private final OrderService orderService;
-    private final VerifiedEmailGuard verifiedEmailGuard;
 
-    public OrderController(OrderService orderService, VerifiedEmailGuard verifiedEmailGuard) {
+    public OrderController(OrderService orderService) {
         this.orderService = orderService;
-        this.verifiedEmailGuard = verifiedEmailGuard;
-    }
-
-    @Operation(summary = "Create an order from confirmed holds")
-    @ApiResponse(responseCode = "201", description = "Order created with tickets issued")
-    @ApiResponse(responseCode = "400", description = "Invalid holds")
-    @PostMapping("/api/orders")
-    @ResponseStatus(HttpStatus.CREATED)
-    public OrderResponse createOrder(
-            @AuthenticationPrincipal CustomUserPrincipal principal,
-            @Valid @RequestBody CreateOrderRequest request) {
-        verifiedEmailGuard.requireVerified(principal.getUserId(), "purchasing tickets");
-        return OrderResponse.from(orderService.createOrder(principal.getUserId(), request.holdIds()));
     }
 
     @Operation(summary = "List the current user's orders")
