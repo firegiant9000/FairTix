@@ -1,5 +1,6 @@
 package com.fairtix.events.application;
 
+import com.fairtix.audit.application.AuditService;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.domain.EventStatus;
@@ -22,7 +23,10 @@ import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.tickets.domain.Ticket;
 import com.fairtix.tickets.domain.TicketStatus;
+import com.fairtix.tickets.domain.TicketTransferRequest;
+import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
+import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.performers.domain.Performer;
 import com.fairtix.performers.infrastructure.PerformerRepository;
 import com.fairtix.users.domain.User;
@@ -30,6 +34,9 @@ import com.fairtix.venues.domain.Venue;
 import com.fairtix.venues.infrastructure.VenueRepository;
 
 import jakarta.transaction.Transactional;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
+import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.criteria.JoinType;
 import jakarta.persistence.criteria.Predicate;
 
@@ -44,6 +51,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
@@ -52,6 +60,7 @@ import java.util.UUID;
 public class EventService {
 
   private static final Logger log = LoggerFactory.getLogger(EventService.class);
+  private static final int TRANSFER_LOOKUP_CHUNK = 1000;
 
   private final EventRepository repository;
   private final VenueRepository venueRepository;
@@ -64,6 +73,11 @@ public class EventService {
   private final OrganizationMemberRepository organizationMemberRepository;
   private final OrganizationRepository organizationRepository;
   private final UserRepository userRepository;
+  private final TicketTransferRequestRepository transferRepository;
+  private final AuditService auditService;
+
+  @PersistenceContext
+  private EntityManager entityManager;
 
   public EventService(EventRepository repository, VenueRepository venueRepository,
       PerformerRepository performerRepository,
@@ -73,7 +87,9 @@ public class EventService {
       NotificationGate notificationGate,
       OrganizationMemberRepository organizationMemberRepository,
       OrganizationRepository organizationRepository,
-      UserRepository userRepository) {
+      UserRepository userRepository,
+      TicketTransferRequestRepository transferRepository,
+      AuditService auditService) {
     this.repository = repository;
     this.venueRepository = venueRepository;
     this.performerRepository = performerRepository;
@@ -85,6 +101,8 @@ public class EventService {
     this.organizationMemberRepository = organizationMemberRepository;
     this.organizationRepository = organizationRepository;
     this.userRepository = userRepository;
+    this.transferRepository = transferRepository;
+    this.auditService = auditService;
   }
 
   public Event createEvent(String title, Instant startTime, UUID venueId, UUID organizerId,
@@ -207,14 +225,19 @@ public class EventService {
     return event;
   }
 
+  /**
+   * Lock order, the one {@code RefundService.finalise} uses: the open refund rows of the
+   * event's orders (in {@code processCancellationRefunds}), then the event's VALID ticket rows
+   * one by one in {@link UUID#compareTo} order (finalise's order; PostgreSQL's own uuid order
+   * differs, so no {@code ORDER BY id} lock over several tickets), then their pending transfer
+   * requests in request-id order. {@code TransferService.acceptTransfer} takes one ticket,
+   * then its request. No cap lock is taken here, and none may be taken after a ticket lock.
+   */
   public Event cancelEvent(UUID eventId, UUID callerId, String reason) {
     Event event = repository.findById(eventId)
         .orElseThrow(() -> new ResourceNotFoundException("Event not found: " + eventId));
     verifyOwnership(event, callerId);
     event.cancel(reason);
-
-    // Collect ticket holders before any status changes so all are notified
-    List<Ticket> ticketsToNotify = ticketRepository.findAllByEvent_IdAndStatus(eventId, TicketStatus.VALID);
 
     // Release all ACTIVE holds for this event
     List<SeatHold> activeHolds = seatHoldRepository.findAllBySeat_Event_IdAndStatus(eventId, HoldStatus.ACTIVE);
@@ -224,15 +247,20 @@ public class EventService {
     }
     seatHoldRepository.saveAll(activeHolds);
 
-    // Cancel all VALID tickets and auto-process refunds for completed orders
+    // Approve a refund for every completed order (locks the open refund rows first)
     refundService.processCancellationRefunds(eventId, callerId);
 
-    // Mark any remaining VALID tickets (those without completed orders) as CANCELLED
-    List<Ticket> validTickets = ticketRepository.findAllByEvent_IdAndStatus(eventId, TicketStatus.VALID);
-    for (Ticket ticket : validTickets) {
+    // Lock and re-read the tickets before changing them: an acceptance or a refund may have
+    // committed since they were read, and writing a stale copy back would undo it.
+    List<Ticket> ticketsToNotify = lockValidTickets(eventId);
+
+    // Cancel the locked tickets (finalising the refunds approved above marks them REFUNDED
+    // later), then their pending transfers: a cancelled ticket can't change hands.
+    for (Ticket ticket : ticketsToNotify) {
       ticket.setStatus(TicketStatus.CANCELLED);
     }
-    ticketRepository.saveAll(validTickets);
+    ticketRepository.saveAll(ticketsToNotify);
+    cancelPendingTransfers(ticketsToNotify, eventId, callerId);
 
     // Send cancellation emails after the transaction commits
     List<Ticket> emailTargets = List.copyOf(ticketsToNotify);
@@ -248,6 +276,61 @@ public class EventService {
     });
 
     return event;
+  }
+
+  /**
+   * The event's VALID tickets, each locked in {@link UUID#compareTo} order and read after its
+   * lock. A ticket that stopped being VALID while its lock was awaited is left out.
+   */
+  private List<Ticket> lockValidTickets(UUID eventId) {
+    List<UUID> candidates = ticketRepository.findValidTicketIdsByEvent(eventId).stream()
+        .sorted()
+        .toList();
+    List<Ticket> valid = new ArrayList<>();
+    for (UUID id : candidates) {
+      if (ticketRepository.lockIfValid(id).isEmpty()) {
+        continue;
+      }
+      Ticket ticket = entityManager.find(Ticket.class, id);
+      // Under open-in-view the context may hold a copy read before the lock.
+      entityManager.refresh(ticket);
+      valid.add(ticket);
+    }
+    return valid;
+  }
+
+  /**
+   * Ends the pending transfer requests of the cancelled tickets. Each request row is locked
+   * in request-id order and re-read, as {@code RefundService.finalise} does, so a reject,
+   * cancel or expiry committed since the query is not overwritten.
+   */
+  private void cancelPendingTransfers(List<Ticket> tickets, UUID eventId, UUID actorId) {
+    if (tickets.isEmpty()) {
+      return;
+    }
+    // In chunks: one bind parameter per ticket would pass the JDBC driver's limit on a
+    // stadium-size event and fail the whole cancellation.
+    List<UUID> ticketIds = tickets.stream().map(Ticket::getId).toList();
+    List<TicketTransferRequest> found = new ArrayList<>();
+    for (int from = 0; from < ticketIds.size(); from += TRANSFER_LOOKUP_CHUNK) {
+      found.addAll(transferRepository.findByTicket_IdInAndStatus(
+          ticketIds.subList(from, Math.min(from + TRANSFER_LOOKUP_CHUNK, ticketIds.size())),
+          TransferStatus.PENDING));
+    }
+    List<TicketTransferRequest> pending = found.stream()
+        .sorted(Comparator.comparing(TicketTransferRequest::getId))
+        .toList();
+    for (TicketTransferRequest request : pending) {
+      entityManager.refresh(request, LockModeType.PESSIMISTIC_WRITE);
+      if (request.getStatus() != TransferStatus.PENDING) {
+        continue;
+      }
+      request.setStatus(TransferStatus.CANCELLED);
+      request.setResolvedAt(Instant.now());
+      transferRepository.save(request);
+      auditService.logInCurrentTransaction(actorId, "TRANSFER_CANCELLED", "TICKET",
+          request.getTicket().getId(), "event cancelled, event=" + eventId);
+    }
   }
 
   private void sendCancellationEmail(User user, String eventTitle, String eventDate) {

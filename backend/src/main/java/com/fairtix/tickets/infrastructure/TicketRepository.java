@@ -48,6 +48,21 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
   /** Cancel cascade: find all tickets for a given event with a given status. */
   List<Ticket> findAllByEvent_IdAndStatus(UUID eventId, TicketStatus status);
 
+  @Query(value = "SELECT id FROM tickets WHERE event_id = :eventId AND status = 'VALID'",
+      nativeQuery = true)
+  List<UUID> findValidTicketIdsByEvent(@Param("eventId") UUID eventId);
+
+  /**
+   * Locks one ticket row if it is VALID, returning its id; empty if it is not (re-checked
+   * after waiting for the lock). A native query on {@code tickets} alone: a locking read that
+   * joins another table, as an entity refresh does, loses a row whose join column changed
+   * while it waited, e.g. a transfer's new owner. One row per call so callers can lock
+   * several in {@link UUID#compareTo} order, which is not PostgreSQL's uuid order.
+   */
+  @Query(value = "SELECT id FROM tickets WHERE id = :id AND status = 'VALID' FOR UPDATE",
+      nativeQuery = true)
+  Optional<UUID> lockIfValid(@Param("id") UUID id);
+
   @Query(value = "SELECT CAST(issued_at AS DATE), COUNT(*) FROM tickets WHERE status = 'VALID' AND issued_at >= :since GROUP BY CAST(issued_at AS DATE) ORDER BY 1", nativeQuery = true)
   List<Object[]> soldPerDay(@Param("since") Instant since);
 }
