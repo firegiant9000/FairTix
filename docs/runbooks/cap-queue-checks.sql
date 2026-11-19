@@ -129,22 +129,38 @@ GROUP BY granted;
 --     AND s.event_id = (SELECT s2.event_id FROM seat_holds h2
 --                       JOIN seats s2 ON s2.id = h2.seat_id
 --                       WHERE h2.id = '<a listed hold id>');
--- Refund only if that returns no rows.
--- Exception to every hold rule in this comment: unbound = true (STRIPE_ORDER_FAILED with
--- error=PaymentIntentUnbound) means checkout answered 409 PAYMENT_NOT_USABLE
--- to a paid intent with no fairtix_user_id and no fairtix_channel, more than
--- 24 hours old. No checkout can ever use that intent, so its holds don't gate
--- the refund and "contact the customer to finish the order" doesn't apply.
--- But nothing on the intent proves FairTix online checkout created it (it may
--- be a Dashboard charge, or a box-office intent from before fairtix_channel
--- existed), so these rows are always escalate = true and only the repo owner
--- refunds them, after confirming the origin in Stripe and checking for a
--- dispute. user_id is whoever submitted the intent, not a verified owner; a
--- second submitter shows up as a second row for the same intent. Intents that got an
+-- Refund only if that returns no rows. Intents that got an
 -- order on a later attempt have a payment_records row (transaction_id is the
--- intent id) and are left out here. Expect no rows.
+-- intent id) and are left out here. Expect no rows. A charge refunded without an
+-- order stays listed until its attempts leave the 14-day window, so check
+-- Stripe for an existing refund before acting on a row.
 --
--- Refund a row only when holds_still_confirmed = 0. While any of the charge's
+-- unbound = true rows: none of the hold rules below or above apply; only this
+-- paragraph does. They come from STRIPE_ORDER_FAILED with
+-- error=PaymentIntentUnbound: checkout answered 409 PAYMENT_NOT_USABLE to a
+-- paid intent with no fairtix_user_id and no fairtix_channel metadata, more
+-- than 24 hours old. No checkout can ever use that intent, so its holds don't
+-- gate a refund and contacting the customer to finish the order doesn't apply.
+-- Nothing on the intent proves FairTix online checkout created it (it may be a
+-- Dashboard charge, or a box-office intent from before fairtix_channel
+-- existed), so these rows are always escalate = true and only the repo owner
+-- refunds them, once all of these hold:
+--   1. In Stripe, the intent's metadata has neither fairtix_user_id nor
+--      fairtix_channel (fairtix_org_id may be present: Connect online intents
+--      carry it), and it was created before the owner-binding deploy (#293).
+--   2. SELECT 1 FROM box_office_sales
+--      WHERE stripe_payment_intent_id = '<payment_intent>';
+--      returns no rows.
+--   3. The amount charged equals the listed holds' seat prices:
+--      SELECT SUM(s.price) FROM seat_holds h JOIN seats s ON s.id = h.seat_id
+--      WHERE h.id IN ('<listed hold ids>');
+--      (a seat price changed since the charge also explains a difference).
+--   4. The charge has no dispute, open or closed.
+-- If any of 1 to 3 fails, don't refund: investigate where the charge came from.
+-- user_id is whoever submitted the intent, not a verified owner; a second
+-- submitter shows up as a second row for the same intent.
+--
+-- Rows that are not unbound: refund only when holds_still_confirmed = 0. While any of the charge's
 -- holds is still CONFIRMED, any later checkout request with this intent id (a
 -- customer retry, a double submit, a direct API call) can still create the
 -- order. Before refunding, check the charge in Stripe for any dispute (open or
@@ -161,8 +177,9 @@ GROUP BY granted;
 -- readable hold ids: do not refund, investigate. busy_only = true means every
 -- attempt so far failed on a busy lock.
 --
--- escalate = true: the first failure is more than 7 days old and the charge is
--- still not refundable (some hold CONFIRMED, or unreadable hold ids). Attempts
+-- escalate = true: any unbound row, whatever its age or holds (see above), or
+-- the first failure is more than 7 days old and the charge is still not
+-- refundable (some hold CONFIRMED, or unreadable hold ids). For the latter: attempts
 -- drop out of this 14-day window one by one, so after day 14 a row describes
 -- only its later attempts and can turn "refundable" (0) without being so:
 -- never refund an intent that was escalated on the strength of a later 0. Don't
