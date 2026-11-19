@@ -39,6 +39,17 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, UUID> {
   boolean existsBySeat_IdAndStatusInAndIdNot(UUID seatId, Collection<HoldStatus> statuses, UUID id);
 
   /**
+   * Payment-intent extension: the caller's holds as plain values. Loading the
+   * entities would put each {@code Seat} in the persistence context, and a
+   * concurrent extension's version bump would then fail the seat lock query
+   * with an optimistic-lock conflict (#298).
+   */
+  @Query("SELECT new com.fairtix.inventory.infrastructure.HoldSeatRef(h.id, h.status, h.seat.id)"
+      + " FROM SeatHold h WHERE h.id IN :ids AND h.ownerId = :ownerId")
+  List<HoldSeatRef> findRefsByIdInAndOwnerId(@Param("ids") Collection<UUID> ids,
+      @Param("ownerId") UUID ownerId);
+
+  /**
    * Payment-intent extension: sets {@code expiresAt} only, and only on holds that
    * are still {@code status} in the database and expire before {@code extendTo}.
    * A bulk update, so a hold the sweep just expired is never written back from a

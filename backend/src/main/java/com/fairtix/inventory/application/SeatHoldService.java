@@ -8,6 +8,7 @@ import com.fairtix.inventory.domain.HoldStatus;
 import com.fairtix.inventory.domain.Seat;
 import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.domain.SeatStatus;
+import com.fairtix.inventory.infrastructure.HoldSeatRef;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.queue.application.QueueService;
@@ -296,14 +297,17 @@ public class SeatHoldService {
    *
    * <p>Order matters, and the method writes through bulk queries only:
    * <ol>
+   *   <li>The holds are read as plain values, never as entities, so no {@code Seat}
+   *       is in the persistence context when the seats are locked. A managed seat
+   *       would fail the lock query with an optimistic-lock conflict whenever a
+   *       concurrent extension for the same holds (a double click) committed
+   *       first (#298).</li>
    *   <li>The expiry is set by a conditional update that takes the hold-row locks
    *       first, the same order as the sweep (hold rows, then seat), so the two
    *       cannot deadlock. It never rewrites {@code status}, so a hold the sweep
-   *       just expired stays expired.</li>
+   *       just expired stays expired. A concurrent extension waits here.</li>
    *   <li>The seats are locked in sorted order, and the hold and seat states are
-   *       re-read from the database (the managed copies loaded above may be
-   *       stale). If a seat changed since it was loaded, Hibernate already fails
-   *       the lock query with an optimistic-lock conflict (a 409).</li>
+   *       re-read from the database (the values read in step 1 may be stale).</li>
    *   <li>The seat versions are bumped, so a sweep that read a seat before this
    *       commits fails on its seat update and rolls back its hold changes.</li>
    * </ol>
@@ -314,22 +318,27 @@ public class SeatHoldService {
    */
   @Transactional
   public void extendConfirmedHoldsForPayment(List<UUID> holdIds, UUID ownerId) {
-    List<SeatHold> holds = holdIds.stream().distinct()
-        .map(id -> seatHoldRepository.findByIdAndOwnerId(id, ownerId)
-            .orElseThrow(() -> new SeatHoldNotFoundException("Hold not found: " + id)))
-        .toList();
-    for (SeatHold hold : holds) {
-      if (hold.getStatus() != HoldStatus.CONFIRMED) {
-        throw new SeatHoldConflictException(
-            "Hold " + hold.getId() + " is not confirmed (status: " + hold.getStatus() + ")");
+    List<UUID> ids = holdIds.stream().distinct().toList();
+    Map<UUID, HoldSeatRef> refs = seatHoldRepository.findRefsByIdInAndOwnerId(ids, ownerId).stream()
+        .collect(Collectors.toMap(HoldSeatRef::id, Function.identity()));
+    // Not-found first, then status, so a missing hold wins over an unconfirmed one.
+    for (UUID id : ids) {
+      if (!refs.containsKey(id)) {
+        throw new SeatHoldNotFoundException("Hold not found: " + id);
       }
     }
-    List<UUID> ids = holds.stream().map(SeatHold::getId).toList();
+    for (UUID id : ids) {
+      HoldSeatRef ref = refs.get(id);
+      if (ref.status() != HoldStatus.CONFIRMED) {
+        throw new SeatHoldConflictException(
+            "Hold " + id + " is not confirmed (status: " + ref.status() + ")");
+      }
+    }
 
     Instant extendTo = Instant.now().plusSeconds(defaultDurationMinutes * 60L);
     seatHoldRepository.extendExpiry(ids, HoldStatus.CONFIRMED, extendTo);
 
-    List<UUID> seatIds = holds.stream().map(h -> h.getSeat().getId()).distinct().sorted().toList();
+    List<UUID> seatIds = refs.values().stream().map(HoldSeatRef::seatId).distinct().sorted().toList();
     seatRepository.findAndLockByIdIn(seatIds);
     if (seatHoldRepository.countByIdInAndStatusAndSeatStatus(ids, HoldStatus.CONFIRMED, SeatStatus.BOOKED)
         != ids.size()) {

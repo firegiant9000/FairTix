@@ -271,9 +271,8 @@ class ConfirmedHoldExpiryIT extends PostgresIT {
 
   /**
    * The sweep reaches the hold row first and commits; the extension's conditional
-   * update then matches nothing, and its seat lock finds a newer seat version than
-   * the copy it loaded with the hold, so it fails (a 409) and the hold stays
-   * EXPIRED. A {@code saveAll} of the loaded holds here would have written the
+   * update then matches nothing, and its re-check after the seat lock finds the hold
+   * no longer CONFIRMED, so it fails (a 409) and the hold stays EXPIRED. A {@code saveAll} of the loaded holds here would have written the
    * hold back to CONFIRMED on an AVAILABLE seat.
    */
   @Test
