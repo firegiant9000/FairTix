@@ -384,4 +384,58 @@ class OnlinePaymentIntentServiceTest {
         "pi_done", IntentInvalidationReason.COMPLETED, NOW);
     verifyNoInteractions(stripe, audit);
   }
+
+  private static final ConnectContext ORG_X = new ConnectContext("org-x", "acct_x", 250L, "Org X");
+
+  private void storedRow(String intentId, UUID user, List<UUID> holds, ConnectContext connect) {
+    when(repo.findByStripePaymentIntentId(intentId)).thenReturn(Optional.of(
+        new OnlinePaymentIntent(user, StripeIdempotencyKeys.holdSetHash(holds), AMOUNT,
+            StripeIdempotencyKeys.routingHash(connect), intentId)));
+  }
+
+  @Test
+  void isBoundTo_theRowsOwnUserHoldsAndRouting_isTrue() {
+    storedRow("pi_bound", USER, HOLDS, ORG_X);
+
+    assertEquals(true, service.isBoundTo("pi_bound", USER, HOLDS, ORG_X));
+    verifyNoInteractions(stripe, audit);
+  }
+
+  @Test
+  void isBoundTo_otherHoldsOfTheSameTotal_isFalse() {
+    storedRow("pi_bound", USER, HOLDS, ORG_X);
+
+    assertEquals(false, service.isBoundTo("pi_bound", USER, List.of(UUID.randomUUID()), ORG_X));
+  }
+
+  @Test
+  void isBoundTo_otherRouting_isFalse() {
+    storedRow("pi_bound", USER, HOLDS, ORG_X);
+    ConnectContext otherAccount = new ConnectContext("org-x", "acct_x2", 250L, "Org X");
+
+    assertEquals(false, service.isBoundTo("pi_bound", USER, HOLDS, otherAccount));
+    assertEquals(false, service.isBoundTo("pi_bound", USER, HOLDS, null));
+  }
+
+  @Test
+  void isBoundTo_otherUser_isFalse() {
+    storedRow("pi_bound", USER, HOLDS, ORG_X);
+
+    assertEquals(false, service.isBoundTo("pi_bound", UUID.randomUUID(), HOLDS, ORG_X));
+  }
+
+  @Test
+  void isBoundTo_noStoredRow_isFalse() {
+    when(repo.findByStripePaymentIntentId("pi_legacy")).thenReturn(Optional.empty());
+
+    assertEquals(false, service.isBoundTo("pi_legacy", USER, HOLDS, null));
+  }
+
+  @Test
+  void isBoundTo_holdOrderDoesNotMatter() {
+    UUID holdB = UUID.randomUUID();
+    storedRow("pi_two", USER, List.of(HOLD_A, holdB), null);
+
+    assertEquals(true, service.isBoundTo("pi_two", USER, List.of(holdB, HOLD_A), null));
+  }
 }

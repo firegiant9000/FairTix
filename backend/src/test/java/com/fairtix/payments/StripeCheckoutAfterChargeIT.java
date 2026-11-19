@@ -26,7 +26,10 @@ import com.fairtix.inventory.domain.Seat;
 import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.orders.application.OrderService;
+import com.fairtix.payments.application.StripeIdempotencyKeys;
 import com.fairtix.payments.application.StripePaymentService;
+import com.fairtix.payments.domain.OnlinePaymentIntent;
+import com.fairtix.payments.infrastructure.OnlinePaymentIntentRepository;
 import com.fairtix.support.PostgresIT;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
@@ -69,6 +72,7 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
   @Autowired private JdbcTemplate jdbcTemplate;
   @Autowired private DataSource dataSource;
   @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
+  @Autowired private OnlinePaymentIntentRepository onlinePaymentIntentRepository;
 
   @MockitoSpyBean private StripePaymentService stripePaymentService;
   @MockitoSpyBean private OrderService orderService;
@@ -90,6 +94,10 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
     hold = seatHoldService.createHold(event.getId(), List.of(seat.getId()), buyer.getId(), 10).get(0);
     seatHoldService.confirmHold(hold.getId(), buyer.getId());
     doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(eq(INTENT), anyLong(), any());
+    // The row /api/payments/intent stores for this user and hold (no Connect org: direct routing).
+    onlinePaymentIntentRepository.save(new OnlinePaymentIntent(buyer.getId(),
+        StripeIdempotencyKeys.holdSetHash(List.of(hold.getId())), 4000L,
+        StripeIdempotencyKeys.routingHash(null), INTENT));
   }
 
   /**

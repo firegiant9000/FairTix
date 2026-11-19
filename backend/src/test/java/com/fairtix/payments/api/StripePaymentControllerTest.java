@@ -118,6 +118,11 @@ class StripePaymentControllerTest {
     confirmedHold = new SeatHold(seat, user.getId(), Instant.now().plusSeconds(600));
     confirmedHold.setStatus(HoldStatus.CONFIRMED);
     confirmedHold = seatHoldRepository.save(confirmedHold);
+
+    // These cases are about the controller's flow after verification, not the intent binding
+    // (StripeIntentBindingIT covers that against stored rows), so every intent counts as bound.
+    doReturn(true).when(onlinePaymentIntentService)
+        .isBoundTo(anyString(), any(), any(), any());
   }
 
   @Test
@@ -333,20 +338,22 @@ class StripePaymentControllerTest {
         String.class, user.getId()))
         .singleElement().asString()
         .contains("stripe_intent=pi_two_orgs,")
-        .contains("error=ResponseStatusException");
+        .contains("error=BindingNotChecked (ResponseStatusException)");
     assertThat(jdbcTemplate.queryForObject(
         "SELECT COUNT(*) FROM audit_logs WHERE action = 'SALES_LEDGER_WRITE_FAILED' AND user_id = ?",
         Integer.class, user.getId())).isZero();
   }
 
+  /**
+   * The org lookup is part of checking the intent's payout routing, so a failure there means the
+   * binding is unknown: no order, and the charge is on record for the manual refund runbook.
+   */
   @Test
-  void checkout_orgLookupFailsBeforeTheOrder_stillCreatesItAndRecordsTheSale() throws Exception {
+  void checkout_orgLookupFailsBeforeTheOrder_createsNoOrderAndAuditsBindingNotChecked()
+      throws Exception {
     doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
     java.util.UUID orgId = attachConnectOrg();
-    Organization org = organizationRepository.findById(orgId).orElseThrow();
-    // The first lookup (before the order) fails; the retry after the order succeeds.
     doThrow(new org.springframework.dao.DataAccessResourceFailureException("db blip"))
-        .doReturn(java.util.Optional.of(org))
         .when(organizationRepository).findById(orgId);
 
     String body = """
@@ -356,15 +363,18 @@ class StripePaymentControllerTest {
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
             .contentType(MediaType.APPLICATION_JSON)
             .content(body))
-        .andExpect(status().isCreated())
-        .andExpect(jsonPath("$.orderStatus").value("COMPLETED"));
+        .andExpect(status().isInternalServerError());
 
+    verify(orderService, never()).createOrderWithStripePayment(any(), any(), anyString());
+    assertThat(jdbcTemplate.queryForList(
+        "SELECT details FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED' AND user_id = ?",
+        String.class, user.getId()))
+        .singleElement().asString()
+        .contains("stripe_intent=pi_lookup_blip,")
+        .contains("error=BindingNotChecked (DataAccessResourceFailureException)");
     assertThat(jdbcTemplate.queryForObject(
-        "SELECT COUNT(*) FROM org_sales_ledger WHERE channel = 'ONLINE' AND source_id = 'pi_lookup_blip'",
-        Integer.class)).isEqualTo(1);
-    assertThat(jdbcTemplate.queryForObject(
-        "SELECT COUNT(*) FROM audit_logs WHERE action IN ('STRIPE_ORDER_FAILED', 'SALES_LEDGER_WRITE_FAILED')"
-            + " AND user_id = ?", Integer.class, user.getId())).isZero();
+        "SELECT COUNT(*) FROM org_sales_ledger WHERE source_id = 'pi_lookup_blip'",
+        Integer.class)).isZero();
   }
 
   @Test

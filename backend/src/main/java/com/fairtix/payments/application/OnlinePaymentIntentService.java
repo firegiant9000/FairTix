@@ -123,6 +123,26 @@ public class OnlinePaymentIntentService {
   }
 
   /**
+   * Whether the intent was created by {@link #clientSecretFor} for this user, this hold set and
+   * this payout routing. Stripe's verification only proves the charge is the caller's and covers
+   * the amount; without this check, an intent paid for one hold set could buy another of the same
+   * total, and the funds would go to the first organizer's account.
+   *
+   * <p>The row's status is not checked: a completed intent's resubmit is answered from its order
+   * before this runs, and an invalidated one was canceled at Stripe, so it never verifies. False
+   * when there is no row: a legacy intent created before rows were stored, or an invalidated row
+   * the retention job has deleted.
+   */
+  public boolean isBoundTo(String stripePaymentIntentId, UUID userId, List<UUID> holdIds,
+      ConnectContext connect) {
+    return repository.findByStripePaymentIntentId(stripePaymentIntentId)
+        .filter(row -> userId.equals(row.getUserId()))
+        .filter(row -> StripeIdempotencyKeys.holdSetHash(holdIds).equals(row.getHoldSetHash()))
+        .filter(row -> StripeIdempotencyKeys.routingHash(connect).equals(row.getRoutingHash()))
+        .isPresent();
+  }
+
+  /**
    * Ends the ACTIVE row for an intent whose order has been created, so retention can delete it.
    * Returns the number of rows changed: 0 when there is no ACTIVE row (already ended, or an
    * intent created before rows were stored).

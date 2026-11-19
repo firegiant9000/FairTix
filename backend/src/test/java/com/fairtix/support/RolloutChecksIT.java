@@ -231,6 +231,39 @@ class RolloutChecksIT extends PostgresIT {
   }
 
   /**
+   * A 409 for an intent not bound to the submitted holds, and a failed binding check: their
+   * listed holds may not be the paid ones either.
+   */
+  @Test
+  void stripeChargesWithoutOrder_marksIntentNotBoundAndBindingNotCheckedRows() throws Exception {
+    UUID other = newUser("bindingunchecked@test.com");
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), other,
+        "Charge succeeded, but checking that the intent was made for these holds failed;"
+            + " order not created: stripe_intent=pi_unchecked, holdIds="
+            + List.of(UUID.randomUUID()) + ", error=BindingNotChecked (ResponseStatusException)");
+    UUID user = newUser("notbound@test.com");
+    // Same details format as PaymentController writes for IntentNotBound.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), user,
+        "Charge succeeded for a different user, hold set or payout routing (or an intent with"
+            + " no stored row); order not created: stripe_intent=pi_not_bound, holdIds="
+            + List.of(UUID.randomUUID()) + ", error=IntentNotBound");
+
+    Map<String, Object> row = jdbcTemplate.queryForList(checks().get("stripe_charges_without_order"))
+        .stream().filter(r -> "pi_not_bound".equals(r.get("payment_intent"))).findFirst().orElseThrow();
+    assertThat(row).containsEntry("not_verified", true);
+    Map<String, Object> unchecked = jdbcTemplate.queryForList(
+            checks().get("stripe_charges_without_order"))
+        .stream().filter(r -> "pi_unchecked".equals(r.get("payment_intent"))).findFirst().orElseThrow();
+    assertThat(unchecked).containsEntry("not_verified", true);
+  }
+
+  /**
    * One attempt with readable hold ids (none confirmed) and one without: MAX alone
    * would ignore the NULL and show 0, listing the charge as safe to refund.
    */
