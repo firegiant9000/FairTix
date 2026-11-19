@@ -321,16 +321,17 @@ class SecurityAcceptanceTest {
           .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
     }
 
+    /** The unpaid order path is gone: only GET is mapped on /api/orders. */
     @Test
-    void orderCreation_rejectsEmptyHoldIds() throws Exception {
+    void orderCreation_withoutPayment_isNotAnEndpoint() throws Exception {
       mockMvc.perform(post("/api/orders")
               .with(WithMockPrincipal.user(regularUser.getId(), regularUser.getEmail()))
               .contentType(MediaType.APPLICATION_JSON)
               .content("""
-                  { "holdIds": [] }
+                  { "holdIds": ["00000000-0000-0000-0000-000000000001"] }
                   """))
-          .andExpect(status().isBadRequest())
-          .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+          .andExpect(status().isMethodNotAllowed())
+          .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"));
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.fairtix.payments.api;
 
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.payments.infrastructure.PaymentRecordRepository;
+import com.fairtix.payments.infrastructure.StripeWebhookEventRepository;
 import com.fairtix.refunds.domain.RefundRequest;
 import com.fairtix.refunds.domain.RefundStatus;
 import com.fairtix.refunds.infrastructure.RefundRepository;
@@ -28,6 +29,7 @@ import org.springframework.web.bind.annotation.*;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -38,6 +40,11 @@ public class StripeWebhookController {
 
   private static final Logger log = LoggerFactory.getLogger(StripeWebhookController.class);
   private static final UUID SYSTEM_ACTOR = new UUID(0L, 0L);
+  /** The event types this controller handles, and the object each one carries. */
+  private static final Map<String, Class<? extends StripeObject>> HANDLED_TYPES = Map.of(
+      "payment_intent.succeeded", PaymentIntent.class,
+      "charge.refunded", Charge.class,
+      "payment_intent.payment_failed", PaymentIntent.class);
 
   @Value("${stripe.enabled:false}")
   private boolean stripeEnabled;
@@ -48,12 +55,15 @@ public class StripeWebhookController {
   private final PaymentRecordRepository paymentRecordRepository;
   private final RefundRepository refundRepository;
   private final AuditService auditService;
+  private final StripeWebhookEventRepository webhookEventRepository;
 
   public StripeWebhookController(PaymentRecordRepository paymentRecordRepository,
-      RefundRepository refundRepository, AuditService auditService) {
+      RefundRepository refundRepository, AuditService auditService,
+      StripeWebhookEventRepository webhookEventRepository) {
     this.paymentRecordRepository = paymentRecordRepository;
     this.refundRepository = refundRepository;
     this.auditService = auditService;
+    this.webhookEventRepository = webhookEventRepository;
   }
 
   @PostConstruct
@@ -83,11 +93,32 @@ public class StripeWebhookController {
       return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
     }
 
+    Class<? extends StripeObject> objectType = HANDLED_TYPES.get(event.getType());
+    if (objectType == null) {
+      log.debug("Unhandled Stripe webhook event type: {}", event.getType());
+      return ResponseEntity.ok().build();
+    }
+
+    // An event whose object can't be read (logged at ERROR) is not recorded, so resending it
+    // once the endpoint's API version is fixed still processes it.
+    if (getObject(event, objectType).isEmpty()) {
+      return ResponseEntity.ok().build();
+    }
+
+    // In this transaction, before the handling: a redelivered event finds its row and is not
+    // processed again; if the handling fails, the row rolls back with it and Stripe's retry is
+    // processed. The handlers audit with logInCurrentTransaction for the same reason.
+    if (webhookEventRepository.insertIfAbsent(event.getId(), event.getType()) == 0) {
+      log.info("Stripe webhook {} ({}) was already processed; redelivery ignored",
+          event.getId(), event.getType());
+      return ResponseEntity.ok().build();
+    }
+
     switch (event.getType()) {
       case "payment_intent.succeeded" -> handlePaymentIntentSucceeded(event);
       case "charge.refunded" -> handleChargeRefunded(event);
       case "payment_intent.payment_failed" -> handlePaymentIntentFailed(event);
-      default -> log.debug("Unhandled Stripe webhook event type: {}", event.getType());
+      default -> throw new IllegalStateException("Unreachable: " + event.getType());
     }
 
     return ResponseEntity.ok().build();
@@ -99,7 +130,7 @@ public class StripeWebhookController {
       boolean alreadyRecorded = paymentRecordRepository.findByTransactionId(piId).isPresent();
       if (!alreadyRecorded) {
         log.warn("payment_intent.succeeded for {} has no matching order — manual review needed", piId);
-        auditService.log(SYSTEM_ACTOR, "STRIPE_UNMATCHED_PAYMENT", "PAYMENT", null,
+        auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_UNMATCHED_PAYMENT", "PAYMENT", null,
             "paymentIntentId=" + piId + " succeeded but no FairTix order found");
       }
     });
@@ -115,7 +146,7 @@ public class StripeWebhookController {
         // stripe_charges_without_order), or checkout is still creating it and the
         // payment record commits with the order. Put the refund on record so the
         // runbook check refunds_on_live_orders can match it to an order later.
-        auditService.log(SYSTEM_ACTOR, "STRIPE_REFUND_UNMATCHED", "PAYMENT", null,
+        auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_REFUND_UNMATCHED", "PAYMENT", null,
             "Stripe refund with no payment record yet: stripe_intent=" + piId
                 + ", charge=" + charge.getId()
                 + ", amount_refunded_cents=" + amountRefundedCents(charge));
@@ -133,7 +164,7 @@ public class StripeWebhookController {
           // Conditional update, not save(): finalise may hold this row and be
           // writing stripe_refund_id, which a full-row save would wipe.
           if (refundRepository.completeIfActive(refundRequest.getId(), Instant.now()) == 1) {
-            auditService.log(SYSTEM_ACTOR, "REFUND_COMPLETED", "REFUND", refundRequest.getId(),
+            auditService.logInCurrentTransaction(SYSTEM_ACTOR, "REFUND_COMPLETED", "REFUND", refundRequest.getId(),
                 "Completed via Stripe charge.refunded for paymentIntent=" + piId);
           }
           return;
@@ -171,7 +202,7 @@ public class StripeWebhookController {
     log.error("Stripe refunded a live order with no refund request: stripe_intent={}, charge={},"
         + " order={}, amount_refunded_cents={}, accounted_cents={}",
         piId, charge.getId(), orderId, refundedCents, accountedCents);
-    auditService.log(SYSTEM_ACTOR, "REFUND_ON_LIVE_ORDER", "ORDER", orderId,
+    auditService.logInCurrentTransaction(SYSTEM_ACTOR, "REFUND_ON_LIVE_ORDER", "ORDER", orderId,
         "Stripe refund with no refund request: stripe_intent=" + piId
             + ", charge=" + charge.getId()
             + ", amount_refunded_cents=" + refundedCents
@@ -182,7 +213,7 @@ public class StripeWebhookController {
     getObject(event, PaymentIntent.class).ifPresent(pi -> {
       String reason = pi.getLastPaymentError() != null
           ? pi.getLastPaymentError().getMessage() : "unknown";
-      auditService.log(SYSTEM_ACTOR, "STRIPE_PAYMENT_FAILED", "PAYMENT", null,
+      auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_PAYMENT_FAILED", "PAYMENT", null,
           "paymentIntentId=" + pi.getId() + " failed: " + reason);
     });
   }
@@ -204,6 +235,10 @@ public class StripeWebhookController {
       log.error("Stripe webhook {} ({}) could not be deserialized: event API version {},"
           + " library API version {}; the event was not processed",
           event.getId(), event.getType(), event.getApiVersion(), Stripe.API_VERSION);
+    } else if (!type.isInstance(object.get())) {
+      log.error("Stripe webhook {} ({}) carries a {}, expected a {}; the event was not processed",
+          event.getId(), event.getType(), object.get().getClass().getSimpleName(),
+          type.getSimpleName());
     }
     return object
         .filter(type::isInstance)

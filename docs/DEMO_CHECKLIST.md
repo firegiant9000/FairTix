@@ -24,48 +24,40 @@ curl http://localhost:8080/actuator/health
 # Expected: {"status":"UP"}
 ```
 
-### 3. Create admin user
+### 3. Seed demo users (and events, if missing)
 
-Register via the UI or API, then promote:
-
-```bash
-# Register
-curl -s -c cookies.txt -X POST http://localhost:8080/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@fairtix.dev","password":"Admin1234!","firstName":"Demo","lastName":"Admin"}'
-
-# Get the user ID
-USER_ID=$(curl -s -b cookies.txt http://localhost:8080/api/auth/me | jq -r '.id')
-
-# Promote — requires an existing admin; for the first admin, run directly in Postgres:
-# UPDATE users SET role = 'ADMIN' WHERE email = 'admin@fairtix.dev';
-docker compose exec postgres psql -U fairtix -d fairtix \
-  -c "UPDATE users SET role = 'ADMIN' WHERE email = 'admin@fairtix.dev';"
-```
-
-### 4. Create venue (required for seed data)
+From the repo root, with `.env` in place:
 
 ```bash
-curl -s -b cookies.txt -X POST http://localhost:8080/api/venues \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Demo Venue","address":"123 Main St","city":"San Francisco","state":"CA","country":"US","capacity":500,"latitude":37.7749,"longitude":-122.4194}'
+./scripts/demo-seed.sh          # seed users, print the Saints vs Panthers ids
+./scripts/demo-seed.sh reset    # between runs: release that event's seats, delete its holds and tickets
 ```
 
-Note the returned venue ID and update `seed_test_events.sql` if it differs from `3ed462ed-27c0-4cc9-8510-aaad0187034e`.
+It registers `admin@fairtix.demo` (promoted to ADMIN), `userA@fairtix.demo` and
+`userB@fairtix.demo`, all with the password `Demo#2026!`, and marks them email-verified.
+It refuses any API other than localhost: the password is published. The demo events
+come from Flyway (`V27__seed_demo_events.sql`, `V29__seed_extra_demo_events.sql`);
+the script re-applies them if they are missing. No other seed step is needed.
 
-### 5. Load seed data
+Seeded events used below:
+- **Saints vs Panthers**: no queue, cap 6
+- **Jazz Fest 2026**: no queue, cap 4
+- **Taylor Swift**: queue required, cap 2
+- **Coachella**: cap 1
+
+To create an admin by hand instead (any account, for example one made at `/signup`):
 
 ```bash
-# Verify the admin UUID and venue UUID in seed_test_events.sql match your environment, then:
-docker compose exec -T postgres psql -U fairtix -d fairtix < seed_test_events.sql
+# psql user and database come from .env (POSTGRES_USER, POSTGRES_DB)
+docker compose exec postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE users SET role = '"'"'ADMIN'"'"' WHERE email = '"'"'you@example.com'"'"';"'
 ```
 
-This creates:
-- **Midnight Jazz Night** (2026-05-10) — no queue, purchase cap 4, 3 sections, $30–$85
-- **Summer Rock Festival** (2026-07-04) — queue required (cap 200), 4 sections, $35–$150
-- **Stand-Up Comedy Showcase** (2026-06-15) — no queue, no cap, 2 sections, $25–$45
+Log in again afterwards so the session picks up the role. Later admins are promoted
+from `/admin/users` (`PATCH /api/admin/users/{id}/promote`). The deployment variant is
+in [DEPLOY.md](../DEPLOY.md).
 
-### 6. Start the frontend
+### 4. Start the frontend
 
 ```bash
 cd frontend/webpages && npm start
@@ -78,7 +70,8 @@ cd frontend/webpages && npm start
 
 - [ ] `docker compose ps` shows all 4 services as `running`
 - [ ] `/actuator/health` returns `{"status":"UP"}`
-- [ ] Flyway applied all 26 migrations (check backend logs)
+- [ ] Flyway applied every migration: the count in the backend log matches
+      `ls backend/src/main/resources/db/migration | wc -l`
 - [ ] `SELECT count(*) FROM events;` returns ≥ 3
 - [ ] `SELECT count(*) FROM seats;` returns ≥ 50
 - [ ] MailHog UI loads at http://localhost:8025
@@ -91,13 +84,13 @@ cd frontend/webpages && npm start
 
 ### Register → Browse → Queue → Hold → Checkout → Ticket → ICS Export
 
-1. **Register** — navigate to `/register`, create a new account
-2. **Browse events** — navigate to `/events`, verify all 3 seeded events appear
-3. **Event without queue (Midnight Jazz Night)**
+1. **Register** — navigate to `/signup`, create a new account (or log in as `userA@fairtix.demo`)
+2. **Browse events** — navigate to `/events`, verify the seeded events appear
+3. **Event without queue (Saints vs Panthers)**
    - Open event detail at `/events/:id`
-   - Select a seat (Floor A-1, $85)
+   - Select a seat
    - Confirm hold is created (10-min TTL); navigate to `/my-holds` to verify
-4. **Event with queue (Summer Rock Festival)**
+4. **Event with queue (Taylor Swift)**
    - Open event detail
    - Join the queue; observe SSE-powered position updates in the UI
    - Wait for admission (or reduce queue in admin panel to trigger admission)
@@ -140,7 +133,7 @@ cd frontend/webpages && npm start
 
 ### Transfer
 
-1. Log in as User A, complete a purchase on Midnight Jazz Night
+1. Log in as User A, complete a purchase on Saints vs Panthers
 2. Go to ticket detail, initiate a transfer to User B's email
 3. Log in as User B, accept the transfer at `/my-tickets` (incoming transfers)
 4. Verify ticket ownership changed; check MailHog for transfer notification emails
@@ -163,8 +156,8 @@ cd frontend/webpages && npm start
 
 ### Purchase cap enforcement
 
-1. On Midnight Jazz Night (`max_tickets_per_user = 4`), attempt to purchase a 5th ticket
-2. Verify the API rejects the request
+1. On Coachella (`max_tickets_per_user = 1`), buy one ticket, then attempt a second
+2. Verify the API rejects the request (the cap counts held, bought and comped tickets)
 
 ---
 

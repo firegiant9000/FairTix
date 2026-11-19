@@ -92,48 +92,6 @@ public class OrderService {
   }
 
   /**
-   * Original order creation (MVP path, no payment). Always succeeds with $0 total.
-   */
-  @Transactional
-  public Order createOrder(UUID userId, List<UUID> holdIds) {
-    User user = userRepository.findById(userId)
-        .orElseThrow(() -> new IllegalArgumentException("User not found: " + userId));
-
-    List<SeatHold> holds = validateHolds(userId, holdIds);
-    validatePurchaseCaps(userId, holds);
-
-    for (SeatHold hold : holds) {
-      Seat seat = hold.getSeat();
-      if (seat.getStatus() == SeatStatus.SOLD) {
-        throw new SeatHoldConflictException(
-            "Seat " + seat.getId() + " has already been sold");
-      }
-      if (seat.getStatus() != SeatStatus.BOOKED) {
-        throw new SeatHoldConflictException(
-            "Seat " + seat.getId() + " is not in BOOKED state (status: " + seat.getStatus() + ")");
-      }
-      seat.setStatus(SeatStatus.SOLD);
-      seatRepository.save(seat);
-    }
-
-    BigDecimal totalAmount = holds.stream()
-        .map(hold -> hold.getSeat().getPrice())
-        .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-    Order order = new Order(user, holdIds, totalAmount, "USD");
-    order = orderRepository.save(order);
-    ticketService.issueTickets(order, holds);
-    for (SeatHold hold : holds) {
-      hold.setStatus(HoldStatus.RELEASED);
-      seatHoldRepository.save(hold);
-    }
-    auditService.logInCurrentTransaction(userId, "CREATE", "ORDER", order.getId(),
-        "Order completed: " + holdIds.size() + " hold(s), total=" + totalAmount + " USD");
-    sendOrderConfirmationEmail(user, order, holds);
-    return order;
-  }
-
-  /**
    * Creates an order with simulated payment processing.
    *
    * Flow:

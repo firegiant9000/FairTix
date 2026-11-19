@@ -12,6 +12,8 @@ import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.orders.application.OrderService;
 import com.fairtix.orders.application.PurchaseCapExceededException;
+import com.fairtix.orders.domain.Order;
+import com.fairtix.payments.domain.PaymentStatus;
 import com.fairtix.queue.application.QueueConflictException;
 import com.fairtix.queue.application.QueueService;
 import com.fairtix.queue.domain.QueueStatus;
@@ -109,8 +111,8 @@ class PurchaseCapIT extends PostgresIT {
     setCap(1);
 
     List<Throwable> failures = raceUnderSeatLocks(
-        () -> orderService.createOrder(buyer.getId(), List.of(holdA.getId())),
-        () -> orderService.createOrder(buyer.getId(), List.of(holdB.getId())));
+        () -> checkout(holdA),
+        () -> checkout(holdB));
 
     assertThat(activeTickets()).as("tickets issued to one user under a cap of 1").isEqualTo(1);
     assertThat(failures).hasSize(1);
@@ -147,7 +149,7 @@ class PurchaseCapIT extends PostgresIT {
     refundTicketFor(seatA);
 
     SeatHold hold = confirmedHold(seatB);
-    orderService.createOrder(buyer.getId(), List.of(hold.getId()));
+    checkout(hold);
 
     assertThat(activeTickets()).isEqualTo(1);
   }
@@ -223,7 +225,13 @@ class PurchaseCapIT extends PostgresIT {
   }
 
   private void buy(Seat seat) {
-    orderService.createOrder(buyer.getId(), List.of(confirmedHold(seat).getId()));
+    checkout(confirmedHold(seat));
+  }
+
+  /** Checkout on the simulated gateway, forced to succeed. */
+  private Order checkout(SeatHold hold) {
+    return orderService.createOrderWithPayment(
+        buyer.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
   }
 
   /** The database state a completed refund leaves: ticket REFUNDED, seat back on sale. */

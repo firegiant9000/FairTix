@@ -129,7 +129,15 @@ GROUP BY granted;
 --     AND s.event_id = (SELECT s2.event_id FROM seat_holds h2
 --                       JOIN seats s2 ON s2.id = h2.seat_id
 --                       WHERE h2.id = '<a listed hold id>');
--- Refund only if that returns no rows. Intents that got an
+-- Refund only if that returns no rows.
+-- error=IntentNotBound (checkout answered 409: the intent was paid for other
+-- holds, another payout routing, or has no online_payment_intents row) is
+-- marked not_verified too, and so is error=BindingNotChecked (the charge
+-- succeeded but checking that binding failed, so it is unknown). Their listed
+-- holds may or may not be the ones paid for, and the paid ones may sit on
+-- another event. The intent can still buy its own holds, so check the user's
+-- ACTIVE or CONFIRMED holds on every event, not just the listed one (drop the
+-- event_id condition above). Intents that got an
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --
@@ -234,7 +242,9 @@ FROM (
          a.user_id,
          a.action,
          a.created_at,
-         a.details LIKE '%error=PaymentNotVerified%' AS not_verified,
+         (a.details LIKE '%error=PaymentNotVerified%'
+           OR a.details LIKE '%error=IntentNotBound%'
+           OR a.details LIKE '%error=BindingNotChecked%') AS not_verified,
          a.details LIKE '%error=PaymentIntentUnbound%' AS unbound,
          CASE WHEN a.details ~ 'holdIds=\[[^]]*[0-9a-f]{8}-' THEN
            (SELECT COUNT(*)

@@ -149,6 +149,8 @@ public class EventHoldService {
     if (!hold.isActive()) {
       throw new IllegalStateException("Hold is not active (released or converted)");
     }
+    // The comp's advisory locks go before this seat row lock (TransactionLock rules).
+    compService.lockForIssue(hold.getEvent().getId(), recipientEmail, actorUserId);
     Seat seat = seats.findAndLockById(hold.getSeat().getId())
         .orElseThrow(() -> new ResourceNotFoundException("Seat not found: " + hold.getSeat().getId()));
     if (seat.getStatus() != SeatStatus.HELD) {

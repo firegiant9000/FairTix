@@ -20,6 +20,9 @@ public interface OnlinePaymentIntentRepository extends JpaRepository<OnlinePayme
 
   boolean existsByStripePaymentIntentId(String stripePaymentIntentId);
 
+  /** The intent id is unique, so this is the one row for the intent, in any status. */
+  Optional<OnlinePaymentIntent> findByStripePaymentIntentId(String stripePaymentIntentId);
+
   /**
    * One-shot: only an ACTIVE row is invalidated. Returns the number of rows changed (0 or 1).
    * Clears the persistence context so later reads see the new status.

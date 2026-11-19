@@ -12,6 +12,7 @@ import com.fairtix.inventory.domain.SeatHold;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.orders.application.OrderService;
 import com.fairtix.orders.application.PurchaseCapExceededException;
+import com.fairtix.payments.domain.PaymentStatus;
 import com.fairtix.support.PostgresIT;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
@@ -89,7 +90,7 @@ class PurchaseCapHoldVersusCheckoutIT extends PostgresIT {
     setCap(1);
 
     orderService.assertWithinPurchaseCaps(buyerId, List.of(holdA.getId()));
-    orderService.createOrder(buyerId, List.of(holdA.getId()));
+    orderService.createOrderWithPayment(buyerId, List.of(holdA.getId()), PaymentStatus.SUCCESS);
 
     assertThatThrownBy(() -> orderService.assertWithinPurchaseCaps(buyerId, List.of(holdB.getId())))
         .isInstanceOf(PurchaseCapExceededException.class);
@@ -111,7 +112,8 @@ class PurchaseCapHoldVersusCheckoutIT extends PostgresIT {
         ps.executeQuery().close();
       }
       List<Future<Object>> futures = new ArrayList<>();
-      futures.add(pool.submit(() -> orderService.createOrder(buyerId, List.of(holdA.getId()))));
+      futures.add(pool.submit(() -> orderService.createOrderWithPayment(
+          buyerId, List.of(holdA.getId()), PaymentStatus.SUCCESS)));
       boolean checkoutBlocked = waitForLockWaiters(1, Duration.ofSeconds(10));
       futures.add(pool.submit(
           () -> seatHoldService.createHold(event.getId(), List.of(seatB.getId()), buyerId, 10)));

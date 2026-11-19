@@ -181,20 +181,13 @@ All errors follow a consistent shape:
 
 ## Orders
 
-Endpoints for completing a purchase after confirming a hold.
+Endpoints for reading orders. An order is created only by
+`POST /api/payments/checkout`; there is no unpaid order endpoint.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/orders` | Authenticated | Create an order from confirmed holds |
 | GET | `/api/orders` | Authenticated | List the current user's orders |
 | GET | `/api/orders/{orderId}` | Authenticated | Get order details |
-
-**Create order request:**
-```json
-{
-  "holdIds": ["c3d4e5f6-a7b8-9012-cdef-123456789012"]
-}
-```
 
 **Order response:**
 ```json

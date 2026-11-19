@@ -179,6 +179,11 @@ public class PaymentController {
    *       before owner binding: {@code STRIPE_ORDER_FAILED} with
    *       {@code error=PaymentIntentUnbound}. Checkout answers 409
    *       {@code PAYMENT_NOT_USABLE}, and no later attempt can use this intent.
+   *   <li>The intent was not created for this user, hold set and routing:
+   *       {@code STRIPE_ORDER_FAILED} with {@code error=IntentNotBound}; if checking
+   *       the binding failed, {@code error=BindingNotChecked}. The listed holds may
+   *       or may not be the ones paid for, and the intent can still buy its own
+   *       holds, so the runbook checks all of the user's holds before refunding.
    *   <li>Anything else: {@code STRIPE_ORDER_FAILED}.
    * </ul>
    */
@@ -201,9 +206,17 @@ public class PaymentController {
       summary = "Payment not verified (amount_received differs from the holds' total,"
           + " or the intent has not succeeded); order not created: ";
       error = "PaymentNotVerified";
+    } else if (ex instanceof PaymentIntentNotBoundException) {
+      summary = "Charge succeeded for a different user, hold set or payout routing (or an intent"
+          + " with no stored row); order not created: ";
+      error = "IntentNotBound";
+    } else if (ex instanceof BindingNotCheckedException) {
+      summary = "Charge succeeded, but checking that the intent was made for these holds failed;"
+          + " order not created: ";
+      error = errorLabel(ex);
     } else {
       summary = "Charge succeeded but order creation failed: ";
-      error = ex.getClass().getSimpleName();
+      error = errorLabel(ex);
     }
     String details = summary
         + "stripe_intent=" + paymentIntentId
@@ -227,9 +240,18 @@ public class PaymentController {
           : "Charge succeeded,";
       log.error("{} order not created, and the audit row could not be written:"
           + " stripe_intent={}, holdIds={}, error={}", what, paymentIntentId, holdIds,
-          ex.getClass().getSimpleName(), auditFailure);
-      ex.addSuppressed(auditFailure);
+          errorLabel(ex), auditFailure);
+      // The caller rethrows the cause for a BindingNotCheckedException, not the wrapper.
+      Throwable thrown = ex instanceof BindingNotCheckedException ? ex.getCause() : ex;
+      thrown.addSuppressed(auditFailure);
     }
+  }
+
+  /** The {@code error=} token of a not-created audit row or log line. */
+  private static String errorLabel(RuntimeException ex) {
+    return ex instanceof BindingNotCheckedException
+        ? "BindingNotChecked (" + ex.getCause().getClass().getSimpleName() + ")"
+        : ex.getClass().getSimpleName();
   }
 
   /**
@@ -254,16 +276,13 @@ public class PaymentController {
    * paid. A failure is logged at ERROR and audited as {@code SALES_LEDGER_WRITE_FAILED} so the
    * ledger can be reconciled, because a resubmit is answered by the replay path, which does not
    * record the sale. If the audit fails too, the ERROR log is the only trace.
+   *
+   * <p>{@code context} is the routing the intent was bound to, resolved before the order.
    */
-  private void recordOnlineSaleSafely(UUID userId, java.util.List<UUID> holdIds,
-      boolean contextResolved, ConnectContext resolvedContext, UUID orderId,
+  private void recordOnlineSaleSafely(UUID userId, ConnectContext context, UUID orderId,
       long amountCents, String paymentIntentId) {
     String orgId = null;
     try {
-      // Resolved here only when the lookup before the order failed.
-      ConnectContext context = contextResolved
-          ? resolvedContext
-          : resolveConnectContext(holdIds, userId, amountCents);
       if (context == null) {
         return;
       }
@@ -288,6 +307,24 @@ public class PaymentController {
   private static final class PaymentNotVerifiedException extends ResponseStatusException {
     PaymentNotVerifiedException() {
       super(HttpStatus.PAYMENT_REQUIRED, "Stripe payment has not succeeded");
+    }
+  }
+
+  /**
+   * The intent was not created for this user, these holds and this payout routing. Names no
+   * other order or user.
+   */
+  private static final class PaymentIntentNotBoundException extends ResponseStatusException {
+    PaymentIntentNotBoundException() {
+      super(HttpStatus.CONFLICT,
+          "This payment was not made for these seats. Contact support for a refund.");
+    }
+  }
+
+  /** Audit label only: checking the intent's binding failed, so it is unknown. Never thrown. */
+  private static final class BindingNotCheckedException extends RuntimeException {
+    BindingNotCheckedException(RuntimeException cause) {
+      super(cause);
     }
   }
 
@@ -454,25 +491,34 @@ public class PaymentController {
             principal.getUserId(), request.holdIds(), paymentIntentId, notVerified);
         throw notVerified;
       }
-      Order order;
-      ConnectContext saleContext = null;
-      boolean saleContextResolved = false;
+      // The charge is the caller's and covers the amount; it must also be the payment for these
+      // holds, routed to this organizer. Otherwise an intent paid for other holds of the same
+      // total would buy these, and the funds would sit with the other organizer.
+      ConnectContext connect;
+      boolean bound;
       try {
-        // Before the order: holds from more than one org are refused (400) while no order
-        // exists yet, so the charge goes on record for a refund like any failed order.
-        // Any other lookup failure must not cost the customer their order: the context is
-        // resolved again after the order commits.
-        try {
-          saleContext = resolveConnectContext(
-              request.holdIds(), principal.getUserId(), expectedAmountCents);
-          saleContextResolved = true;
-        } catch (ResponseStatusException refused) {
-          throw refused;
-        } catch (RuntimeException lookupFailure) {
-          log.warn("Sales-cap context lookup failed before the order; retrying after it:"
-              + " stripe_intent={}, error={}", paymentIntentId,
-              lookupFailure.getClass().getSimpleName());
-        }
+        connect = resolveConnectContext(
+            request.holdIds(), principal.getUserId(), expectedAmountCents);
+        bound = onlinePaymentIntentService.isBoundTo(
+            paymentIntentId, principal.getUserId(), request.holdIds(), connect);
+      } catch (RuntimeException ex) {
+        // The charge has succeeded: a lookup failure here (including resolveConnectContext's
+        // 400s) must not leave it off the record. The binding is unknown, so the row is
+        // labelled for the runbook's check of all the user's holds.
+        auditStripeOrderNotCreatedSafely(principal.getUserId(), request.holdIds(),
+            paymentIntentId, new BindingNotCheckedException(ex));
+        throw ex;
+      }
+      if (!bound) {
+        log.warn("Checkout refused: stripe_intent={} was not created for these holds and routing"
+            + " (requesting user {})", paymentIntentId, principal.getUserId());
+        var notBound = new PaymentIntentNotBoundException();
+        auditStripeOrderNotCreatedSafely(
+            principal.getUserId(), request.holdIds(), paymentIntentId, notBound);
+        throw notBound;
+      }
+      Order order;
+      try {
         order = createStripeOrder(principal.getUserId(), request.holdIds(), paymentIntentId);
       } catch (RuntimeException ex) {
         auditStripeOrderNotCreatedSafely(
@@ -507,8 +553,8 @@ public class PaymentController {
       }
       // The order has committed. Before the sales-cap write, so a failure there can't skip it.
       completeOnlineIntentSafely(paymentIntentId);
-      recordOnlineSaleSafely(principal.getUserId(), request.holdIds(), saleContextResolved,
-          saleContext, order.getId(), expectedAmountCents, paymentIntentId);
+      recordOnlineSaleSafely(principal.getUserId(), connect, order.getId(),
+          expectedAmountCents, paymentIntentId);
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();
       return PaymentResponse.from(record, order.getStatus());
     }

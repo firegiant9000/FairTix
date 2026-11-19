@@ -144,7 +144,7 @@ class RedisBackedFeaturesIT extends PostgresIT {
    * Finding F-4.1, fixed: {@code admitNextBatch} adds to the Redis set only after
    * its transaction commits, so a rolled-back admission leaves the user
    * {@code WAITING} in the database and not admitted in Redis. Before, the add came
-   * first and {@code isAdmitted}, which trusts Redis first, said admitted.
+   * first and {@code isAdmitted}, which then trusted a Redis hit, said admitted.
    */
   @Test
   void queueAdmission_rollback_leavesUserNotAdmitted() {
