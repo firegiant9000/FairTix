@@ -254,7 +254,28 @@ class StripePaymentServiceTest {
       stubVerifyRetrieve(mocked, "pi_unbound_old", intent);
 
       assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_unbound_old", 5000L, OWNER))
-          .isInstanceOf(PaymentIntentNotOwnedException.class);
+          .isInstanceOfSatisfying(PaymentIntentNotOwnedException.class, ex -> {
+            org.assertj.core.api.Assertions.assertThat(ex.getReason()).isEqualTo("unbound");
+            org.assertj.core.api.Assertions.assertThat(ex.isPaid()).isTrue();
+          });
+    }
+  }
+
+  /** Not paid: checkout has no charge to put on record. */
+  @Test
+  void verifyForUser_unpaidUnboundIntentPastGrace_throwsNotOwnedNotPaid() {
+    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      PaymentIntent intent = boundIntent(null);
+      when(intent.getStatus()).thenReturn("requires_payment_method");
+      when(intent.getCreated()).thenReturn(NOW.minus(Duration.ofHours(25)).getEpochSecond());
+      stubVerifyRetrieve(mocked, "pi_unbound_unpaid", intent);
+
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_unbound_unpaid", 5000L, OWNER))
+          .isInstanceOfSatisfying(PaymentIntentNotOwnedException.class, ex -> {
+            org.assertj.core.api.Assertions.assertThat(ex.getReason()).isEqualTo("unbound");
+            org.assertj.core.api.Assertions.assertThat(ex.isPaid()).isFalse();
+          });
     }
   }
 

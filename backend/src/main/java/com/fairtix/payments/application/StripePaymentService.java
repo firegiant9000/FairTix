@@ -322,16 +322,17 @@ public class StripePaymentService {
   private void requireCreatedFor(PaymentIntent intent, String paymentIntentId, UUID userId) {
     Map<String, String> metadata = intent.getMetadata();
     String owner = metadata == null ? null : metadata.get(USER_ID_METADATA);
+    boolean paid = "succeeded".equals(intent.getStatus());
     if (owner != null) {
       if (owner.equals(userId.toString())) {
         return;
       }
-      throw new PaymentIntentNotOwnedException(paymentIntentId, userId, "other_user");
+      throw new PaymentIntentNotOwnedException(paymentIntentId, userId, "other_user", paid);
     }
     // Box-office intents carry a channel and never a user, and are still created
     // after deploy: they are never online-checkout intents.
     if (metadata != null && metadata.containsKey(CHANNEL_METADATA)) {
-      throw new PaymentIntentNotOwnedException(paymentIntentId, userId, "other_channel");
+      throw new PaymentIntentNotOwnedException(paymentIntentId, userId, "other_channel", paid);
     }
     // Only online intents created before USER_ID_METADATA existed get here; once
     // UNBOUND_INTENT_GRACE has passed since that deploy, none is accepted.
@@ -342,7 +343,8 @@ public class StripePaymentService {
           paymentIntentId, USER_ID_METADATA);
       return;
     }
-    throw new PaymentIntentNotOwnedException(paymentIntentId, userId, "unbound");
+    throw new PaymentIntentNotOwnedException(paymentIntentId, userId,
+        PaymentIntentNotOwnedException.REASON_UNBOUND, paid);
   }
 
   /**

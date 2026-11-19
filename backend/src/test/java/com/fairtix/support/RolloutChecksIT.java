@@ -231,6 +231,38 @@ class RolloutChecksIT extends PostgresIT {
   }
 
   /**
+   * A paid unbound intent can never complete an order: it is marked, and confirmed
+   * holds don't escalate it, because they don't stand in the way of its refund.
+   */
+  @Test
+  void stripeChargesWithoutOrder_marksUnboundRowsAndNeverEscalatesThem() throws Exception {
+    UUID user = newUser("unbound@test.com");
+    Event event = eventRepository.save(
+        new Event("Unbound Concert", null, Instant.now().plusSeconds(86400), (UUID) null));
+    Seat seat = seatRepository.save(new Seat(event, "A", "1", "1", new BigDecimal("10.00")));
+    UUID holdId = seatHoldService.createHold(event.getId(), List.of(seat.getId()), user, 10).get(0).getId();
+    seatHoldService.confirmHold(holdId, user);
+    // Same details format as PaymentController writes for PaymentIntentUnbound.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now() - interval '8 days')",
+        UUID.randomUUID(), user,
+        "Charge succeeded, but the intent predates owner binding and is past its grace window,"
+            + " so no checkout can complete it; order not created: stripe_intent=pi_unbound,"
+            + " holdIds=" + List.of(holdId) + ", error=PaymentIntentUnbound");
+    failedStripeOrder(user, "pi_bound", "STRIPE_ORDER_FAILED", holdId, "8 days");
+
+    Map<String, Object> unbound = chargeWithoutOrder("pi_unbound");
+    assertThat(unbound).containsEntry("unbound", true);
+    assertThat(unbound).containsEntry("not_verified", false);
+    assertThat(((Number) unbound.get("holds_still_confirmed")).intValue()).isEqualTo(1);
+    assertThat(unbound).containsEntry("escalate", false);
+    Map<String, Object> bound = chargeWithoutOrder("pi_bound");
+    assertThat(bound).containsEntry("unbound", false);
+    assertThat(bound).containsEntry("escalate", true);
+  }
+
+  /**
    * One attempt with readable hold ids (none confirmed) and one without: MAX alone
    * would ignore the NULL and show 0, listing the charge as safe to refund.
    */

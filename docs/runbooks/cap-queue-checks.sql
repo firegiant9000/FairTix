@@ -129,7 +129,13 @@ GROUP BY granted;
 --     AND s.event_id = (SELECT s2.event_id FROM seat_holds h2
 --                       JOIN seats s2 ON s2.id = h2.seat_id
 --                       WHERE h2.id = '<a listed hold id>');
--- Refund only if that returns no rows. Intents that got an
+-- Refund only if that returns no rows.
+-- STRIPE_ORDER_FAILED with error=PaymentIntentUnbound (unbound = true) means
+-- checkout answered 409 PAYMENT_NOT_USABLE to a paid intent created before
+-- intents carried their user, after its grace window. No checkout can ever use
+-- that intent, so its holds don't gate the refund and it is never escalated:
+-- check the charge in Stripe for a dispute, then refund. user_id is whoever
+-- submitted it; the intent itself names no owner. Intents that got an
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --
@@ -166,11 +172,13 @@ SELECT f.payment_intent,
        COUNT(*)                                  AS failed_attempts,
        bool_and(f.action = 'STRIPE_ORDER_BUSY')  AS busy_only,
        bool_or(f.not_verified)                   AS not_verified,
+       bool_or(f.unbound)                        AS unbound,
        -- MAX ignores NULL, so one unreadable attempt must make the whole row NULL.
        CASE WHEN COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0 THEN NULL
             ELSE MAX(f.holds_still_confirmed)
        END                                       AS holds_still_confirmed,
        MIN(f.created_at) < now() - interval '7 days'
+         AND NOT bool_or(f.unbound)
          AND (COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0
               OR MAX(f.holds_still_confirmed) > 0) AS escalate
 FROM (
@@ -179,6 +187,7 @@ FROM (
          a.action,
          a.created_at,
          a.details LIKE '%error=PaymentNotVerified%' AS not_verified,
+         a.details LIKE '%error=PaymentIntentUnbound%' AS unbound,
          CASE WHEN a.details ~ 'holdIds=\[[^]]*[0-9a-f]{8}-' THEN
            (SELECT COUNT(*)
             FROM seat_holds h
