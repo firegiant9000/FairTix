@@ -392,6 +392,13 @@ public class RefundService {
    */
   @Transactional
   public void processCancellationRefunds(UUID eventId, UUID actorId) {
+    // Lock the open refund rows and re-read them before deciding anything: a webhook may
+    // have completed one, or an admin reviewed it, since it was last read, and the
+    // RefundRequest row has no version column to catch a stale write. Refund rows before
+    // ticket rows, as in finalise; the caller locks the tickets after this returns.
+    for (UUID refundId : refundRepository.lockOpenRefundIdsForEvent(eventId)) {
+      refundRepository.findById(refundId).ifPresent(entityManager::refresh);
+    }
     List<Ticket> tickets = ticketRepository.findAllByEvent_IdAndStatus(eventId, TicketStatus.VALID);
     // Group by order and create/process refunds
     tickets.stream()

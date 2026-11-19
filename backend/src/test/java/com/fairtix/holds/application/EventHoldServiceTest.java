@@ -114,13 +114,16 @@ class EventHoldServiceTest {
     UUID ticketId = UUID.randomUUID();
     when(issued.getId()).thenReturn(ticketId);
     when(issued.getKind()).thenReturn(TicketKind.COMP);
-    when(compService.issueComp(any(), eq(actorId))).thenReturn(List.of(issued));
+    UUID holderId = UUID.randomUUID();
+    when(compService.lockForIssue(event.getId(), "bono@u2.test", actorId)).thenReturn(holderId);
+    when(compService.issueComp(any(), eq(actorId), eq(holderId))).thenReturn(List.of(issued));
 
     Ticket result = service.convertToComp(holdId, "Bono", "bono@u2.test", "guest", true, actorId);
 
     assertThat(result).isSameAs(issued);
     assertThat(hold.getConvertedTicketId()).isEqualTo(ticketId);
-    verify(compService).issueComp(any(), eq(actorId));
+    // Issued to the holder the locks were taken for, not looked up again.
+    verify(compService).issueComp(any(), eq(actorId), eq(holderId));
     // The comp's advisory locks are taken before the seat row lock.
     var order = inOrder(compService, seats);
     order.verify(compService).lockForIssue(event.getId(), "bono@u2.test", actorId);

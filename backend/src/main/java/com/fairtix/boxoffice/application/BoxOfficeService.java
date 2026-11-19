@@ -39,6 +39,8 @@ import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.PersistenceContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -71,6 +73,8 @@ import java.util.stream.Collectors;
  */
 @Service
 public class BoxOfficeService {
+
+  private static final Logger log = LoggerFactory.getLogger(BoxOfficeService.class);
 
   static final int HOLD_DURATION_MINUTES = 1;
 
@@ -348,17 +352,57 @@ public class BoxOfficeService {
       throw new BoxOfficeStateException("Card-present payment did not succeed: " + paymentIntentId);
     }
 
-    return transactionTemplate.execute(status -> {
-      // Locked and re-read: a concurrent confirm of the same intent may have
-      // completed the sale while this one was talking to Stripe.
-      BoxOfficeSale pending = findSaleToConfirm(sessionId, organizationId, staffUserId,
-          paymentIntentId, true);
-      if (pending.getOrderId() != null) {
-        return pending;
+    try {
+      return transactionTemplate.execute(status -> {
+        // Locked and re-read: a concurrent confirm of the same intent may have
+        // completed the sale while this one was talking to Stripe.
+        BoxOfficeSale pending = findSaleToConfirm(sessionId, organizationId, staffUserId,
+            paymentIntentId, true);
+        if (pending.getOrderId() != null) {
+          return pending;
+        }
+        return completeCardSale(pending, organizationId, staffUserId, paymentIntentId,
+            expectedAmountCents, customerEmail, customerName);
+      });
+    } catch (RuntimeException ex) {
+      // The customer has been charged and this sale has no order: put it on record for
+      // the manual refund runbook before the caller sees the error.
+      recordCardNotCompletedSafely(found, staffUserId, paymentIntentId, ex);
+      throw ex;
+    }
+  }
+
+  /**
+   * Writes {@code BOX_OFFICE_CARD_NOT_COMPLETED} for a verified charge whose completing
+   * transaction failed, unless another confirm of the intent completed the sale. The row is
+   * written in its own transaction ({@link AuditService#log}), so it survives the rollback.
+   * Never throws: if the audit fails too, the charge stays traceable in the error log.
+   */
+  private void recordCardNotCompletedSafely(BoxOfficeSale sale, UUID staffUserId,
+                                            String paymentIntentId, RuntimeException ex) {
+    try {
+      Boolean completed = transactionTemplate.execute(status ->
+          sales.existsByStripePaymentIntentIdAndOrderIdIsNotNull(paymentIntentId));
+      if (Boolean.TRUE.equals(completed)) {
+        return;
       }
-      return completeCardSale(pending, organizationId, staffUserId, paymentIntentId,
-          expectedAmountCents, customerEmail, customerName);
-    });
+    } catch (RuntimeException lookupFailure) {
+      // Unknown: record it; the runbook query checks for an order before refunding.
+      ex.addSuppressed(lookupFailure);
+    }
+    String details = "orgId=" + sale.getOrganizationId() + " eventId=" + sale.getEventId()
+        + " saleId=" + sale.getId() + " intent=" + paymentIntentId
+        + " amount=" + sale.getAmount() + " error=" + ex.getClass().getSimpleName();
+    log.error("Box-office card charged but the sale was not completed: {}", details, ex);
+    try {
+      auditService.log(staffUserId, "BOX_OFFICE_CARD_NOT_COMPLETED", "BOX_OFFICE_SALE",
+          sale.getId(), details);
+    } catch (RuntimeException auditFailure) {
+      log.error("Box-office card charged, sale not completed, and the audit row could not be"
+          + " written: stripe_intent={}, saleId={}, error={}", paymentIntentId, sale.getId(),
+          ex.getClass().getSimpleName(), auditFailure);
+      ex.addSuppressed(auditFailure);
+    }
   }
 
   /**
@@ -397,8 +441,10 @@ public class BoxOfficeService {
         .map(h -> h.getSeat().getId())
         .toList();
     if (seatIds.size() != pending.getSeatCount()) {
-      throw new BoxOfficeStateException(
-          "Held seats no longer match the intent — release and retry");
+      // Stripe has already verified this payment: retrying would charge the customer again.
+      throw new BoxOfficeStateException("Held seats no longer match the sale. The card payment "
+          + paymentIntentId + " succeeded but no ticket was issued: do not charge the customer"
+          + " again, call a manager");
     }
     confirmHolds(seatIds, staffUserId);
     transitionToSold(seatIds, staffUserId);
@@ -411,7 +457,10 @@ public class BoxOfficeService {
     BoxOfficeSale completed = sales.save(pending);
     salesCapService.recordSale(organizationId, expectedAmountCents,
         OrgSalesCapService.CHANNEL_BOX_OFFICE, completed.getId().toString());
-    auditService.log(staffUserId, "BOX_OFFICE_CARD_SALE", "BOX_OFFICE_SALE", completed.getId(),
+    // In this transaction: a sale that rolls back at commit must not leave a "sale" row
+    // next to its BOX_OFFICE_CARD_NOT_COMPLETED row.
+    auditService.logInCurrentTransaction(staffUserId, "BOX_OFFICE_CARD_SALE", "BOX_OFFICE_SALE",
+        completed.getId(),
         "orgId=" + organizationId + " eventId=" + eventId + " seats=" + pending.getSeatCount()
             + " amount=" + pending.getAmount() + " intent=" + paymentIntentId);
     return completed;

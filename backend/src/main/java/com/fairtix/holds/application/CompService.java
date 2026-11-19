@@ -22,12 +22,15 @@ import com.fairtix.users.domain.Role;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.transaction.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -42,7 +45,10 @@ import java.util.stream.Collectors;
 @Service
 public class CompService {
 
+  private static final Logger log = LoggerFactory.getLogger(CompService.class);
   private static final SecureRandom RANDOM = new SecureRandom();
+  /** Password prefix of the stub account a comp creates for an unknown recipient email. */
+  private static final String STUB_PASSWORD_PREFIX = "comp:";
 
   private final EventRepository events;
   private final SeatRepository seats;
@@ -77,18 +83,30 @@ public class CompService {
    * locks go before row locks (see {@link TransactionLock}). Advisory locks are
    * re-entrant within a transaction, so {@code issueComp} taking them again is a
    * no-op.
+   *
+   * @return the resolved holder's id, to pass to {@link #issueComp(IssueCompRequest, UUID, UUID)}
+   *     so it counts and issues for the account locked here rather than looking it up again
    */
   @Transactional
-  public void lockForIssue(UUID eventId, String recipientEmail, UUID issuerUserId) {
+  public UUID lockForIssue(UUID eventId, String recipientEmail, UUID issuerUserId) {
     Event event = events.findById(eventId)
         .orElseThrow(() -> new ResourceNotFoundException("Event not found: " + eventId));
     User issuer = users.findById(issuerUserId)
         .orElseThrow(() -> new ResourceNotFoundException("Issuer not found: " + issuerUserId));
-    lockAndResolveRecipient(event, recipientEmail, issuer);
+    return lockAndResolveRecipient(event, recipientEmail, issuer, null).getId();
   }
 
   @Transactional
   public List<Ticket> issueComp(IssueCompRequest request, UUID issuerUserId) {
+    return issueComp(request, issuerUserId, null);
+  }
+
+  /**
+   * @param lockedHolderId the holder {@link #lockForIssue} resolved and locked, or null to
+   *     resolve the recipient here
+   */
+  @Transactional
+  public List<Ticket> issueComp(IssueCompRequest request, UUID issuerUserId, UUID lockedHolderId) {
     Event event = events.findById(request.eventId())
         .orElseThrow(() -> new ResourceNotFoundException("Event not found: " + request.eventId()));
 
@@ -97,7 +115,7 @@ public class CompService {
 
     List<UUID> sortedSeatIds = request.seatIds().stream().distinct().sorted().toList();
     long requested = sortedSeatIds.size();
-    User holder = lockAndResolveRecipient(event, request.recipientEmail(), issuer);
+    User holder = lockAndResolveRecipient(event, request.recipientEmail(), issuer, lockedHolderId);
 
     Integer cap = event.getCompLimit();
     if (cap != null) {
@@ -172,13 +190,19 @@ public class CompService {
    * count-then-issue for the event's {@code comp_limit}; the cap lock is the one
    * the hold gate, checkout and transfer accept take for (event, recipient). The
    * recipient is resolved in between, since the cap lock is keyed on their id; a
-   * stub user written there waits on nothing this transaction holds elsewhere.
+   * stub user written there waits on nothing this transaction holds elsewhere. A holder
+   * already resolved and locked by {@link #lockForIssue} is reused, so a seat row locked
+   * since then is never followed by a cap lock on a different account.
    */
-  private User lockAndResolveRecipient(Event event, String recipientEmail, User issuer) {
+  private User lockAndResolveRecipient(Event event, String recipientEmail, User issuer,
+                                       UUID lockedHolderId) {
     if (event.getCompLimit() != null) {
       transactionLock.acquire("comp-limit:" + event.getId());
     }
-    User holder = resolveRecipient(recipientEmail, issuer);
+    User holder = lockedHolderId != null
+        ? users.findById(lockedHolderId)
+            .orElseThrow(() -> new ResourceNotFoundException("Recipient not found: " + lockedHolderId))
+        : resolveRecipient(recipientEmail, issuer);
     if (event.getMaxTicketsPerUser() != null && hasRecipientAccount(recipientEmail)) {
       purchaseCapGuard.lock(event.getId(), holder.getId());
     }
@@ -190,17 +214,43 @@ public class CompService {
     return recipientEmail != null && !recipientEmail.isBlank();
   }
 
+  /**
+   * Registration keeps the email as typed, so the lookup ignores case: otherwise a comp to
+   * {@code alice@x.com} misses the account {@code Alice@x.com}, creates a stub, and is counted
+   * against the stub's cap instead of hers. Stubs created before this, and case variants
+   * registered before registration refused them, can sit beside the real account; then a
+   * verified registered account wins, then any registered account, then a comp stub, the
+   * oldest first within each.
+   */
   private User resolveRecipient(String email, User fallback) {
     if (email == null || email.isBlank()) return fallback;
     String normalized = email.trim().toLowerCase();
-    return users.findByEmail(normalized).orElseGet(() -> {
+    List<User> matches = users.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc(normalized);
+    if (matches.isEmpty()) {
       User stub = new User();
       stub.setEmail(normalized);
-      stub.setPassword("comp:" + Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes(24)));
+      stub.setPassword(STUB_PASSWORD_PREFIX
+          + Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes(24)));
       stub.setRole(Role.USER);
       stub.setEmailVerified(false);
       return users.save(stub);
-    });
+    }
+    // Stable sort: the query's oldest-first order holds within each rank.
+    User chosen = matches.stream()
+        .min(Comparator.comparingInt(CompService::recipientRank))
+        .orElseThrow();
+    if (matches.size() > 1) {
+      log.warn("Comp recipient email matches {} accounts ignoring case; using user {}."
+          + " The purchase cap counts that account only", matches.size(), chosen.getId());
+    }
+    return chosen;
+  }
+
+  /** 0 verified registered account, 1 unverified registered account, 2 comp stub. */
+  private static int recipientRank(User user) {
+    boolean stub = user.getPassword() != null && user.getPassword().startsWith(STUB_PASSWORD_PREFIX);
+    if (stub) return 2;
+    return user.isEmailVerified() ? 0 : 1;
   }
 
   private static byte[] randomBytes(int n) {
