@@ -233,7 +233,7 @@ class StripePaymentServiceTest {
     }
   }
 
-  /** No grace for an intent without an owner, however recently it was created. */
+  /** An intent without an owner is never accepted, however recently it was created. */
   @Test
   void verifyForUser_recentUnboundIntent_throwsNotOwned() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
