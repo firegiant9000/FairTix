@@ -32,6 +32,13 @@ public class OnlinePaymentIntentService {
 
   private static final Set<String> PAID_OR_IN_FLIGHT = Set.of("succeeded", "processing", "requires_capture");
 
+  /**
+   * How many replacements replay recovery creates before giving up with a retryable 409. A chain
+   * only grows when a hold set's intent is canceled and replaced, so a real one stays short; the
+   * bound stops a pathological chain from making unbounded Stripe calls in one request.
+   */
+  static final int MAX_REPLAYED_REPLACEMENTS = 5;
+
   private final StripePaymentService stripe;
   private final OnlinePaymentIntentRepository repository;
   private final AuditService auditService;
@@ -104,22 +111,41 @@ public class OnlinePaymentIntentService {
       return secret;
     }
     // Insert failed, no active winner, and the id already has a row: Stripe replayed an intent
-    // whose row was ended. That is either a canceled intent, or (reason COMPLETED) a paid one
-    // whose order a concurrent checkout committed after the lookup above. The replay carries the
-    // creation-time status, so ask Stripe: a paid or in-flight intent is returned as is (checkout
-    // then answers with the existing order), never replaced with a second payable one.
-    StripeIntent current = stripe.retrievePaymentIntent(created.id());
-    if (PAID_OR_IN_FLIGHT.contains(current.status())) {
-      return current.clientSecret();
+    // whose row was ended. The replacement keyed on it may itself be a replay of an ended intent
+    // (the hold set was replaced more than once, and the process stopped after Stripe created the
+    // newest intent but before its row was inserted), so walk the chain, bounded.
+    StripeIntent replayed = created;
+    for (int replacements = 0; ; replacements++) {
+      Optional<String> paid = paidOrInFlightSecret(replayed.id());
+      if (paid.isPresent()) {
+        return paid.get();
+      }
+      if (replacements == MAX_REPLAYED_REPLACEMENTS) {
+        throw new PaymentRetryConflictException(
+            "Replacement payment intent " + replayed.id() + " was already used; retry", null);
+      }
+      replayed = stripe.createPaymentIntent(amountCents, "usd", connect, userId,
+          StripeIdempotencyKeys.onlineIntent(userId, holdIds, amountCents, connect, replayed.id()));
+      secret = insert(userId, holdHash, amountCents, routing, replayed);
+      if (secret != null) {
+        return secret;
+      }
     }
-    StripeIntent replacement = stripe.createPaymentIntent(amountCents, "usd", connect, userId,
-        StripeIdempotencyKeys.onlineIntent(userId, holdIds, amountCents, connect, created.id()));
-    secret = insert(userId, holdHash, amountCents, routing, replacement);
-    if (secret != null) {
-      return secret;
-    }
-    throw new PaymentRetryConflictException(
-        "Replacement payment intent " + replacement.id() + " was already used; retry", null);
+  }
+
+  /**
+   * For an intent Stripe replayed whose row was already ended: the secret if the intent is paid
+   * or in flight, else empty. The row was ended either because the intent was canceled, or
+   * (reason COMPLETED) because a concurrent checkout committed its order after the lookup. The
+   * replay carries the creation-time status, so this asks Stripe: a paid or in-flight intent is
+   * returned as is (checkout then answers with the existing order), never replaced with a second
+   * payable one.
+   */
+  private Optional<String> paidOrInFlightSecret(String intentId) {
+    StripeIntent current = stripe.retrievePaymentIntent(intentId);
+    return PAID_OR_IN_FLIGHT.contains(current.status())
+        ? Optional.of(current.clientSecret())
+        : Optional.empty();
   }
 
   /**
