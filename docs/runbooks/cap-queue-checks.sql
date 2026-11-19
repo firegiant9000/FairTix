@@ -233,3 +233,31 @@ JOIN orders o ON o.id = p.order_id
 WHERE r.action = 'REFUND_ON_LIVE_ORDER' OR o.status = 'COMPLETED'
 GROUP BY o.id, o.status, r.payment_intent
 ORDER BY first_seen_at DESC;
+
+-- name: sales_not_recorded
+-- Online orders whose sale is missing from org_sales_ledger, so the org's rolling
+-- 24-hour sales cap under-counts it. Source: SALES_LEDGER_WRITE_FAILED, written when
+-- the order committed but the ledger write failed (checkout still answered 201).
+-- A resubmit doesn't record the sale, so nothing repairs this on its own. Rows drop
+-- out once an ONLINE ledger entry exists for the intent. Expect no rows.
+-- org_id is NULL when the org lookup itself failed: take it from the order's event.
+SELECT s.order_id,
+       s.payment_intent,
+       s.org_id,
+       s.amount_cents,
+       s.failed_at
+FROM (
+  SELECT a.resource_id                                            AS order_id,
+         substring(a.details from 'stripe_intent=([^,]+)')        AS payment_intent,
+         NULLIF(substring(a.details from 'orgId=([^,]+)'), 'null') AS org_id,
+         substring(a.details from 'amountCents=([0-9]+)')::bigint AS amount_cents,
+         a.created_at                                             AS failed_at
+  FROM audit_logs a
+  WHERE a.action = 'SALES_LEDGER_WRITE_FAILED'
+    AND a.created_at > now() - interval '14 days'
+) s
+WHERE NOT EXISTS (
+  SELECT 1 FROM org_sales_ledger l
+  WHERE l.channel = 'ONLINE' AND l.source_id = s.payment_intent
+)
+ORDER BY s.failed_at DESC;

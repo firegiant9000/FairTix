@@ -15,8 +15,12 @@ import com.fairtix.organizations.infrastructure.OrgSalesLedgerRepository;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class OrgSalesCapServiceTest {
@@ -104,6 +108,42 @@ class OrgSalesCapServiceTest {
   @Test
   void nullOrgIdIsNoOp() {
     service.checkCanCharge(null, 999_999_999L);
+  }
+
+  @Test
+  void recordSale_insertsKeyedOnChannelAndSource() {
+    when(ledger.insertIfAbsent(any(), eq(orgId), eq(5_000L), eq("ONLINE"), eq("pi_1"), any()))
+        .thenReturn(1);
+
+    assertThat(service.recordSale(orgId, 5_000L, OrgSalesCapService.CHANNEL_ONLINE, "pi_1")).isTrue();
+
+    verify(ledger, never()).save(any());
+  }
+
+  @Test
+  void recordSale_alreadyRecorded_returnsFalseWithoutASecondEntry() {
+    when(ledger.insertIfAbsent(any(), eq(orgId), eq(5_000L), eq("ONLINE"), eq("pi_1"), any()))
+        .thenReturn(0);
+
+    assertThat(service.recordSale(orgId, 5_000L, OrgSalesCapService.CHANNEL_ONLINE, "pi_1")).isFalse();
+
+    verify(ledger, never()).save(any());
+  }
+
+  @Test
+  void recordSale_withoutSourceId_savesAPlainEntry() {
+    assertThat(service.recordSale(orgId, 5_000L, OrgSalesCapService.CHANNEL_BOX_OFFICE, null)).isTrue();
+
+    verify(ledger).save(any());
+    verify(ledger, never()).insertIfAbsent(any(), any(), anyLong(), any(), any(), any());
+  }
+
+  @Test
+  void recordSale_noOrgOrNoAmount_writesNothing() {
+    assertThat(service.recordSale(null, 5_000L, OrgSalesCapService.CHANNEL_ONLINE, "pi_1")).isFalse();
+    assertThat(service.recordSale(orgId, 0L, OrgSalesCapService.CHANNEL_ONLINE, "pi_1")).isFalse();
+
+    verifyNoInteractions(ledger);
   }
 
   @Test

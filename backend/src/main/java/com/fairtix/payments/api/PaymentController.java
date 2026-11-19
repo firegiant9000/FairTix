@@ -238,6 +238,43 @@ public class PaymentController {
     }
   }
 
+  /**
+   * Records a completed online sale against the org's rolling sales cap. The cap was
+   * pre-checked at intent creation; the sale is recorded only once the order exists, so
+   * abandoned carts don't count. Never throws: the order is committed and the customer has
+   * paid. A failure is logged at ERROR and audited as {@code SALES_LEDGER_WRITE_FAILED} so the
+   * ledger can be reconciled, because a resubmit is answered by the replay path, which does not
+   * record the sale. If the audit fails too, the ERROR log is the only trace.
+   */
+  private void recordOnlineSaleSafely(UUID userId, java.util.List<UUID> holdIds,
+      boolean contextResolved, ConnectContext resolvedContext, UUID orderId,
+      long amountCents, String paymentIntentId) {
+    String orgId = null;
+    try {
+      // Resolved here only when the lookup before the order failed.
+      ConnectContext context = contextResolved
+          ? resolvedContext
+          : resolveConnectContext(holdIds, userId, amountCents);
+      if (context == null) {
+        return;
+      }
+      orgId = context.organizationId();
+      salesCapService.recordSale(UUID.fromString(orgId), amountCents,
+          OrgSalesCapService.CHANNEL_ONLINE, paymentIntentId);
+    } catch (RuntimeException ex) {
+      String details = "Order created, sale not recorded against the sales cap:"
+          + " stripe_intent=" + paymentIntentId + ", orgId=" + orgId
+          + ", amountCents=" + amountCents + ", error=" + ex.getClass().getSimpleName();
+      log.error("{} (orderId={})", details, orderId, ex);
+      try {
+        auditService.log(userId, "SALES_LEDGER_WRITE_FAILED", "ORDER", orderId, details);
+      } catch (RuntimeException auditFailure) {
+        log.error("The SALES_LEDGER_WRITE_FAILED audit row could not be written:"
+            + " stripe_intent={}, orderId={}", paymentIntentId, orderId, auditFailure);
+      }
+    }
+  }
+
   /** Verification returned false; answered as 402 like before. */
   private static final class PaymentNotVerifiedException extends ResponseStatusException {
     PaymentNotVerifiedException() {
@@ -395,7 +432,24 @@ public class PaymentController {
         throw notVerified;
       }
       Order order;
+      ConnectContext saleContext = null;
+      boolean saleContextResolved = false;
       try {
+        // Before the order: holds from more than one org are refused (400) while no order
+        // exists yet, so the charge goes on record for a refund like any failed order.
+        // Any other lookup failure must not cost the customer their order: the context is
+        // resolved again after the order commits.
+        try {
+          saleContext = resolveConnectContext(
+              request.holdIds(), principal.getUserId(), expectedAmountCents);
+          saleContextResolved = true;
+        } catch (ResponseStatusException refused) {
+          throw refused;
+        } catch (RuntimeException lookupFailure) {
+          log.warn("Sales-cap context lookup failed before the order; retrying after it:"
+              + " stripe_intent={}, error={}", paymentIntentId,
+              lookupFailure.getClass().getSimpleName());
+        }
         order = createStripeOrder(principal.getUserId(), request.holdIds(), paymentIntentId);
       } catch (RuntimeException ex) {
         auditStripeOrderNotCreatedSafely(
@@ -430,19 +484,9 @@ public class PaymentController {
       }
       // The order has committed. Before the sales-cap write, so a failure there can't skip it.
       completeOnlineIntentSafely(paymentIntentId);
+      recordOnlineSaleSafely(principal.getUserId(), request.holdIds(), saleContextResolved,
+          saleContext, order.getId(), expectedAmountCents, paymentIntentId);
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();
-      // Record against the rolling sales cap. The cap was pre-checked at intent
-      // creation, but recording happens here once the charge is verified so we
-      // don't credit usage to abandoned carts.
-      ConnectContext successContext = resolveConnectContext(
-          request.holdIds(), principal.getUserId(), expectedAmountCents);
-      if (successContext != null) {
-        salesCapService.recordSale(
-            UUID.fromString(successContext.organizationId()),
-            expectedAmountCents,
-            OrgSalesCapService.CHANNEL_ONLINE,
-            paymentIntentId);
-      }
       return PaymentResponse.from(record, order.getStatus());
     }
 

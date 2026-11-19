@@ -43,8 +43,48 @@ class RolloutChecksIT extends PostgresIT {
     assertThat(checks).containsKeys(
         "postgres_version", "users_over_cap", "queues_over_capacity",
         "duplicate_queue_positions", "lock_waiters", "connections_by_state", "advisory_locks_held",
-        "stripe_charges_without_order", "refunds_on_live_orders");
+        "stripe_charges_without_order", "refunds_on_live_orders", "sales_not_recorded");
     checks.forEach((name, sql) -> jdbcTemplate.queryForList(sql));
+  }
+
+  /** A failed ledger write is listed until an ONLINE entry exists for its intent. */
+  @Test
+  void salesNotRecorded_listsOnlyUnreconciledFailures() throws Exception {
+    UUID user = newUser("ledger@test.com");
+    UUID org = UUID.randomUUID();
+    jdbcTemplate.update("INSERT INTO organizations (id, name, slug) VALUES (?, 'Org', ?)",
+        org, "org-" + org);
+    UUID missingOrder = UUID.randomUUID();
+    ledgerWriteFailed(user, missingOrder, "pi_missing", org.toString());
+    ledgerWriteFailed(user, UUID.randomUUID(), "pi_unknown_org", "null");
+    ledgerWriteFailed(user, UUID.randomUUID(), "pi_reconciled", org.toString());
+    jdbcTemplate.update("INSERT INTO org_sales_ledger (id, organization_id, amount_cents, channel,"
+        + " source_id) VALUES (?, ?, 5000, 'ONLINE', 'pi_reconciled')", UUID.randomUUID(), org);
+
+    List<Map<String, Object>> rows = jdbcTemplate.queryForList(checks().get("sales_not_recorded"));
+
+    assertThat(rows).extracting(row -> row.get("payment_intent"))
+        .containsExactlyInAnyOrder("pi_missing", "pi_unknown_org");
+    Map<String, Object> missing = row(rows, "pi_missing");
+    assertThat(missing.get("order_id")).isEqualTo(missingOrder);
+    assertThat(missing.get("org_id")).isEqualTo(org.toString());
+    assertThat(((Number) missing.get("amount_cents")).longValue()).isEqualTo(5000L);
+    assertThat(row(rows, "pi_unknown_org").get("org_id")).isNull();
+  }
+
+  private static Map<String, Object> row(List<Map<String, Object>> rows, String paymentIntent) {
+    return rows.stream().filter(r -> paymentIntent.equals(r.get("payment_intent")))
+        .findFirst().orElseThrow();
+  }
+
+  private void ledgerWriteFailed(UUID user, UUID order, String paymentIntentId, String orgId) {
+    // Same details format as PaymentController.recordOnlineSaleSafely writes.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, resource_id, details, created_at)"
+            + " VALUES (?, ?, 'SALES_LEDGER_WRITE_FAILED', 'ORDER', ?, ?, now())",
+        UUID.randomUUID(), user, order,
+        "Order created, sale not recorded against the sales cap: stripe_intent=" + paymentIntentId
+            + ", orgId=" + orgId + ", amountCents=5000, error=DataAccessResourceFailureException");
   }
 
   /** Webhook redeliveries of one refund are one row, with the order's status. */
