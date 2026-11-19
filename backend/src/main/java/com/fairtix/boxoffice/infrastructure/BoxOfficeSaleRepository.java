@@ -12,4 +12,7 @@ public interface BoxOfficeSaleRepository extends JpaRepository<BoxOfficeSale, UU
   List<BoxOfficeSale> findAllBySessionIdOrderByCreatedAtAsc(UUID sessionId);
 
   Optional<BoxOfficeSale> findByStripePaymentIntentId(String paymentIntentId);
+
+  /** A query, not an entity read: under open-in-view a managed copy of the sale may be stale. */
+  boolean existsByStripePaymentIntentIdAndOrderIdIsNotNull(String paymentIntentId);
 }

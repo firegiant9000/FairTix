@@ -50,6 +50,18 @@ public interface RefundRepository extends JpaRepository<RefundRequest, UUID> {
       + "AND r.stripeRefundId IS NULL")
   List<UUID> findExecutableIdsForEvent(@Param("eventId") UUID eventId);
 
+  /**
+   * Locks the open refund requests (REQUESTED, PENDING_MANUAL, APPROVED) on orders with a
+   * VALID ticket for the event, and returns their ids. Event cancellation takes these before
+   * any ticket row, as {@code RefundService.finalise} takes its refund row before the tickets.
+   * Only the cancellation locks several refund rows, and two cancellations of one event are
+   * already serialised on the event row, so their order among themselves doesn't matter.
+   */
+  @Query(value = "SELECT id FROM refund_requests WHERE status IN ('REQUESTED', 'PENDING_MANUAL',"
+      + " 'APPROVED') AND order_id IN (SELECT order_id FROM tickets WHERE event_id = :eventId"
+      + " AND status = 'VALID') ORDER BY id FOR UPDATE", nativeQuery = true)
+  List<UUID> lockOpenRefundIdsForEvent(@Param("eventId") UUID eventId);
+
   @Query(value = "SELECT CAST(created_at AS DATE), COUNT(*) FROM refund_requests WHERE created_at >= :since GROUP BY CAST(created_at AS DATE) ORDER BY 1", nativeQuery = true)
   List<Object[]> requestedPerDay(@Param("since") Instant since);
 }

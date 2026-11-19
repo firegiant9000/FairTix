@@ -335,3 +335,36 @@ WHERE NOT EXISTS (
   WHERE l.channel = 'ONLINE' AND l.source_id = s.payment_intent
 )
 ORDER BY s.failed_at DESC;
+
+-- name: box_office_charges_without_sale
+-- Box-office card sales that got a PaymentIntent but never an order, created
+-- between 30 days and 5 minutes ago. Built from box_office_sales, not from
+-- audit rows, so it also lists charges whose confirm never reached the
+-- completing step (drawer closed before confirm, Stripe error while verifying,
+-- confirm never sent). Intents abandoned at the reader, never paid, show up
+-- too: check each intent in Stripe. failed_confirms counts the
+-- BOX_OFFICE_CARD_NOT_COMPLETED rows (Stripe verified the payment, then
+-- completing failed); errors lists their error classes. A row drops out once
+-- the sale has an order. session_closed = false: a confirm on that session can
+-- still complete the sale, so refund only once the session is closed.
+SELECT s.id                                                   AS sale_id,
+       s.stripe_payment_intent_id                             AS payment_intent,
+       s.organization_id                                      AS org_id,
+       s.event_id,
+       s.amount,
+       s.staff_user_id,
+       s.created_at,
+       (bs.status <> 'OPEN')                                  AS session_closed,
+       COUNT(a.id)                                            AS failed_confirms,
+       string_agg(DISTINCT substring(a.details from 'error=([^ ]+)'), ',') AS errors
+FROM box_office_sales s
+JOIN box_office_sessions bs ON bs.id = s.session_id
+LEFT JOIN audit_logs a ON a.resource_id = s.id
+                      AND a.action = 'BOX_OFFICE_CARD_NOT_COMPLETED'
+WHERE s.method = 'CARD'
+  AND s.stripe_payment_intent_id IS NOT NULL
+  AND s.order_id IS NULL
+  AND s.created_at > now() - interval '30 days'
+  AND s.created_at < now() - interval '5 minutes'
+GROUP BY s.id, bs.status
+ORDER BY failed_confirms DESC, s.created_at DESC;

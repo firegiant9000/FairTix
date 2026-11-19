@@ -166,7 +166,8 @@ class CompServiceTest {
     User recipient = new User();
     recipient.setId(UUID.randomUUID());
     recipient.setEmail("guest@example.com");
-    when(users.findByEmail("guest@example.com")).thenReturn(Optional.of(recipient));
+    when(users.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("guest@example.com"))
+        .thenReturn(List.of(recipient));
     when(purchaseCapGuard.activeTickets(recipient.getId(), eventId)).thenReturn(1L);
     when(purchaseCapGuard.liveHolds(recipient.getId(), eventId)).thenReturn(1L);
     UUID seatId = UUID.randomUUID();
@@ -224,7 +225,8 @@ class CompServiceTest {
     User recipient = new User();
     recipient.setId(UUID.randomUUID());
     recipient.setEmail("guest@example.com");
-    when(users.findByEmail("guest@example.com")).thenReturn(Optional.of(recipient));
+    when(users.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("guest@example.com"))
+        .thenReturn(List.of(recipient));
 
     IssueCompRequest req = new IssueCompRequest(eventId, List.of(seatId),
         "Guest", "Guest@Example.com", null, false);
@@ -236,12 +238,128 @@ class CompServiceTest {
     verify(users, never()).save(any(User.class)); // existing user → no stub created
   }
 
+  /**
+   * Registration keeps the email as typed, so the lookup ignores case: a comp to
+   * {@code alice@example.com} reaches the account registered as {@code Alice@Example.com},
+   * and no stub user is created beside it.
+   */
+  @Test
+  void resolvesARecipientRegisteredInAnotherCase_withoutCreatingAStub() {
+    UUID seatId = UUID.randomUUID();
+    Seat seat = mockSeat(seatId, SeatStatus.AVAILABLE);
+    when(seats.findAndLockByIdIn(List.of(seatId))).thenReturn(List.of(seat));
+    User alice = new User();
+    alice.setId(UUID.randomUUID());
+    alice.setEmail("Alice@Example.com");
+    when(users.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("alice@example.com"))
+        .thenReturn(List.of(alice));
+
+    service.issueComp(new IssueCompRequest(eventId, List.of(seatId),
+        "Alice", "alice@example.com", null, false), issuerId);
+
+    ArgumentCaptor<Order> captor = ArgumentCaptor.forClass(Order.class);
+    verify(orders).save(captor.capture());
+    assertThat(captor.getValue().getUser()).isSameAs(alice);
+    verify(users, never()).save(any(User.class));
+  }
+
+  /**
+   * Stubs created before the lookup ignored case can sit beside the real account. The comp
+   * goes to the registered account (not a comp stub), the oldest if there are several.
+   */
+  @Test
+  void severalAccountsMatchingTheEmail_preferTheRegisteredOne() {
+    UUID seatId = UUID.randomUUID();
+    Seat seat = mockSeat(seatId, SeatStatus.AVAILABLE);
+    when(seats.findAndLockByIdIn(List.of(seatId))).thenReturn(List.of(seat));
+    User stub = new User();
+    stub.setId(UUID.randomUUID());
+    stub.setEmail("alice@example.com");
+    stub.setPassword("comp:abc");
+    User alice = new User();
+    alice.setId(UUID.randomUUID());
+    alice.setEmail("Alice@Example.com");
+    alice.setPassword("$2a$10$dummyhashfortest");
+    when(users.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("alice@example.com"))
+        .thenReturn(List.of(stub, alice));
+
+    service.issueComp(new IssueCompRequest(eventId, List.of(seatId),
+        "Alice", "alice@example.com", null, false), issuerId);
+
+    ArgumentCaptor<Order> captor = ArgumentCaptor.forClass(Order.class);
+    verify(orders).save(captor.capture());
+    assertThat(captor.getValue().getUser()).isSameAs(alice);
+    verify(users, never()).save(any(User.class));
+  }
+
+  /**
+   * Case variants registered before registration refused them: the verified account wins
+   * over an older unverified one, which may not belong to the recipient at all.
+   */
+  @Test
+  void severalRegisteredAccountsMatchingTheEmail_preferTheVerifiedOne() {
+    UUID seatId = UUID.randomUUID();
+    Seat seat = mockSeat(seatId, SeatStatus.AVAILABLE);
+    when(seats.findAndLockByIdIn(List.of(seatId))).thenReturn(List.of(seat));
+    User olderUnverified = new User();
+    olderUnverified.setId(UUID.randomUUID());
+    olderUnverified.setEmail("ALICE@example.com");
+    olderUnverified.setPassword("$2a$10$dummyhashfortest");
+    olderUnverified.setEmailVerified(false);
+    User verified = new User();
+    verified.setId(UUID.randomUUID());
+    verified.setEmail("Alice@Example.com");
+    verified.setPassword("$2a$10$dummyhashfortest");
+    verified.setEmailVerified(true);
+    when(users.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("alice@example.com"))
+        .thenReturn(List.of(olderUnverified, verified));
+
+    service.issueComp(new IssueCompRequest(eventId, List.of(seatId),
+        "Alice", "alice@example.com", null, false), issuerId);
+
+    ArgumentCaptor<Order> captor = ArgumentCaptor.forClass(Order.class);
+    verify(orders).save(captor.capture());
+    assertThat(captor.getValue().getUser()).isSameAs(verified);
+  }
+
+  /**
+   * Convert-to-comp: issueComp reuses the holder lockForIssue resolved and locked, with no
+   * second lookup that could pick another account after the seat row is locked.
+   */
+  @Test
+  void issueWithALockedHolder_usesThatHolderWithoutLookingUpAgain() {
+    when(event.getMaxTicketsPerUser()).thenReturn(4);
+    UUID seatId = UUID.randomUUID();
+    Seat seat = mockSeat(seatId, SeatStatus.AVAILABLE);
+    when(seats.findAndLockByIdIn(List.of(seatId))).thenReturn(List.of(seat));
+    User alice = new User();
+    alice.setId(UUID.randomUUID());
+    alice.setEmail("Alice@Example.com");
+    alice.setPassword("$2a$10$dummyhashfortest");
+    alice.setEmailVerified(true);
+    when(users.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("alice@example.com"))
+        .thenReturn(List.of(alice));
+    when(users.findById(alice.getId())).thenReturn(Optional.of(alice));
+
+    UUID locked = service.lockForIssue(eventId, "alice@example.com", issuerId);
+    service.issueComp(new IssueCompRequest(eventId, List.of(seatId),
+        "Alice", "alice@example.com", null, false), issuerId, locked);
+
+    assertThat(locked).isEqualTo(alice.getId());
+    verify(users, times(1)).findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc(any());
+    verify(purchaseCapGuard).activeTickets(alice.getId(), eventId);
+    ArgumentCaptor<Order> captor = ArgumentCaptor.forClass(Order.class);
+    verify(orders).save(captor.capture());
+    assertThat(captor.getValue().getUser()).isSameAs(alice);
+  }
+
   @Test
   void createsStubUserForUnknownRecipientEmail() {
     UUID seatId = UUID.randomUUID();
     Seat seat = mockSeat(seatId, SeatStatus.AVAILABLE);
     when(seats.findAndLockByIdIn(List.of(seatId))).thenReturn(List.of(seat));
-    when(users.findByEmail("new@example.com")).thenReturn(Optional.empty());
+    when(users.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("new@example.com"))
+        .thenReturn(List.of());
     when(users.save(any(User.class))).thenAnswer(inv -> {
       User u = inv.getArgument(0);
       u.setId(UUID.randomUUID());

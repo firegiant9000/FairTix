@@ -17,6 +17,12 @@ public interface UserRepository extends JpaRepository<User, UUID> {
   /** Registration's duplicate check: {@code users.email} is unique only case-sensitively. */
   boolean existsByEmailIgnoreCase(String email);
 
+  /**
+   * Every account whose email matches ignoring case, oldest first. Usually at most one, but
+   * comp stubs created before comp lookups ignored case can sit beside a registered account.
+   */
+  List<User> findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc(String email);
+
   @Query("SELECT u.role, COUNT(u) FROM User u GROUP BY u.role")
   List<Object[]> countByRoleGrouped();
 }

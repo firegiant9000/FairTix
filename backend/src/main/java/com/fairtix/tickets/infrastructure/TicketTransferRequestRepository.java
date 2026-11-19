@@ -19,5 +19,8 @@ public interface TicketTransferRequestRepository extends JpaRepository<TicketTra
 
   Optional<TicketTransferRequest> findByTicket_IdAndStatus(UUID ticketId, TransferStatus status);
 
+  List<TicketTransferRequest> findByTicket_IdInAndStatus(java.util.Collection<UUID> ticketIds,
+      TransferStatus status);
+
   List<TicketTransferRequest> findByStatusAndExpiresAtBefore(TransferStatus status, Instant now);
 }

@@ -150,7 +150,7 @@ public class EventHoldService {
       throw new IllegalStateException("Hold is not active (released or converted)");
     }
     // The comp's advisory locks go before this seat row lock (TransactionLock rules).
-    compService.lockForIssue(hold.getEvent().getId(), recipientEmail, actorUserId);
+    UUID holderId = compService.lockForIssue(hold.getEvent().getId(), recipientEmail, actorUserId);
     Seat seat = seats.findAndLockById(hold.getSeat().getId())
         .orElseThrow(() -> new ResourceNotFoundException("Seat not found: " + hold.getSeat().getId()));
     if (seat.getStatus() != SeatStatus.HELD) {
@@ -164,7 +164,8 @@ public class EventHoldService {
     IssueCompRequest compRequest = new IssueCompRequest(
         hold.getEvent().getId(), List.of(seat.getId()),
         recipientName, recipientEmail, reason, willCall);
-    List<Ticket> issued = compService.issueComp(compRequest, actorUserId);
+    // The holder locked above, not a second lookup that could pick another account.
+    List<Ticket> issued = compService.issueComp(compRequest, actorUserId, holderId);
     Ticket ticket = issued.get(0);
 
     hold.markConverted(ticket.getId());
