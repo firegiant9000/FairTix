@@ -490,6 +490,41 @@ class StripePaymentControllerTest {
         .isEqualTo(HoldStatus.CONFIRMED);
   }
 
+  /**
+   * A concurrent submit with the same intent creates the order after this one's
+   * replay lookup found nothing, and this one's verification then returns false.
+   * The intent has a payment record by the time the audit runs, so nothing is owed
+   * and no STRIPE_ORDER_FAILED row is written.
+   */
+  @Test
+  void checkout_notVerifiedAfterConcurrentSubmitCreatedTheOrder_writesNoOrderFailedAudit()
+      throws Exception {
+    doAnswer(inv -> {
+      orderService.createOrderWithStripePayment(
+          user.getId(), java.util.List.of(confirmedHold.getId()), "pi_race_not_verified");
+      // Flush so the JDBC count below sees the record even if the controller runs no query
+      // after this point (the early-return lookup would otherwise auto-flush it).
+      entityManager.flush();
+      return false;
+    }).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_race_not_verified")))
+        .andExpect(status().isPaymentRequired());
+
+    // The concurrent order exists, so the early return is what kept the row out.
+    Integer records = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM payment_records WHERE transaction_id = ?",
+        Integer.class, "pi_race_not_verified");
+    assertThat(records).isOne();
+    Integer orderFailedRows = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED' AND user_id = ?",
+        Integer.class, user.getId());
+    assertThat(orderFailedRows).isZero();
+  }
+
   @Test
   void checkout_withRefundedIntent_isRejectedWithoutOrderFailedAudit() throws Exception {
     doThrow(new PaymentRefundedException("pi_refunded", "refunded"))
