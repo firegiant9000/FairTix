@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fairtix.events.application.EventService;
 import com.fairtix.events.domain.Event;
+import com.fairtix.events.domain.EventNotOnSaleException;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.application.SeatHoldService;
 import com.fairtix.inventory.domain.Seat;
@@ -100,7 +101,10 @@ class EventCancelTransferRaceIT extends PostgresIT {
     assertThat(auditRows("TRANSFER_CANCELLED")).isEqualTo(1);
   }
 
-  /** The cancellation gets the ticket first; the acceptance then finds its request cancelled. */
+  /**
+   * The cancellation gets the event row and the ticket first; the acceptance waits on the
+   * event row and then finds the event cancelled.
+   */
   @Test
   @Timeout(60)
   void cancelStartedFirst_overlappingTheAccept_endsCancelledAndNotTransferred() throws Exception {
@@ -117,9 +121,7 @@ class EventCancelTransferRaceIT extends PostgresIT {
     assertThat(requestStatus(requestId)).isEqualTo("CANCELLED");
     assertThat(auditRows("TRANSFER_ACCEPTED")).isZero();
     assertThat(failures).as("only the acceptance fails").hasSize(1);
-    assertThat(failures.get(0))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("no longer pending");
+    assertThat(failures.get(0)).isInstanceOf(EventNotOnSaleException.class);
   }
 
   /**

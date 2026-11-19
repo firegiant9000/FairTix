@@ -3,6 +3,7 @@ package com.fairtix.holds.application;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.common.TransactionLock;
+import com.fairtix.events.application.EventSaleGuard;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.holds.dto.IssueCompRequest;
@@ -58,6 +59,7 @@ public class CompService {
   private final AuditService audit;
   private final TransactionLock transactionLock;
   private final PurchaseCapGuard purchaseCapGuard;
+  private final EventSaleGuard eventSaleGuard;
 
   public CompService(EventRepository events,
                      SeatRepository seats,
@@ -66,7 +68,9 @@ public class CompService {
                      OrderRepository orders,
                      AuditService audit,
                      TransactionLock transactionLock,
-                     PurchaseCapGuard purchaseCapGuard) {
+                     PurchaseCapGuard purchaseCapGuard,
+                     EventSaleGuard eventSaleGuard) {
+    this.eventSaleGuard = eventSaleGuard;
     this.transactionLock = transactionLock;
     this.purchaseCapGuard = purchaseCapGuard;
     this.events = events;
@@ -186,7 +190,7 @@ public class CompService {
 
   /**
    * Lock order: the event's comp-limit lock, then the recipient's purchase-cap
-   * lock, both before any seat row lock. The comp-limit lock serialises
+   * lock, then the event's sale lock (refused if the event has ended), all before any seat row lock. The comp-limit lock serialises
    * count-then-issue for the event's {@code comp_limit}; the cap lock is the one
    * the hold gate, checkout and transfer accept take for (event, recipient). The
    * recipient is resolved in between, since the cap lock is keyed on their id; a
@@ -206,6 +210,9 @@ public class CompService {
     if (event.getMaxTicketsPerUser() != null && hasRecipientAccount(recipientEmail)) {
       purchaseCapGuard.lock(event.getId(), holder.getId());
     }
+    // After the advisory locks and before any seat lock, here rather than in issueComp:
+    // convertToComp locks a seat between lockForIssue and issueComp (EventSaleGuard order).
+    eventSaleGuard.lockOnSale(event.getId());
     return holder;
   }
 

@@ -44,7 +44,8 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, UUID> {
    * concurrent extension's version bump would then fail the seat lock query
    * with an optimistic-lock conflict (#298).
    */
-  @Query("SELECT new com.fairtix.inventory.infrastructure.HoldSeatRef(h.id, h.status, h.seat.id)"
+  @Query("SELECT new com.fairtix.inventory.infrastructure.HoldSeatRef(h.id, h.status, h.seat.id,"
+      + " h.seat.event.id)"
       + " FROM SeatHold h WHERE h.id IN :ids AND h.ownerId = :ownerId")
   List<HoldSeatRef> findRefsByIdInAndOwnerId(@Param("ids") Collection<UUID> ids,
       @Param("ownerId") UUID ownerId);
@@ -73,8 +74,8 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, UUID> {
   /** List-holds endpoint: all holds for an owner filtered by status. */
   List<SeatHold> findAllByOwnerIdAndStatus(UUID ownerId, HoldStatus status);
 
-  /** Cancel cascade: find all active holds for seats belonging to a given event. */
-  List<SeatHold> findAllBySeat_Event_IdAndStatus(UUID eventId, HoldStatus status);
+  /** Cancel cascade: the event's holds in any of these statuses. */
+  List<SeatHold> findAllBySeat_Event_IdAndStatusIn(UUID eventId, Collection<HoldStatus> statuses);
 
   /** Purchase cap: use it through {@code PurchaseCapGuard}, which owns the statuses. */
   long countByOwnerIdAndSeat_Event_IdAndStatusIn(UUID ownerId, UUID eventId,

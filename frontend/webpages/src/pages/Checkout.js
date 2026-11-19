@@ -15,13 +15,14 @@ const stripePromise = stripeEnabled
 // A Stripe checkout reaches the server only after confirmCardPayment succeeded,
 // so its failure means "charged, no order" unless the server says the card was
 // declined (422), the payment was refunded (PAYMENT_REFUNDED) or the payment
-// can't be used for this checkout (PAYMENT_NOT_USABLE); each of those last two
-// gets its own final screen.
+// can't be used for this checkout (PAYMENT_NOT_USABLE, or EVENT_NOT_ON_SALE when
+// the event was cancelled or ended while paying); each of those gets a final screen.
 // A 402 here means the charged amount didn't match the order total: still paid.
 function finalScreenFor(code) {
   switch (code) {
     case 'PAYMENT_REFUNDED': return 'refunded';
     case 'PAYMENT_NOT_USABLE': return 'not-usable';
+    case 'EVENT_NOT_ON_SALE': return 'not-usable';
     default: return null;
   }
 }
@@ -30,6 +31,10 @@ const NOT_USABLE_MESSAGE =
   "This payment can't be used to complete this order, so no order was created. "
   + 'If you were charged, contact support and the payment will be refunded. '
   + 'To buy these seats, go back to My Holds and start checkout again.';
+
+const EVENT_NOT_ON_SALE_MESSAGE =
+  'This event is no longer on sale (it was cancelled or has ended), so no order was created. '
+  + 'If you were charged, contact support and the payment will be refunded.';
 
 function isPaidButNotOrdered(payload, err) {
   if (!payload.paymentIntentId) return false;
@@ -240,6 +245,8 @@ function Checkout() {
       } else if (err.code === 'PAYMENT_NOT_USABLE') {
         // The server can't tell the client whether this intent was charged.
         message = NOT_USABLE_MESSAGE;
+      } else if (err.code === 'EVENT_NOT_ON_SALE') {
+        message = EVENT_NOT_ON_SALE_MESSAGE;
       } else {
         message = err.body?.failureReason
           || err.message

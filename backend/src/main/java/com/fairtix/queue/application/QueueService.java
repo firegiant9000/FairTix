@@ -6,6 +6,7 @@ import com.fairtix.common.TransactionLock;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.fraud.domain.RiskTier;
+import com.fairtix.events.application.EventSaleGuard;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.domain.SeatStatus;
@@ -55,6 +56,7 @@ public class QueueService {
     private final AuditService auditService;
     private final RiskScoringService riskScoringService;
     private final TransactionLock transactionLock;
+    private final EventSaleGuard eventSaleGuard;
 
     @Value("${queue.admission-window-minutes:15}")
     private int admissionWindowMinutes;
@@ -77,7 +79,9 @@ public class QueueService {
                         RedissonClient redissonClient,
                         AuditService auditService,
                         RiskScoringService riskScoringService,
-                        TransactionLock transactionLock) {
+                        TransactionLock transactionLock,
+                        EventSaleGuard eventSaleGuard) {
+        this.eventSaleGuard = eventSaleGuard;
         this.transactionLock = transactionLock;
         this.queueRepository = queueRepository;
         this.eventRepository = eventRepository;
@@ -96,6 +100,9 @@ public class QueueService {
         if (!event.isQueueRequired()) {
             throw new IllegalArgumentException("This event does not require a queue");
         }
+
+        // Unlocked: a join moves no money, and the hold and checkout after it lock and check again.
+        eventSaleGuard.requireOnSale(event);
 
         if (riskScoringService.getTier(userId) == RiskTier.CRITICAL) {
             throw new UserFlaggedForAbuseException();

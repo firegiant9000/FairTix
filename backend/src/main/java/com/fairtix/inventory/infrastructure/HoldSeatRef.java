@@ -4,8 +4,8 @@ import com.fairtix.inventory.domain.HoldStatus;
 import java.util.UUID;
 
 /**
- * A hold's id, status and seat id, read without loading the {@code SeatHold} or
+ * A hold's id, status, seat id and event id, read without loading the {@code SeatHold} or
  * {@code Seat} entity. See {@link SeatHoldRepository#findRefsByIdInAndOwnerId}.
  */
-public record HoldSeatRef(UUID id, HoldStatus status, UUID seatId) {
+public record HoldSeatRef(UUID id, HoldStatus status, UUID seatId, UUID eventId) {
 }

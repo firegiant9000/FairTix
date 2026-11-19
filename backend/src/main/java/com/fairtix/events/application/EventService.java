@@ -75,6 +75,7 @@ public class EventService {
   private final UserRepository userRepository;
   private final TicketTransferRequestRepository transferRepository;
   private final AuditService auditService;
+  private final EventSaleGuard eventSaleGuard;
 
   @PersistenceContext
   private EntityManager entityManager;
@@ -89,7 +90,9 @@ public class EventService {
       OrganizationRepository organizationRepository,
       UserRepository userRepository,
       TicketTransferRequestRepository transferRepository,
-      AuditService auditService) {
+      AuditService auditService,
+      EventSaleGuard eventSaleGuard) {
+    this.eventSaleGuard = eventSaleGuard;
     this.repository = repository;
     this.venueRepository = venueRepository;
     this.performerRepository = performerRepository;
@@ -218,6 +221,8 @@ public class EventService {
   }
 
   public Event completeEvent(UUID eventId, UUID callerId) {
+    // Purchases in flight finish first; later ones see COMPLETED (EventSaleGuard).
+    eventSaleGuard.lockForStatusChange(eventId);
     Event event = repository.findById(eventId)
         .orElseThrow(() -> new ResourceNotFoundException("Event not found: " + eventId));
     verifyOwnership(event, callerId);
@@ -226,26 +231,46 @@ public class EventService {
   }
 
   /**
-   * Lock order, the one {@code RefundService.finalise} uses: the open refund rows of the
-   * event's orders (in {@code processCancellationRefunds}), then the event's VALID ticket rows
-   * one by one in {@link UUID#compareTo} order (finalise's order; PostgreSQL's own uuid order
-   * differs, so no {@code ORDER BY id} lock over several tickets), then their pending transfer
-   * requests in request-id order. {@code TransferService.acceptTransfer} takes one ticket,
-   * then its request. No cap lock is taken here, and none may be taken after a ticket lock.
+   * Lock order: first the event's sale lock, exclusively ({@link EventSaleGuard}); every
+   * purchase path holds it shared before its seat, ticket or request rows, so a purchase either
+   * commits before this reads anything or waits and is then refused. Then the
+   * one {@code RefundService.finalise} uses: the open refund rows of the event's orders (in
+   * {@code processCancellationRefunds}), then the event's VALID ticket rows one by one in
+   * {@link UUID#compareTo} order (finalise's order; PostgreSQL's own uuid order differs, so no
+   * {@code ORDER BY id} lock over several tickets), then their pending transfer requests in
+   * request-id order. {@code TransferService.acceptTransfer} takes one ticket, then its
+   * request. No cap lock is taken here, and none may be taken after a row lock.
    */
   public Event cancelEvent(UUID eventId, UUID callerId, String reason) {
+    // Before any other read: the holds, orders and tickets below must include everything a
+    // purchase that got the sale lock first has committed.
+    eventSaleGuard.lockForStatusChange(eventId);
     Event event = repository.findById(eventId)
         .orElseThrow(() -> new ResourceNotFoundException("Event not found: " + eventId));
+    // Under open-in-view the context may hold a copy read before the lock.
+    entityManager.refresh(event);
     verifyOwnership(event, callerId);
     event.cancel(reason);
 
-    // Release all ACTIVE holds for this event
-    List<SeatHold> activeHolds = seatHoldRepository.findAllBySeat_Event_IdAndStatus(eventId, HoldStatus.ACTIVE);
-    for (SeatHold hold : activeHolds) {
+    // Release the ACTIVE holds, and the CONFIRMED ones too: a confirmed hold is a checkout in
+    // progress, and left alone it could still be bought on the cancelled event.
+    List<SeatHold> liveHolds = seatHoldRepository.findAllBySeat_Event_IdAndStatusIn(
+        eventId, List.of(HoldStatus.ACTIVE, HoldStatus.CONFIRMED));
+    for (SeatHold hold : liveHolds) {
+      HoldStatus was = hold.getStatus();
       hold.setStatus(HoldStatus.RELEASED);
-      hold.getSeat().setStatus(SeatStatus.AVAILABLE);
+      SeatStatus seatStatus = hold.getSeat().getStatus();
+      // A SOLD seat belongs to the ticket (cancelled below), not to the hold.
+      if (seatStatus == SeatStatus.HELD || seatStatus == SeatStatus.BOOKED) {
+        hold.getSeat().setStatus(SeatStatus.AVAILABLE);
+      }
+      if (was == HoldStatus.CONFIRMED) {
+        auditService.logInCurrentTransaction(callerId, "RELEASE", "HOLD", hold.getId(),
+            "event cancelled, CONFIRMED hold released, seat " + hold.getSeat().getId()
+                + " was " + seatStatus + ", event=" + eventId);
+      }
     }
-    seatHoldRepository.saveAll(activeHolds);
+    seatHoldRepository.saveAll(liveHolds);
 
     // Approve a refund for every completed order (locks the open refund rows first)
     refundService.processCancellationRefunds(eventId, callerId);

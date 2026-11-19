@@ -55,7 +55,7 @@ public interface RefundRepository extends JpaRepository<RefundRequest, UUID> {
    * VALID ticket for the event, and returns their ids. Event cancellation takes these before
    * any ticket row, as {@code RefundService.finalise} takes its refund row before the tickets.
    * Only the cancellation locks several refund rows, and two cancellations of one event are
-   * already serialised on the event row, so their order among themselves doesn't matter.
+   * already serialised on the event's sale lock, so their order among themselves doesn't matter.
    */
   @Query(value = "SELECT id FROM refund_requests WHERE status IN ('REQUESTED', 'PENDING_MANUAL',"
       + " 'APPROVED') AND order_id IN (SELECT order_id FROM tickets WHERE event_id = :eventId"

@@ -3,6 +3,7 @@ package com.fairtix.tickets.application;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.common.AfterCommit;
 import com.fairtix.common.ResourceNotFoundException;
+import com.fairtix.events.application.EventSaleGuard;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.fraud.domain.RiskTier;
@@ -46,6 +47,7 @@ public class TransferService {
     private final PurchaseCapGuard purchaseCapGuard;
     private final RefundRepository refundRepository;
     private final EntityManager entityManager;
+    private final EventSaleGuard eventSaleGuard;
 
     public TransferService(TicketRepository ticketRepository,
                            TicketTransferRequestRepository transferRepository,
@@ -57,7 +59,9 @@ public class TransferService {
                            RiskScoringService riskScoringService,
                            PurchaseCapGuard purchaseCapGuard,
                            RefundRepository refundRepository,
-                           EntityManager entityManager) {
+                           EntityManager entityManager,
+                           EventSaleGuard eventSaleGuard) {
+        this.eventSaleGuard = eventSaleGuard;
         this.purchaseCapGuard = purchaseCapGuard;
         this.refundRepository = refundRepository;
         this.entityManager = entityManager;
@@ -91,6 +95,10 @@ public class TransferService {
         if (ticket.getStatus() != TicketStatus.VALID) {
             throw new IllegalStateException("Only VALID tickets can be transferred");
         }
+
+        // A request on an ended event could never be accepted. Unlocked: the acceptance
+        // checks again under the event's sale lock.
+        eventSaleGuard.requireOnSale(ticket.getEvent());
 
         transferRepository.findByTicket_IdAndStatus(ticketId, TransferStatus.PENDING).ifPresent(r -> {
             throw new IllegalStateException("A pending transfer request already exists for this ticket");
@@ -132,7 +140,7 @@ public class TransferService {
     }
 
     /**
-     * Lock order: the recipient's cap lock, then the ticket row. The ticket row
+     * Lock order: the recipient's cap lock, then the event's sale lock, then the ticket row. The ticket row
      * lock is the one {@code RefundService.finalise} takes, so an acceptance and a
      * refund of the same ticket run one after the other, and the second sees what
      * the first committed.
@@ -159,6 +167,9 @@ public class TransferService {
         if (cap != null) {
             purchaseCapGuard.lock(event.getId(), toUserId);
         }
+        // No transfers on an ended event. After the cap lock, before the ticket row: an event
+        // cancellation takes the sale lock before its tickets (EventSaleGuard lock order).
+        eventSaleGuard.lockOnSale(event.getId());
 
         // Lock the ticket, then the request, and re-read both: they were loaded
         // without a lock, and a refund, a cancel, a reject, an expiry or another

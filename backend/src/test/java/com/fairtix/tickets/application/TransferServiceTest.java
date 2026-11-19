@@ -82,7 +82,8 @@ class TransferServiceTest {
                 riskScoringService,
                 mock(PurchaseCapGuard.class),
                 refundRepository,
-                entityManager);
+                entityManager,
+                mock(com.fairtix.events.application.EventSaleGuard.class));
 
         when(riskScoringService.getTier(USER_ID)).thenReturn(RiskTier.LOW);
     }

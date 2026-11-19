@@ -20,6 +20,7 @@ import com.fairtix.boxoffice.application.BoxOfficeStateException;
 import com.fairtix.boxoffice.domain.BoxOfficeSale;
 import com.fairtix.boxoffice.domain.BoxOfficeSession;
 import com.fairtix.events.domain.Event;
+import com.fairtix.events.domain.EventNotOnSaleException;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.domain.Seat;
 import com.fairtix.inventory.infrastructure.SeatRepository;
@@ -87,6 +88,7 @@ class BoxOfficeCardPresentIT extends PostgresIT {
 
   @MockitoSpyBean private StripePaymentService stripePaymentService;
   @MockitoSpyBean private AuditService auditService;
+  @MockitoSpyBean private com.fairtix.events.application.EventSaleGuard eventSaleGuard;
 
   private final List<String> sentKeys = new CopyOnWriteArrayList<>();
   private final List<Boolean> txActiveAtStripe = new CopyOnWriteArrayList<>();
@@ -178,6 +180,26 @@ class BoxOfficeCardPresentIT extends PostgresIT {
     assertThat(sale.getOrderId()).isNotNull();
     assertThat(jdbcTemplate.queryForObject(
         "SELECT status FROM seats WHERE id = ?", String.class, seat.getId())).isEqualTo("SOLD");
+  }
+
+  /**
+   * The intent's seat hold is before the charge (the short sale-lock wait); the confirm is after
+   * it (the longer wait), since giving up there leaves a charge for the refund runbook.
+   */
+  @Test
+  void saleLockWaits_shortBeforeTheCharge_longerAfterIt() {
+    stubIntent("pi_test_bo_wait");
+    boxOfficeService.createCardPresentIntent(session.getId(), org.getId(), staff.getId(),
+        event.getId(), List.of(seat.getId()), "tmr_test");
+    verify(eventSaleGuard).lockOnSale(event.getId());
+    verify(eventSaleGuard, times(0)).lockOnSaleAfterCharge(event.getId());
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(eq("pi_test_bo_wait"), anyLong());
+
+    boxOfficeService.confirmCardSale(session.getId(), org.getId(), staff.getId(),
+        "pi_test_bo_wait", null, null);
+
+    verify(eventSaleGuard).lockOnSaleAfterCharge(event.getId());
+    verify(eventSaleGuard, times(1)).lockOnSale(event.getId());
   }
 
   /** A confirmed sale is returned as is, without asking Stripe again. */
@@ -355,6 +377,48 @@ class BoxOfficeCardPresentIT extends PostgresIT {
         .isInstanceOf(BoxOfficeStateException.class)
         .hasMessageContaining("Held seats no longer match");
     assertNoOrderAndNotCompletedRow("pi_test_bo_c7", "BoxOfficeStateException");
+  }
+
+  /** A cancelled event sells nothing at the door either. */
+  @Test
+  void cashSale_onACancelledEvent_isRefused() {
+    jdbcTemplate.update("UPDATE events SET status = 'CANCELLED' WHERE id = ?", event.getId());
+
+    assertThatThrownBy(() -> boxOfficeService.recordCashSale(session.getId(), org.getId(),
+        staff.getId(), event.getId(), List.of(seat.getId()), null, null))
+        .isInstanceOf(EventNotOnSaleException.class);
+    assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM tickets", Integer.class)).isZero();
+  }
+
+  @Test
+  void cardIntent_onACancelledEvent_isRefusedBeforeStripe() {
+    stubIntent("pi_test_bo_closed");
+    jdbcTemplate.update("UPDATE events SET status = 'CANCELLED' WHERE id = ?", event.getId());
+
+    assertThatThrownBy(() -> boxOfficeService.createCardPresentIntent(session.getId(), org.getId(),
+        staff.getId(), event.getId(), List.of(seat.getId()), "tmr_test"))
+        .isInstanceOf(EventNotOnSaleException.class);
+    assertThat(txActiveAtStripe).isEmpty();
+  }
+
+  /**
+   * The event is cancelled while the reader takes the card: the charge has succeeded, the
+   * sale is refused, and the charge goes on record for the runbook.
+   */
+  @Test
+  void confirmAfterTheEventWasCancelledDuringTheStripeCheck_isRefusedAndRecorded() {
+    stubIntent("pi_test_bo_c11");
+    boxOfficeService.createCardPresentIntent(session.getId(), org.getId(), staff.getId(),
+        event.getId(), List.of(seat.getId()), "tmr_test");
+    doAnswer(inv -> {
+      jdbcTemplate.update("UPDATE events SET status = 'CANCELLED' WHERE id = ?", event.getId());
+      return true;
+    }).when(stripePaymentService).verifyPaymentSucceeded(eq("pi_test_bo_c11"), anyLong());
+
+    assertThatThrownBy(() -> boxOfficeService.confirmCardSale(session.getId(), org.getId(),
+        staff.getId(), "pi_test_bo_c11", null, null))
+        .isInstanceOf(EventNotOnSaleException.class);
+    assertNoOrderAndNotCompletedRow("pi_test_bo_c11", "EventNotOnSaleException");
   }
 
   /**

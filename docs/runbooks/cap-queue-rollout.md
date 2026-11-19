@@ -22,11 +22,13 @@ The SQL lives in [cap-queue-checks.sql](cap-queue-checks.sql). Every query in it
 
 | Property | Default | What it bounds |
 | --- | --- | --- |
-| `fairtix.transaction-lock.wait-ms` | 3000 | Wait for the (event, user) purchase-cap lock: holds, checkout, PaymentIntent creation, transfer acceptance |
+| `fairtix.transaction-lock.wait-ms` | 3000 | Wait for the (event, user) purchase-cap lock: holds, checkout, PaymentIntent creation, transfer acceptance. Also the per-event sale lock for a purchase whose card has already been charged (Stripe checkout, box-office card confirm) |
+| `fairtix.event-sale-lock.purchase-wait-ms` | 500 | Wait for the per-event sale lock (shared) by a purchase that has charged no one yet: holds, hold confirm, PaymentIntent creation, simulated checkout, comps, transfer acceptance, box-office holds. While a large event is being cancelled or completed, these answer 409 `REQUEST_IN_PROGRESS` after this wait |
+| `fairtix.event-sale-lock.status-change-wait-ms` | 20000 | Wait for the per-event sale lock (exclusive) by an event's cancellation or completion, for the purchases in flight to finish. New purchases queue behind it. If it runs out, the cancellation answers 409 `REQUEST_IN_PROGRESS` and changes nothing; retry it |
 | `queue.join-lock-wait-ms` | 500 | Wait for the per-event lock when joining a capped queue |
 | `spring.datasource.hikari.maximum-pool-size` | 10 (Hikari default; not set) | Connections per instance; every request waiting on a lock holds one |
 
-Stripe checkout retries order creation 3 times on a busy lock (constant in `PaymentController`), so a customer who has paid can wait up to about 9 seconds before a 409. The frontend does not retry checkout on top of that. When those 3 attempts fail, `PaymentController` writes a `STRIPE_ORDER_BUSY` audit row before answering 409. Any other failure after the charge writes `STRIPE_ORDER_FAILED`. That includes the 402 answered when verification fails, which is almost always an amount mismatch on a paid intent (a seat price changed, or a hold was swapped); its details carry `error=PaymentNotVerified`. A double submit whose order the other request already created writes neither. The customer's holds stay confirmed, so trying again can still create the order. That is why `stripe_charges_without_order` checks for a payment record instead of counting audit rows.
+Stripe checkout retries order creation 3 times on a busy lock (constant in `PaymentController`), so a customer who has paid can wait up to about 9 seconds before a 409. The frontend does not retry checkout on top of that. When those 3 attempts fail, `PaymentController` writes a `STRIPE_ORDER_BUSY` audit row before answering 409. Any other failure after the charge writes `STRIPE_ORDER_FAILED`. That includes the 402 answered when verification fails, which is almost always an amount mismatch on a paid intent (a seat price changed, or a hold was swapped); its details carry `error=PaymentNotVerified`. A checkout refused because the event was cancelled, completed or archived while the customer paid carries `error=EventNotOnSaleException` (the box office's `BOX_OFFICE_CARD_NOT_COMPLETED` likewise); no retry can complete it, so it needs a refund. A double submit whose order the other request already created writes neither. The customer's holds stay confirmed, so trying again can still create the order. That is why `stripe_charges_without_order` checks for a payment record instead of counting audit rows.
 
 ## Before deploying
 
@@ -101,7 +103,7 @@ Not measured: more than one instance, a real network between app and database, a
 ## Rollback
 
 1. Redeploy the previous image. That is the rollback path. If a code revert is unavoidable, revert only #271, #273, #274, #276, #277 and #278 (newest first). **Do not revert #275**: it pins the swagger-ui fix for CVE-2026-116803, and reverting it brings the vulnerable DOMPurify back and fails the Trivy and OWASP gates. #272 is docs only. No schema or data changes to undo; advisory locks disappear with the transactions that held them.
-2. Without a redeploy, `fairtix.transaction-lock.wait-ms` and `queue.join-lock-wait-ms` can be raised to trade 409s for longer waits. There is no switch that turns the locks off.
+2. Without a redeploy, `fairtix.transaction-lock.wait-ms`, the two `fairtix.event-sale-lock.*` waits and `queue.join-lock-wait-ms` can be raised to trade 409s for longer waits. There is no switch that turns the locks off.
 3. After a rollback the old rules return: a refunded ticket blocks checkout and queue join again, and a confirmed hold stops counting at the hold gate. Users who rebought after a refund keep their tickets.
 
 ## Known limits

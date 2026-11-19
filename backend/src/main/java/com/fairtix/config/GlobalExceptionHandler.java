@@ -3,6 +3,7 @@ package com.fairtix.config;
 import com.fairtix.auth.application.RegistrationClosedException;
 import com.fairtix.common.LockBusyException;
 import com.fairtix.common.ResourceNotFoundException;
+import com.fairtix.events.domain.EventNotOnSaleException;
 import com.fairtix.inventory.application.DuplicateSeatException;
 import com.fairtix.inventory.application.SeatHoldConflictException;
 import com.fairtix.inventory.application.SeatHoldNotFoundException;
@@ -263,6 +264,12 @@ public class GlobalExceptionHandler {
   public ResponseEntity<Map<String, Object>> handleBoxOfficeState(
       BoxOfficeStateException ex, HttpServletRequest req) {
     return error(HttpStatus.CONFLICT, "BOX_OFFICE_STATE", ex.getMessage(), req);
+  }
+
+  @ExceptionHandler(EventNotOnSaleException.class)
+  public ResponseEntity<Map<String, Object>> handleEventNotOnSale(
+      EventNotOnSaleException ex, HttpServletRequest req) {
+    return error(HttpStatus.CONFLICT, "EVENT_NOT_ON_SALE", ex.getMessage(), req);
   }
 
   @ExceptionHandler(PurchaseCapExceededException.class)

@@ -8,6 +8,7 @@ import com.fairtix.boxoffice.domain.SessionStatus;
 import com.fairtix.boxoffice.infrastructure.BoxOfficeSaleRepository;
 import com.fairtix.boxoffice.infrastructure.BoxOfficeSessionRepository;
 import com.fairtix.common.ResourceNotFoundException;
+import com.fairtix.events.application.EventSaleGuard;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.application.SeatHoldConflictException;
@@ -93,6 +94,7 @@ public class BoxOfficeService {
   private final OrgSalesCapService salesCapService;
   private final AuditService auditService;
   private final TransactionTemplate transactionTemplate;
+  private final EventSaleGuard eventSaleGuard;
 
   @PersistenceContext
   private EntityManager entityManager;
@@ -111,7 +113,9 @@ public class BoxOfficeService {
                           StripePaymentService stripePaymentService,
                           OrgSalesCapService salesCapService,
                           AuditService auditService,
-                          PlatformTransactionManager transactionManager) {
+                          PlatformTransactionManager transactionManager,
+                          EventSaleGuard eventSaleGuard) {
+    this.eventSaleGuard = eventSaleGuard;
     this.sessions = sessions;
     this.sales = sales;
     this.seatRepository = seatRepository;
@@ -435,6 +439,12 @@ public class BoxOfficeService {
                                          long expectedAmountCents,
                                          String customerEmail, String customerName) {
     UUID eventId = pending.getEventId();
+    // The charge has succeeded, but an event cancelled since the intent sells nothing: the
+    // caller records BOX_OFFICE_CARD_NOT_COMPLETED for the refund runbook. Taken after the
+    // sale row lock; the cancellation never locks sale rows, so that order can't deadlock
+    // with it. Before the hold and seat writes (EventSaleGuard lock order). The longer
+    // after-charge wait: the card has already been charged.
+    eventSaleGuard.lockOnSaleAfterCharge(eventId);
     List<UUID> seatIds = seatHoldRepository.findAllByOwnerIdAndStatus(staffUserId, HoldStatus.ACTIVE)
         .stream()
         .filter(h -> h.getSeat().getEvent().getId().equals(eventId))
@@ -504,6 +514,9 @@ public class BoxOfficeService {
     if (event.getOrganizationId() == null || !event.getOrganizationId().equals(organizationId)) {
       throw new AccessDeniedException("Event does not belong to this organization");
     }
+    // Before the seat locks (EventSaleGuard lock order). The card path calls this before
+    // Stripe, so an ended event is refused without creating an intent.
+    eventSaleGuard.lockOnSale(eventId);
     List<UUID> sortedIds = seatIds.stream().distinct().sorted().toList();
     List<Seat> locked = seatRepository.findAndLockByIdIn(sortedIds);
     if (locked.size() != sortedIds.size()) {

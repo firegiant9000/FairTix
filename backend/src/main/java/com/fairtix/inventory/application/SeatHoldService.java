@@ -2,6 +2,7 @@ package com.fairtix.inventory.application;
 
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.common.TransactionLock;
+import com.fairtix.events.application.EventSaleGuard;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.domain.HoldStatus;
@@ -35,6 +36,7 @@ public class SeatHoldService {
   private final QueueService queueService;
   private final PurchaseCapGuard purchaseCapGuard;
   private final TransactionLock transactionLock;
+  private final EventSaleGuard eventSaleGuard;
 
   @Value("${holds.duration-minutes:10}")
   private int defaultDurationMinutes;
@@ -54,8 +56,10 @@ public class SeatHoldService {
       AuditService auditService,
       QueueService queueService,
       PurchaseCapGuard purchaseCapGuard,
-      TransactionLock transactionLock) {
+      TransactionLock transactionLock,
+      EventSaleGuard eventSaleGuard) {
     this.transactionLock = transactionLock;
+    this.eventSaleGuard = eventSaleGuard;
     this.seatRepository = seatRepository;
     this.seatHoldRepository = seatHoldRepository;
     this.eventRepository = eventRepository;
@@ -120,6 +124,9 @@ public class SeatHoldService {
                 + " (purchased: " + purchased + ", held: " + heldAlready + ", requested: " + requested + ")");
       }
     }
+
+    // After the advisory locks above, before any seat lock (EventSaleGuard lock order).
+    eventSaleGuard.lockOnSale(eventId);
 
     // Hold limit, counted under the hold-limit lock and before any seat lock.
     long activeCount = seatHoldRepository.countByOwnerIdAndStatus(ownerId, HoldStatus.ACTIVE);
@@ -278,6 +285,9 @@ public class SeatHoldService {
       throw new SeatHoldConflictException("Hold has expired");
     }
 
+    // Before the hold and seat writes (EventSaleGuard lock order).
+    eventSaleGuard.lockOnSale(hold.getSeat().getEvent().getId());
+
     hold.setStatus(HoldStatus.CONFIRMED);
     Seat seat = hold.getSeat();
     seat.setStatus(SeatStatus.BOOKED);
@@ -334,6 +344,9 @@ public class SeatHoldService {
             "Hold " + id + " is not confirmed (status: " + ref.status() + ")");
       }
     }
+
+    // No payment intent for an ended event. Before the hold-row locks below (EventSaleGuard).
+    eventSaleGuard.lockOnSale(refs.values().stream().map(HoldSeatRef::eventId).toList());
 
     Instant extendTo = Instant.now().plusSeconds(defaultDurationMinutes * 60L);
     seatHoldRepository.extendExpiry(ids, HoldStatus.CONFIRMED, extendTo);
