@@ -8,11 +8,13 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fairtix.audit.application.AuditService;
 import com.fairtix.boxoffice.application.BoxOfficeService;
 import com.fairtix.boxoffice.application.BoxOfficeStateException;
 import com.fairtix.boxoffice.domain.BoxOfficeSale;
@@ -50,9 +52,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Exposure gate (b): the card-present PaymentIntent is created after the holds and
@@ -64,6 +69,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * held, with no idempotency key, and before the sale row existed.
  * {@code stripeFailure_releasesSeatsAndSale} is a guard for the compensating path.
  */
+// Its own context (spies on StripePaymentService and AuditService): close it after the class
+// so its pool doesn't count against the shared container's max_connections for the rest of the suite.
+@DirtiesContext
 @TestPropertySource(properties = "stripe.enabled=true")
 class BoxOfficeCardPresentIT extends PostgresIT {
 
@@ -75,8 +83,10 @@ class BoxOfficeCardPresentIT extends PostgresIT {
   @Autowired private UserRepository userRepository;
   @Autowired private JdbcTemplate jdbcTemplate;
   @Autowired private EntityManagerFactory entityManagerFactory;
+  @Autowired private PlatformTransactionManager transactionManager;
 
   @MockitoSpyBean private StripePaymentService stripePaymentService;
+  @MockitoSpyBean private AuditService auditService;
 
   private final List<String> sentKeys = new CopyOnWriteArrayList<>();
   private final List<Boolean> txActiveAtStripe = new CopyOnWriteArrayList<>();
@@ -321,6 +331,134 @@ class BoxOfficeCardPresentIT extends PostgresIT {
         .hasMessageContaining("Session is closed");
     assertThat(jdbcTemplate.queryForObject(
         "SELECT status FROM seats WHERE id = ?", String.class, seat.getId())).isEqualTo("HELD");
+    assertNoOrderAndNotCompletedRow("pi_test_bo_c5", "BoxOfficeStateException");
+  }
+
+  /**
+   * The customer was charged, then the held seats stopped matching the sale (here the hold
+   * was released while the confirm talked to Stripe). The confirm is refused, and the
+   * charge goes on record for the runbook.
+   */
+  @Test
+  void confirmAfterTheHoldsChangedDuringTheStripeCheck_isRefusedAndRecorded() {
+    stubIntent("pi_test_bo_c7");
+    boxOfficeService.createCardPresentIntent(session.getId(), org.getId(), staff.getId(),
+        event.getId(), List.of(seat.getId()), "tmr_test");
+    doAnswer(inv -> {
+      jdbcTemplate.update("UPDATE seat_holds SET status = 'RELEASED' WHERE seat_id = ?",
+          seat.getId());
+      return true;
+    }).when(stripePaymentService).verifyPaymentSucceeded(eq("pi_test_bo_c7"), anyLong());
+
+    assertThatThrownBy(() -> boxOfficeService.confirmCardSale(session.getId(), org.getId(),
+        staff.getId(), "pi_test_bo_c7", null, null))
+        .isInstanceOf(BoxOfficeStateException.class)
+        .hasMessageContaining("Held seats no longer match");
+    assertNoOrderAndNotCompletedRow("pi_test_bo_c7", "BoxOfficeStateException");
+  }
+
+  /**
+   * A retry whose completing transaction fails after another confirm already completed the
+   * sale (here: completed, then the session closed) is refused, but the charge has an order,
+   * so it writes no not-completed row.
+   */
+  @Test
+  void confirmRefusedAfterAnotherConfirmCompletedTheSale_writesNoNotCompletedRow() {
+    stubIntent("pi_test_bo_c8");
+    boxOfficeService.createCardPresentIntent(session.getId(), org.getId(), staff.getId(),
+        event.getId(), List.of(seat.getId()), "tmr_test");
+    AtomicInteger verifyCalls = new AtomicInteger();
+    doAnswer(inv -> {
+      if (verifyCalls.incrementAndGet() == 1) {
+        onAnotherThread(() -> boxOfficeService.confirmCardSale(session.getId(),
+            org.getId(), staff.getId(), "pi_test_bo_c8", null, null));
+        onAnotherThread(() -> boxOfficeService.closeSession(session.getId(), org.getId(),
+            new BigDecimal("100.00"), null, staff.getId()));
+      }
+      return true;
+    }).when(stripePaymentService).verifyPaymentSucceeded(eq("pi_test_bo_c8"), anyLong());
+
+    assertThatThrownBy(() -> inOpenInView(() -> boxOfficeService.confirmCardSale(session.getId(),
+        org.getId(), staff.getId(), "pi_test_bo_c8", null, null)))
+        .isInstanceOf(BoxOfficeStateException.class)
+        .hasMessageContaining("Session is closed");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT order_id FROM box_office_sales WHERE stripe_payment_intent_id = ?",
+        UUID.class, "pi_test_bo_c8")).isNotNull();
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'BOX_OFFICE_CARD_NOT_COMPLETED'",
+        Integer.class)).isZero();
+  }
+
+  /**
+   * The not-completed row can't be written either (say the database is down): the caller
+   * still gets the original error, with the audit failure attached, not the audit failure.
+   */
+  @Test
+  void confirmRefused_andTheAuditFails_rethrowsTheOriginalError() {
+    stubIntent("pi_test_bo_c9");
+    boxOfficeService.createCardPresentIntent(session.getId(), org.getId(), staff.getId(),
+        event.getId(), List.of(seat.getId()), "tmr_test");
+    doAnswer(inv -> {
+      jdbcTemplate.update("UPDATE seat_holds SET status = 'RELEASED' WHERE seat_id = ?",
+          seat.getId());
+      return true;
+    }).when(stripePaymentService).verifyPaymentSucceeded(eq("pi_test_bo_c9"), anyLong());
+    RuntimeException auditDown = new RuntimeException("audit down");
+    doThrow(auditDown).when(auditService).log(any(), eq("BOX_OFFICE_CARD_NOT_COMPLETED"),
+        anyString(), any(), anyString());
+
+    assertThatThrownBy(() -> boxOfficeService.confirmCardSale(session.getId(), org.getId(),
+        staff.getId(), "pi_test_bo_c9", null, null))
+        .isInstanceOf(BoxOfficeStateException.class)
+        .hasMessageContaining("Held seats no longer match")
+        .satisfies(ex -> assertThat(ex.getSuppressed()).contains(auditDown));
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'BOX_OFFICE_CARD_NOT_COMPLETED'",
+        Integer.class)).isZero();
+  }
+
+  /**
+   * The completing transaction fails after it wrote BOX_OFFICE_CARD_SALE: that row rolls back
+   * with the sale, so the record shows only the not-completed row.
+   */
+  @Test
+  void confirmRolledBackAfterTheSaleRow_leavesOnlyTheNotCompletedRow() {
+    stubIntent("pi_test_bo_c10");
+    boxOfficeService.createCardPresentIntent(session.getId(), org.getId(), staff.getId(),
+        event.getId(), List.of(seat.getId()), "tmr_test");
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(eq("pi_test_bo_c10"), anyLong());
+    // Stubbed inside a transaction: the spy wraps the MANDATORY transactional proxy.
+    new TransactionTemplate(transactionManager).executeWithoutResult(status ->
+        doAnswer(inv -> {
+          inv.callRealMethod();
+          throw new IllegalStateException("commit-time failure");
+        }).when(auditService).logInCurrentTransaction(any(), eq("BOX_OFFICE_CARD_SALE"),
+            anyString(), any(), anyString()));
+
+    assertThatThrownBy(() -> boxOfficeService.confirmCardSale(session.getId(), org.getId(),
+        staff.getId(), "pi_test_bo_c10", null, null))
+        .hasMessageContaining("commit-time failure");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'BOX_OFFICE_CARD_SALE'", Integer.class))
+        .isZero();
+    assertNoOrderAndNotCompletedRow("pi_test_bo_c10", "IllegalStateException");
+  }
+
+  /** The verified charge has no order, and one not-completed audit row names it. */
+  private void assertNoOrderAndNotCompletedRow(String intentId, String errorClass) {
+    UUID saleId = jdbcTemplate.queryForObject(
+        "SELECT id FROM box_office_sales WHERE stripe_payment_intent_id = ?", UUID.class, intentId);
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT order_id FROM box_office_sales WHERE id = ?", UUID.class, saleId)).isNull();
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM orders", Integer.class)).isZero();
+    List<String> details = jdbcTemplate.queryForList(
+        "SELECT details FROM audit_logs WHERE action = 'BOX_OFFICE_CARD_NOT_COMPLETED'"
+            + " AND resource_type = 'BOX_OFFICE_SALE' AND resource_id = ?", String.class, saleId);
+    assertThat(details).hasSize(1);
+    assertThat(details.get(0)).contains("intent=" + intentId, "eventId=" + event.getId(),
+        "error=" + errorClass);
   }
 
   /** Binds one EntityManager for the call, as OpenEntityManagerInViewInterceptor does per request. */

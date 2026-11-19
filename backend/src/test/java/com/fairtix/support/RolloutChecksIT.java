@@ -43,8 +43,83 @@ class RolloutChecksIT extends PostgresIT {
     assertThat(checks).containsKeys(
         "postgres_version", "users_over_cap", "queues_over_capacity",
         "duplicate_queue_positions", "lock_waiters", "connections_by_state", "advisory_locks_held",
-        "stripe_charges_without_order", "refunds_on_live_orders", "sales_not_recorded");
+        "stripe_charges_without_order", "refunds_on_live_orders", "sales_not_recorded",
+        "box_office_charges_without_sale");
     checks.forEach((name, sql) -> jdbcTemplate.queryForList(sql));
+  }
+
+  /**
+   * A box-office card sale with an intent and no order is listed, one row per sale, with or
+   * without not-completed rows, until it has an order; session_closed says whether a confirm
+   * could still complete it. Sales under five minutes old and cash sales are not listed.
+   */
+  @Test
+  void boxOfficeChargesWithoutSale_listsCardSalesWithNoOrder() throws Exception {
+    UUID staff = newUser("bo-check@test.com");
+    UUID org = UUID.randomUUID();
+    jdbcTemplate.update("INSERT INTO organizations (id, name, slug) VALUES (?, 'Org', ?)",
+        org, "org-" + org);
+    Event event = new Event("Door", null, Instant.now().plusSeconds(3600), staff);
+    event.setOrganizationId(org);
+    UUID eventId = eventRepository.save(event).getId();
+    UUID openSession = boxOfficeSession(org, staff, "OPEN");
+    UUID closedSession = boxOfficeSession(org, staff, "CLOSED");
+    UUID retried = cardSale(openSession, org, eventId, staff, "pi_bo_open", null);
+    UUID closed = cardSale(closedSession, org, eventId, staff, "pi_bo_closed", null);
+    UUID completed = cardSale(closedSession, org, eventId, staff, "pi_bo_done",
+        paidOrder(staff, "pi_bo_done", "COMPLETED"));
+    cardNotCompleted(staff, retried, eventId, "pi_bo_open", "BoxOfficeStateException");
+    cardNotCompleted(staff, retried, eventId, "pi_bo_open", "AccessDeniedException");
+    cardNotCompleted(staff, closed, eventId, "pi_bo_closed", "BoxOfficeStateException");
+    cardNotCompleted(staff, completed, eventId, "pi_bo_done", "BoxOfficeStateException");
+    // Never confirmed (or the confirm failed before completing): no audit row.
+    cardSale(closedSession, org, eventId, staff, "pi_bo_unconfirmed", null);
+    UUID fresh = cardSale(openSession, org, eventId, staff, "pi_bo_fresh", null);
+    jdbcTemplate.update("UPDATE box_office_sales SET created_at = now() WHERE id = ?", fresh);
+    jdbcTemplate.update("UPDATE box_office_sales SET method = 'CASH' WHERE id = ?",
+        cardSale(openSession, org, eventId, staff, "pi_bo_cash", null));
+
+    List<Map<String, Object>> rows =
+        jdbcTemplate.queryForList(checks().get("box_office_charges_without_sale"));
+
+    assertThat(rows).extracting(row -> row.get("payment_intent"))
+        .containsExactlyInAnyOrder("pi_bo_open", "pi_bo_closed", "pi_bo_unconfirmed");
+    Map<String, Object> open = row(rows, "pi_bo_open");
+    assertThat(open).containsEntry("sale_id", retried).containsEntry("session_closed", false)
+        .containsEntry("errors", "AccessDeniedException,BoxOfficeStateException");
+    assertThat(((Number) open.get("failed_confirms")).intValue()).isEqualTo(2);
+    assertThat(row(rows, "pi_bo_closed")).containsEntry("session_closed", true);
+    Map<String, Object> unconfirmed = row(rows, "pi_bo_unconfirmed");
+    assertThat(((Number) unconfirmed.get("failed_confirms")).intValue()).isZero();
+    assertThat(unconfirmed.get("errors")).isNull();
+  }
+
+  private UUID boxOfficeSession(UUID org, UUID staff, String status) {
+    UUID id = UUID.randomUUID();
+    jdbcTemplate.update("INSERT INTO box_office_sessions (id, organization_id, staff_user_id,"
+        + " status, opening_cash) VALUES (?, ?, ?, ?, 100.00)", id, org, staff, status);
+    return id;
+  }
+
+  private UUID cardSale(UUID session, UUID org, UUID eventId, UUID staff, String intentId,
+                        UUID orderId) {
+    UUID id = UUID.randomUUID();
+    jdbcTemplate.update("INSERT INTO box_office_sales (id, session_id, organization_id, event_id,"
+        + " order_id, method, amount, seat_count, stripe_payment_intent_id, staff_user_id,"
+        + " created_at) VALUES (?, ?, ?, ?, ?, 'CARD', 25.00, 1, ?, ?, now() - interval '1 hour')",
+        id, session, org, eventId, orderId, intentId, staff);
+    return id;
+  }
+
+  private void cardNotCompleted(UUID staff, UUID sale, UUID eventId, String intentId,
+                                String error) {
+    // Same details format as BoxOfficeService.recordCardNotCompletedSafely writes.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, resource_id, details, created_at)"
+            + " VALUES (?, ?, 'BOX_OFFICE_CARD_NOT_COMPLETED', 'BOX_OFFICE_SALE', ?, ?, now())",
+        UUID.randomUUID(), staff, sale,
+        "orgId=x eventId=" + eventId + " saleId=" + sale + " intent=" + intentId
+            + " amount=25.00 error=" + error);
   }
 
   /** A failed ledger write is listed until an ONLINE entry exists for its intent. */
