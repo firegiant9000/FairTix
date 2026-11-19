@@ -150,8 +150,8 @@ GROUP BY granted;
 -- unbound = true rows: none of the hold rules below or above apply; only this
 -- paragraph and the refund check above do. They come from STRIPE_ORDER_FAILED with
 -- error=PaymentIntentUnbound: checkout answered 409 PAYMENT_NOT_USABLE to a
--- paid intent with no fairtix_user_id and no fairtix_channel metadata, more
--- than 24 hours old. No checkout can ever use that intent, so its holds don't
+-- paid intent with no fairtix_user_id and no fairtix_channel metadata, whatever
+-- its age. No checkout can ever use that intent, so its holds don't
 -- gate a refund and contacting the customer to finish the order doesn't apply.
 -- Nothing on the intent proves FairTix online checkout created it (it may be a
 -- Dashboard charge, or a box-office intent from before fairtix_channel

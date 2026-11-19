@@ -175,8 +175,8 @@ public class PaymentController {
    *       created) and the customer has paid. A direct API call with an intent that
    *       never succeeded lands here too; the runbook checks the intent in Stripe
    *       before refunding.
-   *   <li>A paid intent with no owner, past the grace window for intents created
-   *       before owner binding: {@code STRIPE_ORDER_FAILED} with
+   *   <li>A paid intent with no owner (created before owner binding):
+   *       {@code STRIPE_ORDER_FAILED} with
    *       {@code error=PaymentIntentUnbound}. Checkout answers 409
    *       {@code PAYMENT_NOT_USABLE}, and no later attempt can use this intent.
    *   <li>The intent was not created for this user, hold set and routing:
@@ -473,7 +473,7 @@ public class PaymentController {
         verified = stripePaymentService.verifyPaymentSucceeded(
             paymentIntentId, expectedAmountCents, principal.getUserId());
       } catch (PaymentIntentNotOwnedException notOwned) {
-        // Only a paid pre-deploy intent past the grace window goes on record: it has no
+        // Only a paid pre-deploy intent goes on record: it has no
         // owner, so no checkout can ever complete it, and its charge needs a refund.
         // Another user's or channel's intent is not this caller's charge to report.
         if (PaymentIntentNotOwnedException.REASON_UNBOUND.equals(notOwned.getReason())

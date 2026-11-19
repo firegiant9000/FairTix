@@ -18,6 +18,8 @@ import com.stripe.param.RefundCreateParams;
 import com.stripe.param.RefundListParams;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
@@ -25,13 +27,12 @@ import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.slf4j.MDC;
 
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -232,22 +233,24 @@ class StripePaymentServiceTest {
     }
   }
 
-  /** Created before intents carried their user: accepted while recent. */
+  /** No grace for an intent without an owner, however recently it was created. */
   @Test
-  void verifyForUser_unboundIntentWithinGrace_returnsTrue() throws Exception {
-    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+  void verifyForUser_recentUnboundIntent_throwsNotOwned() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
       PaymentIntent intent = boundIntent(null);
-      when(intent.getCreated()).thenReturn(NOW.minus(Duration.ofHours(23)).getEpochSecond());
+      when(intent.getCreated()).thenReturn(Instant.now().minusSeconds(60).getEpochSecond());
       stubVerifyRetrieve(mocked, "pi_unbound_recent", intent);
 
-      assertTrue(service.verifyPaymentSucceeded("pi_unbound_recent", 5000L, OWNER));
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_unbound_recent", 5000L, OWNER))
+          .isInstanceOfSatisfying(PaymentIntentNotOwnedException.class, ex -> {
+            org.assertj.core.api.Assertions.assertThat(ex.getReason()).isEqualTo("unbound");
+            org.assertj.core.api.Assertions.assertThat(ex.isPaid()).isTrue();
+          });
     }
   }
 
   @Test
-  void verifyForUser_unboundIntentPastGrace_throwsNotOwned() {
-    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+  void verifyForUser_oldUnboundIntent_throwsNotOwned() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
       PaymentIntent intent = boundIntent(null);
       when(intent.getCreated()).thenReturn(NOW.minus(Duration.ofHours(25)).getEpochSecond());
@@ -263,12 +266,10 @@ class StripePaymentServiceTest {
 
   /** Not paid: checkout has no charge to put on record. */
   @Test
-  void verifyForUser_unpaidUnboundIntentPastGrace_throwsNotOwnedNotPaid() {
-    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+  void verifyForUser_unpaidUnboundIntent_throwsNotOwnedNotPaid() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
       PaymentIntent intent = boundIntent(null);
       when(intent.getStatus()).thenReturn("requires_payment_method");
-      when(intent.getCreated()).thenReturn(NOW.minus(Duration.ofHours(25)).getEpochSecond());
       stubVerifyRetrieve(mocked, "pi_unbound_unpaid", intent);
 
       assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_unbound_unpaid", 5000L, OWNER))
@@ -279,30 +280,32 @@ class StripePaymentServiceTest {
     }
   }
 
+  /** No metadata at all is unbound, not another channel's: a paid one goes on record. */
   @Test
-  void verifyForUser_unboundIntentWithoutCreated_throwsNotOwned() {
-    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+  void verifyForUser_nullMetadata_throwsUnbound() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
       PaymentIntent intent = boundIntent(null);
       when(intent.getMetadata()).thenReturn(null);
-      stubVerifyRetrieve(mocked, "pi_unbound_nocreated", intent);
+      stubVerifyRetrieve(mocked, "pi_unbound_nometadata", intent);
 
-      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_unbound_nocreated", 5000L, OWNER))
-          .isInstanceOf(PaymentIntentNotOwnedException.class);
+      assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_unbound_nometadata", 5000L, OWNER))
+          .isInstanceOfSatisfying(PaymentIntentNotOwnedException.class, ex -> {
+            org.assertj.core.api.Assertions.assertThat(ex.getReason()).isEqualTo("unbound");
+            org.assertj.core.api.Assertions.assertThat(ex.isPaid()).isTrue();
+          });
     }
   }
 
   /**
-   * A box-office intent carries no user, and is created after deploy too: the
-   * grace window for pre-deploy online intents must never cover it.
+   * A box-office intent carries no user: online checkout refuses it as another
+   * channel's, with or without an organizer's Connect routing.
    */
-  @Test
-  void verifyForUser_recentBoxOfficeIntent_throwsNotOwned() {
-    service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
+  @ParameterizedTest
+  @MethodSource("boxOfficeMetadata")
+  void verifyForUser_boxOfficeIntent_throwsNotOwned(Map<String, String> metadata) {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
       PaymentIntent intent = boundIntent(null);
-      when(intent.getMetadata()).thenReturn(Map.of("fairtix_channel", "box_office"));
-      when(intent.getCreated()).thenReturn(NOW.minus(Duration.ofMinutes(5)).getEpochSecond());
+      when(intent.getMetadata()).thenReturn(metadata);
       stubVerifyRetrieve(mocked, "pi_box_office", intent);
 
       assertThatThrownBy(() -> service.verifyPaymentSucceeded("pi_box_office", 5000L, OWNER))
@@ -311,7 +314,15 @@ class StripePaymentServiceTest {
     }
   }
 
-  /** The box-office path has no customer account and keeps the unbound check. */
+  /** Box-office metadata as createCardPresent writes it, without and with Connect routing. */
+  static Stream<Map<String, String>> boxOfficeMetadata() {
+    return Stream.of(
+        Map.of("fairtix_channel", "box_office"),
+        Map.of("fairtix_channel", "box_office",
+            "fairtix_org_id", UUID.randomUUID().toString()));
+  }
+
+  /** The box-office path has no customer account, so it does no owner check. */
   @Test
   void verifyWithoutUser_ignoresIntentOwner() throws Exception {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
