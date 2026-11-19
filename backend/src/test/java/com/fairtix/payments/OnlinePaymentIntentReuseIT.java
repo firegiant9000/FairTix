@@ -125,9 +125,10 @@ class OnlinePaymentIntentReuseIT extends PostgresIT {
   }
 
   /**
-   * A double click: both requests run the real hold extension. Both load the hold and
-   * its seat before either extends, so the first commit's seat version bump leaves the
-   * second holding a stale seat. Both must still get the secret.
+   * A double click: both requests run the real hold extension, and both read their holds
+   * before either extends. Before #298, each read put the Seat in the persistence
+   * context, so the first commit's version bump failed the second with a 409. Both must
+   * get the secret.
    */
   @Test
   @Timeout(45)

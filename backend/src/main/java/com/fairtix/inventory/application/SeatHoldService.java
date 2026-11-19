@@ -321,11 +321,14 @@ public class SeatHoldService {
     List<UUID> ids = holdIds.stream().distinct().toList();
     Map<UUID, HoldSeatRef> refs = seatHoldRepository.findRefsByIdInAndOwnerId(ids, ownerId).stream()
         .collect(Collectors.toMap(HoldSeatRef::id, Function.identity()));
+    // Not-found first, then status, so a missing hold wins over an unconfirmed one.
     for (UUID id : ids) {
-      HoldSeatRef ref = refs.get(id);
-      if (ref == null) {
+      if (!refs.containsKey(id)) {
         throw new SeatHoldNotFoundException("Hold not found: " + id);
       }
+    }
+    for (UUID id : ids) {
+      HoldSeatRef ref = refs.get(id);
       if (ref.status() != HoldStatus.CONFIRMED) {
         throw new SeatHoldConflictException(
             "Hold " + id + " is not confirmed (status: " + ref.status() + ")");
