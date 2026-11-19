@@ -291,19 +291,89 @@ class OnlinePaymentIntentServiceTest {
     assertEquals("pi_new", saved.getAllValues().get(1).getStripePaymentIntentId());
   }
 
+  /** Stubs Stripe replaying a chain of ended intents: key(null) → ids[0], key(ids[0]) → ids[1], ... */
+  private void replayChain(String... ids) {
+    String replaces = null;
+    for (String id : ids) {
+      when(stripe.createPaymentIntent(AMOUNT, "usd", null, USER,
+          StripeIdempotencyKeys.onlineIntent(USER, HOLDS, AMOUNT, null, replaces)))
+          .thenReturn(intent(id, "requires_payment_method", "secret_" + id));
+      replaces = id;
+    }
+  }
+
+  private void endedRow(String intentId, String stripeStatus) {
+    when(repo.existsByStripePaymentIntentId(intentId)).thenReturn(true);
+    when(stripe.retrievePaymentIntent(intentId))
+        .thenReturn(intent(intentId, stripeStatus, "secret_" + intentId));
+  }
+
   @Test
-  void replayOfInvalidatedIntent_twice_throwsRetryConflict() {
+  void replayOfInvalidatedIntent_twoReplacementsThenCrash_createsTheUnstoredOne() {
+    // pi_a was replaced by pi_b, pi_b by pi_c, and the process stopped before pi_c's row was
+    // inserted. Every create replays, so recovery has to walk the chain to pi_c.
     noRow();
-    stubCreate(intent("pi_dead", "requires_payment_method", "secret_dead"));
+    replayChain("pi_a", "pi_b", "pi_c");
+    endedRow("pi_a", "canceled");
+    endedRow("pi_b", "canceled");
+    when(repo.saveAndFlush(any()))
+        .thenThrow(new DataIntegrityViolationException("dup"))
+        .thenThrow(new DataIntegrityViolationException("dup"))
+        .thenAnswer(inv -> inv.getArgument(0));
+
+    assertEquals("secret_pi_c", service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    ArgumentCaptor<OnlinePaymentIntent> saved = ArgumentCaptor.forClass(OnlinePaymentIntent.class);
+    verify(repo, times(3)).saveAndFlush(saved.capture());
+    assertEquals("pi_c", saved.getAllValues().get(2).getStripePaymentIntentId());
+    verify(stripe, times(3)).createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+  }
+
+  @Test
+  void replayOfInvalidatedIntent_replacementReplaysPaidIntent_isReturnedNotReplaced() {
+    // The replacement replays an intent whose row a concurrent checkout ended as COMPLETED.
+    noRow();
+    replayChain("pi_dead", "pi_paid");
+    endedRow("pi_dead", "canceled");
+    endedRow("pi_paid", "succeeded");
     when(repo.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("dup"));
-    when(repo.existsByStripePaymentIntentId("pi_dead")).thenReturn(true);
-    when(stripe.retrievePaymentIntent("pi_dead"))
-        .thenReturn(intent("pi_dead", "canceled", "secret_dead"));
+
+    assertEquals("secret_pi_paid", service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    verify(stripe, times(2)).createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+  }
+
+  @Test
+  void replayOfInvalidatedIntent_chainLongerThanTheBound_throwsRetryConflict() {
+    int ended = OnlinePaymentIntentService.MAX_REPLAYED_REPLACEMENTS + 1;
+    String[] ids = new String[ended];
+    for (int i = 0; i < ended; i++) {
+      ids[i] = "pi_dead" + i;
+      endedRow(ids[i], "canceled");
+    }
+    noRow();
+    replayChain(ids);
+    when(repo.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("dup"));
 
     assertThrows(PaymentRetryConflictException.class,
         () -> service.clientSecretFor(USER, HOLDS, AMOUNT, null));
 
-    verify(stripe, times(2)).createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+    verify(stripe, times(ended))
+        .createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
+  }
+
+  @Test
+  void replayOfInvalidatedIntent_replayingItself_stopsAtTheBound() {
+    noRow();
+    stubCreate(intent("pi_dead", "requires_payment_method", "secret_dead"));
+    when(repo.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("dup"));
+    endedRow("pi_dead", "canceled");
+
+    assertThrows(PaymentRetryConflictException.class,
+        () -> service.clientSecretFor(USER, HOLDS, AMOUNT, null));
+
+    verify(stripe, times(OnlinePaymentIntentService.MAX_REPLAYED_REPLACEMENTS + 1))
+        .createPaymentIntent(anyLong(), anyString(), any(), any(), anyString());
   }
 
   @Test
