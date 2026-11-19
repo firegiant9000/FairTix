@@ -133,9 +133,18 @@ GROUP BY granted;
 -- STRIPE_ORDER_FAILED with error=PaymentIntentUnbound (unbound = true) means
 -- checkout answered 409 PAYMENT_NOT_USABLE to a paid intent created before
 -- intents carried their user, after its grace window. No checkout can ever use
--- that intent, so its holds don't gate the refund and it is never escalated:
--- check the charge in Stripe for a dispute, then refund. user_id is whoever
--- submitted it; the intent itself names no owner. Intents that got an
+-- that intent, so its holds don't gate the refund and it is never escalated.
+-- The code can't tell where an intent without metadata came from, so first
+-- confirm in Stripe that FairTix online checkout created it before the
+-- owner-binding deploy: no fairtix_ metadata at all, created before that
+-- deploy, and no box_office_sales row with this stripe_payment_intent_id. If
+-- any of that fails, don't refund: escalate. Then check the charge for a
+-- dispute and refund. user_id is whoever submitted it; the intent itself names
+-- no owner, and a different submitter shows up as a second row for the same
+-- intent. unbound = true overrides an earlier escalation of the same intent:
+-- any online intent from before that deploy and more than 24 hours old is dead,
+-- whatever its holds, so "contact the customer to finish the order" no longer
+-- applies to it. Intents that got an
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --
