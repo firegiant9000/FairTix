@@ -89,7 +89,8 @@ class StripePaymentControllerTest {
   @MockitoSpyBean
   private OrgSalesCapService salesCapService;
 
-  @Autowired private OrganizationRepository organizationRepository;
+  @MockitoSpyBean
+  private OrganizationRepository organizationRepository;
 
   private MockMvc mockMvc;
   private User user;
@@ -299,6 +300,71 @@ class StripePaymentControllerTest {
           assertThat(row.get("organization_id")).isEqualTo(orgId);
           assertThat(((Number) row.get("amount_cents")).longValue()).isEqualTo(5_000L);
         });
+  }
+
+  @Test
+  void checkout_holdsFromTwoOrgs_isRefusedBeforeAnyOrderAndAudited() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+    attachConnectOrg();
+    Organization otherOrg = organizationRepository.save(
+        new Organization("Other Org", "other-" + java.util.UUID.randomUUID(), "x@test.com"));
+    Event otherEvent = new Event("Other Event", null, Instant.now().plusSeconds(86400 * 30), null);
+    otherEvent.setOrganizationId(otherOrg.getId());
+    otherEvent = eventRepository.save(otherEvent);
+    Seat otherSeat = new Seat(otherEvent, "C", "1", "1", new BigDecimal("50.00"));
+    otherSeat.setStatus(SeatStatus.BOOKED);
+    otherSeat = seatRepository.save(otherSeat);
+    SeatHold otherHold = new SeatHold(otherSeat, user.getId(), Instant.now().plusSeconds(600));
+    otherHold.setStatus(HoldStatus.CONFIRMED);
+    otherHold = seatHoldRepository.save(otherHold);
+
+    String body = """
+        { "holdIds": ["%s", "%s"], "paymentIntentId": "pi_two_orgs" }
+        """.formatted(confirmedHold.getId(), otherHold.getId());
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isBadRequest());
+
+    verify(orderService, never()).createOrderWithStripePayment(any(), any(), anyString());
+    assertThat(jdbcTemplate.queryForList(
+        "SELECT details FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED' AND user_id = ?",
+        String.class, user.getId()))
+        .singleElement().asString()
+        .contains("stripe_intent=pi_two_orgs,")
+        .contains("error=ResponseStatusException");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'SALES_LEDGER_WRITE_FAILED' AND user_id = ?",
+        Integer.class, user.getId())).isZero();
+  }
+
+  @Test
+  void checkout_orgLookupFailsBeforeTheOrder_stillCreatesItAndRecordsTheSale() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+    java.util.UUID orgId = attachConnectOrg();
+    Organization org = organizationRepository.findById(orgId).orElseThrow();
+    // The first lookup (before the order) fails; the retry after the order succeeds.
+    doThrow(new org.springframework.dao.DataAccessResourceFailureException("db blip"))
+        .doReturn(java.util.Optional.of(org))
+        .when(organizationRepository).findById(orgId);
+
+    String body = """
+        { "holdIds": ["%s"], "paymentIntentId": "pi_lookup_blip" }
+        """.formatted(confirmedHold.getId());
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.orderStatus").value("COMPLETED"));
+
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM org_sales_ledger WHERE channel = 'ONLINE' AND source_id = 'pi_lookup_blip'",
+        Integer.class)).isEqualTo(1);
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action IN ('STRIPE_ORDER_FAILED', 'SALES_LEDGER_WRITE_FAILED')"
+            + " AND user_id = ?", Integer.class, user.getId())).isZero();
   }
 
   @Test

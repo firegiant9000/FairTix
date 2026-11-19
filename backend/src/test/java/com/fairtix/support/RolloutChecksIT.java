@@ -56,8 +56,7 @@ class RolloutChecksIT extends PostgresIT {
         org, "org-" + org);
     UUID missingOrder = UUID.randomUUID();
     ledgerWriteFailed(user, missingOrder, "pi_missing", org.toString());
-    UUID unknownOrgOrder = UUID.randomUUID();
-    ledgerWriteFailed(user, unknownOrgOrder, "pi_unknown_org", "null");
+    ledgerWriteFailed(user, UUID.randomUUID(), "pi_unknown_org", "null");
     ledgerWriteFailed(user, UUID.randomUUID(), "pi_reconciled", org.toString());
     jdbcTemplate.update("INSERT INTO org_sales_ledger (id, organization_id, amount_cents, channel,"
         + " source_id) VALUES (?, ?, 5000, 'ONLINE', 'pi_reconciled')", UUID.randomUUID(), org);
@@ -66,13 +65,16 @@ class RolloutChecksIT extends PostgresIT {
 
     assertThat(rows).extracting(row -> row.get("payment_intent"))
         .containsExactlyInAnyOrder("pi_missing", "pi_unknown_org");
-    Map<String, Object> missing = rows.stream()
-        .filter(row -> "pi_missing".equals(row.get("payment_intent"))).findFirst().orElseThrow();
+    Map<String, Object> missing = row(rows, "pi_missing");
     assertThat(missing.get("order_id")).isEqualTo(missingOrder);
     assertThat(missing.get("org_id")).isEqualTo(org.toString());
     assertThat(((Number) missing.get("amount_cents")).longValue()).isEqualTo(5000L);
-    assertThat(rows.stream().filter(row -> "pi_unknown_org".equals(row.get("payment_intent")))
-        .findFirst().orElseThrow().get("org_id")).isNull();
+    assertThat(row(rows, "pi_unknown_org").get("org_id")).isNull();
+  }
+
+  private static Map<String, Object> row(List<Map<String, Object>> rows, String paymentIntent) {
+    return rows.stream().filter(r -> paymentIntent.equals(r.get("payment_intent")))
+        .findFirst().orElseThrow();
   }
 
   private void ledgerWriteFailed(UUID user, UUID order, String paymentIntentId, String orgId) {

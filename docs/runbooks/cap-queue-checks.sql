@@ -240,7 +240,7 @@ ORDER BY first_seen_at DESC;
 -- the order committed but the ledger write failed (checkout still answered 201).
 -- A resubmit doesn't record the sale, so nothing repairs this on its own. Rows drop
 -- out once an ONLINE ledger entry exists for the intent. Expect no rows.
--- org_id is NULL when the org could not be resolved: take it from the order's event.
+-- org_id is NULL when the org lookup itself failed: take it from the order's event.
 SELECT s.order_id,
        s.payment_intent,
        s.org_id,

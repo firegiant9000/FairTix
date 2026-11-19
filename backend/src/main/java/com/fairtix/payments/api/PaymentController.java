@@ -246,11 +246,15 @@ public class PaymentController {
    * ledger can be reconciled, because a resubmit is answered by the replay path, which does not
    * record the sale. If the audit fails too, the ERROR log is the only trace.
    */
-  private void recordOnlineSaleSafely(UUID userId, java.util.List<UUID> holdIds, UUID orderId,
+  private void recordOnlineSaleSafely(UUID userId, java.util.List<UUID> holdIds,
+      boolean contextResolved, ConnectContext resolvedContext, UUID orderId,
       long amountCents, String paymentIntentId) {
     String orgId = null;
     try {
-      ConnectContext context = resolveConnectContext(holdIds, userId, amountCents);
+      // Resolved here only when the lookup before the order failed.
+      ConnectContext context = contextResolved
+          ? resolvedContext
+          : resolveConnectContext(holdIds, userId, amountCents);
       if (context == null) {
         return;
       }
@@ -428,7 +432,24 @@ public class PaymentController {
         throw notVerified;
       }
       Order order;
+      ConnectContext saleContext = null;
+      boolean saleContextResolved = false;
       try {
+        // Before the order: holds from more than one org are refused (400) while no order
+        // exists yet, so the charge goes on record for a refund like any failed order.
+        // Any other lookup failure must not cost the customer their order: the context is
+        // resolved again after the order commits.
+        try {
+          saleContext = resolveConnectContext(
+              request.holdIds(), principal.getUserId(), expectedAmountCents);
+          saleContextResolved = true;
+        } catch (ResponseStatusException refused) {
+          throw refused;
+        } catch (RuntimeException lookupFailure) {
+          log.warn("Sales-cap context lookup failed before the order; retrying after it:"
+              + " stripe_intent={}, error={}", paymentIntentId,
+              lookupFailure.getClass().getSimpleName());
+        }
         order = createStripeOrder(principal.getUserId(), request.holdIds(), paymentIntentId);
       } catch (RuntimeException ex) {
         auditStripeOrderNotCreatedSafely(
@@ -463,8 +484,8 @@ public class PaymentController {
       }
       // The order has committed. Before the sales-cap write, so a failure there can't skip it.
       completeOnlineIntentSafely(paymentIntentId);
-      recordOnlineSaleSafely(principal.getUserId(), request.holdIds(), order.getId(),
-          expectedAmountCents, paymentIntentId);
+      recordOnlineSaleSafely(principal.getUserId(), request.holdIds(), saleContextResolved,
+          saleContext, order.getId(), expectedAmountCents, paymentIntentId);
       var record = paymentRecordRepository.findByOrderId(order.getId()).orElseThrow();
       return PaymentResponse.from(record, order.getStatus());
     }
