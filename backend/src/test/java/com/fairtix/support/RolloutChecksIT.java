@@ -231,11 +231,11 @@ class RolloutChecksIT extends PostgresIT {
   }
 
   /**
-   * A paid unbound intent can never complete an order: it is marked, and confirmed
-   * holds don't escalate it, because they don't stand in the way of its refund.
+   * A paid unbound intent is marked and always escalated: nothing on it proves FairTix
+   * created it, so only the owner refunds it. A recent unbound row escalates too.
    */
   @Test
-  void stripeChargesWithoutOrder_marksUnboundRowsAndNeverEscalatesThem() throws Exception {
+  void stripeChargesWithoutOrder_marksUnboundRowsAndAlwaysEscalatesThem() throws Exception {
     UUID user = newUser("unbound@test.com");
     Event event = eventRepository.save(
         new Event("Unbound Concert", null, Instant.now().plusSeconds(86400), (UUID) null));
@@ -245,21 +245,22 @@ class RolloutChecksIT extends PostgresIT {
     // Same details format as PaymentController writes for PaymentIntentUnbound.
     jdbcTemplate.update(
         "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
-            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now() - interval '8 days')",
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
         UUID.randomUUID(), user,
         "Charge succeeded, but the intent predates owner binding and is past its grace window,"
             + " so no checkout can complete it; order not created: stripe_intent=pi_unbound,"
-            + " holdIds=" + List.of(holdId) + ", error=PaymentIntentUnbound");
-    failedStripeOrder(user, "pi_bound", "STRIPE_ORDER_FAILED", holdId, "8 days");
+            + " holdIds=" + List.of(UUID.randomUUID()) + ", error=PaymentIntentUnbound");
+    failedStripeOrder(user, "pi_bound_recent", "STRIPE_ORDER_FAILED", holdId, "1 day");
 
+    // Recent, and no hold confirmed: escalated only because it is unbound.
     Map<String, Object> unbound = chargeWithoutOrder("pi_unbound");
     assertThat(unbound).containsEntry("unbound", true);
     assertThat(unbound).containsEntry("not_verified", false);
-    assertThat(((Number) unbound.get("holds_still_confirmed")).intValue()).isEqualTo(1);
-    assertThat(unbound).containsEntry("escalate", false);
-    Map<String, Object> bound = chargeWithoutOrder("pi_bound");
+    assertThat(((Number) unbound.get("holds_still_confirmed")).intValue()).isZero();
+    assertThat(unbound).containsEntry("escalate", true);
+    Map<String, Object> bound = chargeWithoutOrder("pi_bound_recent");
     assertThat(bound).containsEntry("unbound", false);
-    assertThat(bound).containsEntry("escalate", true);
+    assertThat(bound).containsEntry("escalate", false);
   }
 
   /**

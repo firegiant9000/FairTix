@@ -591,6 +591,9 @@ class StripePaymentControllerTest {
             .content(checkoutBody(confirmedHold.getId(), "pi_unbound_audit_down")))
         .andExpect(status().isConflict())
         .andExpect(jsonPath("$.code").value("PAYMENT_NOT_USABLE"));
+
+    verify(auditService).log(eq(user.getId()), eq("STRIPE_ORDER_FAILED"), eq("PAYMENT"),
+        org.mockito.ArgumentMatchers.isNull(), anyString());
   }
 
   /** A paid box-office intent is not this caller's charge: no row, like another user's. */

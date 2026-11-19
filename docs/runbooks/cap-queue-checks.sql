@@ -130,21 +130,17 @@ GROUP BY granted;
 --                       JOIN seats s2 ON s2.id = h2.seat_id
 --                       WHERE h2.id = '<a listed hold id>');
 -- Refund only if that returns no rows.
--- STRIPE_ORDER_FAILED with error=PaymentIntentUnbound (unbound = true) means
--- checkout answered 409 PAYMENT_NOT_USABLE to a paid intent created before
--- intents carried their user, after its grace window. No checkout can ever use
--- that intent, so its holds don't gate the refund and it is never escalated.
--- The code can't tell where an intent without metadata came from, so first
--- confirm in Stripe that FairTix online checkout created it before the
--- owner-binding deploy: no fairtix_ metadata at all, created before that
--- deploy, and no box_office_sales row with this stripe_payment_intent_id. If
--- any of that fails, don't refund: escalate. Then check the charge for a
--- dispute and refund. user_id is whoever submitted it; the intent itself names
--- no owner, and a different submitter shows up as a second row for the same
--- intent. unbound = true overrides an earlier escalation of the same intent:
--- any online intent from before that deploy and more than 24 hours old is dead,
--- whatever its holds, so "contact the customer to finish the order" no longer
--- applies to it. Intents that got an
+-- Exception to every hold rule in this comment: unbound = true (STRIPE_ORDER_FAILED with
+-- error=PaymentIntentUnbound) means checkout answered 409 PAYMENT_NOT_USABLE
+-- to a paid intent with no fairtix_user_id and no fairtix_channel, more than
+-- 24 hours old. No checkout can ever use that intent, so its holds don't gate
+-- the refund and "contact the customer to finish the order" doesn't apply.
+-- But nothing on the intent proves FairTix online checkout created it (it may
+-- be a Dashboard charge, or a box-office intent from before fairtix_channel
+-- existed), so these rows are always escalate = true and only the repo owner
+-- refunds them, after confirming the origin in Stripe and checking for a
+-- dispute. user_id is whoever submitted the intent, not a verified owner; a
+-- second submitter shows up as a second row for the same intent. Intents that got an
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --
@@ -186,10 +182,10 @@ SELECT f.payment_intent,
        CASE WHEN COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0 THEN NULL
             ELSE MAX(f.holds_still_confirmed)
        END                                       AS holds_still_confirmed,
-       MIN(f.created_at) < now() - interval '7 days'
-         AND NOT bool_or(f.unbound)
-         AND (COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0
-              OR MAX(f.holds_still_confirmed) > 0) AS escalate
+       bool_or(f.unbound)
+         OR (MIN(f.created_at) < now() - interval '7 days'
+             AND (COUNT(*) FILTER (WHERE f.holds_still_confirmed IS NULL) > 0
+                  OR MAX(f.holds_still_confirmed) > 0)) AS escalate
 FROM (
   SELECT substring(a.details from 'stripe_intent=([^,]+)') AS payment_intent,
          a.user_id,
