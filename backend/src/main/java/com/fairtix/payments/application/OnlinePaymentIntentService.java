@@ -199,7 +199,9 @@ public class OnlinePaymentIntentService {
    * An age cutoff alone is unsafe (confirmed holds can be extended indefinitely, and deleting the
    * row would let the next /intent create a second payable intent), so the intent is canceled in
    * Stripe first. A paid or in-flight intent is never canceled. If the customer does come back, the
-   * lookup in {@link #clientSecretFor} sees the canceled intent and replaces it.
+   * lookup in {@link #clientSecretFor} sees the canceled intent and replaces it. The cutoff is the
+   * row's age, not when it was last handed out, so a customer still on the checkout page when the
+   * job runs gets one failed payment attempt and a fresh intent on reload; no money moves.
    *
    * <p>Not transactional: the Stripe calls stay outside DB transactions.
    */
@@ -215,7 +217,11 @@ public class OnlinePaymentIntentService {
           intentId);
       return AbandonedIntentOutcome.LEFT_PAID;
     }
-    if (!"canceled".equals(current.status())) {
+    if ("canceled".equals(current.status())) {
+      // Canceled elsewhere, or by an earlier run whose audit write failed: still put it on record.
+      auditService.log(row.getUserId(), "PAYMENT_INTENT_ABANDONED", "PAYMENT", null,
+          "stripe_intent=" + intentId + ", already_canceled=true");
+    } else {
       StripeIntent after = stripe.cancelPaymentIntent(intentId);
       if (PAID_OR_IN_FLIGHT.contains(after.status())) {
         log.warn("Old online intent was paid while being canceled, left ACTIVE: {}", intentId);

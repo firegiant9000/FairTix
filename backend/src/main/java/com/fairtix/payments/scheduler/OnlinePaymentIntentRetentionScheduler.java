@@ -31,11 +31,26 @@ public class OnlinePaymentIntentRetentionScheduler {
   static final int BATCH_SIZE = 100;
 
   /** Stops the abandoned-row pass when Stripe keeps failing, rather than calling it for every row. */
-  static final int MAX_CONSECUTIVE_FAILURES = 10;
+  static final int MAX_CONSECUTIVE_FAILURES = 3;
+
+  /**
+   * Per-run budget. All {@code @Scheduled} jobs share one thread (hold expiry, queue admission),
+   * so the pass yields after this many rows or this long and resumes from there the next run.
+   */
+  static final int MAX_ROWS_PER_RUN = 200;
+  static final Duration MAX_RUN_TIME = Duration.ofMinutes(2);
+
+  private static final UUID START = new UUID(0L, 0L);
 
   private final OnlinePaymentIntentRepository repository;
   private final OnlinePaymentIntentService intents;
   private Clock clock = Clock.systemUTC();
+
+  /**
+   * Where the next run picks up: after the last row this one handled, or the start once a run
+   * reaches the end. In memory only, so a restart begins again from the start, which is harmless.
+   */
+  private UUID resumeAfter = START;
 
   public OnlinePaymentIntentRetentionScheduler(OnlinePaymentIntentRepository repository,
       OnlinePaymentIntentService intents) {
@@ -64,18 +79,27 @@ public class OnlinePaymentIntentRetentionScheduler {
   /**
    * Ends ACTIVE rows created before the cutoff whose checkout never completed: unpaid intents are
    * canceled in Stripe, paid ones are left for the runbook. Ended rows are deleted by a later run,
-   * 30 days after they were ended.
+   * 30 days after they were ended. Rows that failed are skipped until the pass comes round again.
    */
   private void endAbandonedRows(Instant cutoff) {
     Map<AbandonedIntentOutcome, Integer> counts = new EnumMap<>(AbandonedIntentOutcome.class);
+    Instant deadline = clock.instant().plus(MAX_RUN_TIME);
+    int handled = 0;
     int failures = 0;
     int consecutiveFailures = 0;
-    UUID after = new UUID(0L, 0L);
+    UUID after = resumeAfter;
+    String stoppedBecause = null;
     pages:
     while (true) {
       List<OnlinePaymentIntent> page =
           repository.findActiveCreatedBefore(cutoff, after, Limit.of(BATCH_SIZE));
       for (OnlinePaymentIntent row : page) {
+        if (handled >= MAX_ROWS_PER_RUN || !clock.instant().isBefore(deadline)) {
+          stoppedBecause = "run budget used";
+          break pages;
+        }
+        handled++;
+        after = row.getId();
         try {
           counts.merge(intents.endIfAbandoned(row), 1, Integer::sum);
           consecutiveFailures = 0;
@@ -84,17 +108,18 @@ public class OnlinePaymentIntentRetentionScheduler {
           consecutiveFailures++;
           log.warn("Could not end old online intent row {}", row.getStripePaymentIntentId(), e);
           if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-            log.error("Stopped ending old online intent rows after {} failures in a row",
-                consecutiveFailures);
+            stoppedBecause = consecutiveFailures + " failures in a row";
             break pages;
           }
         }
       }
       if (page.size() < BATCH_SIZE) {
+        after = START;
         break;
       }
-      after = page.get(page.size() - 1).getId();
     }
-    log.info("Old ACTIVE online intent rows: {}, failed {}", counts, failures);
+    resumeAfter = after;
+    log.info("Old ACTIVE online intent rows: {}, failed {}{}", counts, failures,
+        stoppedBecause == null ? "" : "; stopped early (" + stoppedBecause + "), resuming next run");
   }
 }

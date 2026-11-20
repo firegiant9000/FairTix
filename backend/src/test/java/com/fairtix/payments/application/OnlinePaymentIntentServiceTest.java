@@ -552,15 +552,28 @@ class OnlinePaymentIntentServiceTest {
   }
 
   @Test
-  void endIfAbandoned_alreadyCanceledInStripe_invalidatesWithoutCancelOrAudit() {
+  void endIfAbandoned_alreadyCanceledInStripe_auditsAndInvalidatesWithoutCancel() {
     OnlinePaymentIntent row = abandonedRow("pi_dead");
     when(stripe.retrievePaymentIntent("pi_dead")).thenReturn(intent("pi_dead", "canceled", "sec"));
 
     assertEquals(AbandonedIntentOutcome.CANCELED, service.endIfAbandoned(row));
 
+    verify(audit).log(USER, "PAYMENT_INTENT_ABANDONED", "PAYMENT", null,
+        "stripe_intent=pi_dead, already_canceled=true");
     verify(repo).invalidate(row.getId(), IntentInvalidationReason.CANCELED, NOW);
     verify(stripe, never()).cancelPaymentIntent(anyString());
-    verifyNoInteractions(audit);
+  }
+
+  @Test
+  void endIfAbandoned_cancelFindsItProcessing_isLeftActive() {
+    OnlinePaymentIntent row = abandonedRow("pi_proc");
+    when(stripe.retrievePaymentIntent("pi_proc"))
+        .thenReturn(intent("pi_proc", "requires_payment_method", "sec"));
+    when(stripe.cancelPaymentIntent("pi_proc")).thenReturn(intent("pi_proc", "processing", "sec"));
+
+    assertEquals(AbandonedIntentOutcome.LEFT_PAID, service.endIfAbandoned(row));
+
+    verify(repo, never()).invalidate(any(), any(), any());
   }
 
   @Test
