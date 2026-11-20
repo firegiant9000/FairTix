@@ -679,6 +679,33 @@ class StripePaymentControllerTest {
     org.assertj.core.api.Assertions.assertThat(orderFailedRows).isZero();
   }
 
+  /**
+   * A paid intent made for other holds or routing: its own code, so the client shows a final
+   * screen instead of offering a retry that would fail the same way.
+   */
+  @Test
+  void checkout_paidIntentNotBoundToTheseHolds_answersPaymentNotBound() throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+    doReturn(false).when(onlinePaymentIntentService)
+        .isBoundTo(anyString(), any(), any(), any());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_not_bound")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_NOT_BOUND"))
+        .andExpect(jsonPath("$.message").value(
+            "This payment was not made for these seats. Contact support for a refund."));
+
+    org.assertj.core.api.Assertions.assertThat(jdbcTemplate.queryForList(
+        "SELECT details FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED' AND user_id = ?",
+        String.class, user.getId()))
+        .singleElement().asString()
+        .contains("stripe_intent=pi_not_bound,")
+        .contains("error=IntentNotBound");
+  }
+
   /** A lost response: the order was created, then the client resubmits the same intent. */
   @Test
   void checkout_replayedIntent_returnsExistingOrderWithoutFailureAudit() throws Exception {

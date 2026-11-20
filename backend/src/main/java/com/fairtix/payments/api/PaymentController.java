@@ -15,6 +15,7 @@ import com.fairtix.organizations.domain.Plan;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.payments.application.OnlinePaymentIntentService;
 import com.fairtix.payments.application.PaymentFailedException;
+import com.fairtix.payments.application.PaymentIntentNotBoundException;
 import com.fairtix.payments.application.PaymentIntentNotOwnedException;
 import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.payments.application.PaymentSimulationService;
@@ -181,7 +182,8 @@ public class PaymentController {
    *       {@code PAYMENT_NOT_USABLE}, and no later attempt can use this intent.
    *   <li>The intent was not created for this user, hold set and routing:
    *       {@code STRIPE_ORDER_FAILED} with {@code error=IntentNotBound}; if checking
-   *       the binding failed, {@code error=BindingNotChecked}. The listed holds may
+   *       the binding failed, {@code error=BindingNotChecked}. A not-bound intent is
+   *       answered 409 {@code PAYMENT_NOT_BOUND}. The listed holds may
    *       or may not be the ones paid for, and the intent can still buy its own
    *       holds, so the runbook checks all of the user's holds before refunding.
    *   <li>Anything else: {@code STRIPE_ORDER_FAILED}.
@@ -307,17 +309,6 @@ public class PaymentController {
   private static final class PaymentNotVerifiedException extends ResponseStatusException {
     PaymentNotVerifiedException() {
       super(HttpStatus.PAYMENT_REQUIRED, "Stripe payment has not succeeded");
-    }
-  }
-
-  /**
-   * The intent was not created for this user, these holds and this payout routing. Names no
-   * other order or user.
-   */
-  private static final class PaymentIntentNotBoundException extends ResponseStatusException {
-    PaymentIntentNotBoundException() {
-      super(HttpStatus.CONFLICT,
-          "This payment was not made for these seats. Contact support for a refund.");
     }
   }
 
@@ -512,7 +503,7 @@ public class PaymentController {
       if (!bound) {
         log.warn("Checkout refused: stripe_intent={} was not created for these holds and routing"
             + " (requesting user {})", paymentIntentId, principal.getUserId());
-        var notBound = new PaymentIntentNotBoundException();
+        var notBound = new PaymentIntentNotBoundException(paymentIntentId);
         auditStripeOrderNotCreatedSafely(
             principal.getUserId(), request.holdIds(), paymentIntentId, notBound);
         throw notBound;

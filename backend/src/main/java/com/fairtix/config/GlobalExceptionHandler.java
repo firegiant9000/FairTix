@@ -20,6 +20,7 @@ import com.fairtix.auth.application.WeakPasswordException;
 import com.fairtix.payments.api.PaymentProcessingException;
 import com.fairtix.payments.application.PaymentDeclinedException;
 import com.fairtix.payments.application.PaymentFailedException;
+import com.fairtix.payments.application.PaymentIntentNotBoundException;
 import com.fairtix.payments.application.PaymentIntentNotOwnedException;
 import com.fairtix.payments.application.PaymentRefundedException;
 import com.fairtix.payments.application.PaymentRetryConflictException;
@@ -422,6 +423,14 @@ public class GlobalExceptionHandler {
     // 409, not 403: the client treats 401/403 as an expired session.
     return error(HttpStatus.CONFLICT, "PAYMENT_NOT_USABLE",
         "This payment can't be used for this checkout. Please start checkout again.", req);
+  }
+
+  @ExceptionHandler(PaymentIntentNotBoundException.class)
+  public ResponseEntity<Map<String, Object>> handlePaymentIntentNotBound(
+      PaymentIntentNotBoundException ex, HttpServletRequest req) {
+    // The controller has already logged and audited the refusal. Its own code, so the client
+    // shows a final screen: every retry with this intent fails the same way.
+    return error(HttpStatus.CONFLICT, "PAYMENT_NOT_BOUND", ex.getMessage(), req);
   }
 
   @ExceptionHandler(PaymentDeclinedException.class)

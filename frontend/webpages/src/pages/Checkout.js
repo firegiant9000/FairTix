@@ -15,13 +15,15 @@ const stripePromise = stripeEnabled
 // A Stripe checkout reaches the server only after confirmCardPayment succeeded,
 // so its failure means "charged, no order" unless the server says the card was
 // declined (422), the payment was refunded (PAYMENT_REFUNDED) or the payment
-// can't be used for this checkout (PAYMENT_NOT_USABLE, or EVENT_NOT_ON_SALE when
-// the event was cancelled or ended while paying); each of those gets a final screen.
+// can't be used for this checkout (PAYMENT_NOT_USABLE; PAYMENT_NOT_BOUND when it was
+// made for other seats; or EVENT_NOT_ON_SALE when the event was cancelled or ended
+// while paying); each of those gets a final screen.
 // A 402 here means the charged amount didn't match the order total: still paid.
 function finalScreenFor(code) {
   switch (code) {
     case 'PAYMENT_REFUNDED': return 'refunded';
     case 'PAYMENT_NOT_USABLE': return 'not-usable';
+    case 'PAYMENT_NOT_BOUND': return 'not-usable';
     case 'EVENT_NOT_ON_SALE': return 'not-usable';
     default: return null;
   }
