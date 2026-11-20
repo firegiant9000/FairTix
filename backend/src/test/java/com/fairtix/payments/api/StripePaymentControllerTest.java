@@ -1055,6 +1055,26 @@ class StripePaymentControllerTest {
         .endsWith("error=HoldNotOwned (PaidNotChecked)");
   }
 
+  /**
+   * The stored-row lookup failing must not change the answer or send an unverified id to
+   * Stripe; the ERROR log line is the only trace (the runbook alerts on it).
+   */
+  @Test
+  void checkout_storedRowLookupFails_stillAnswers403AndNeverAsksStripe() throws Exception {
+    requireQueueWithoutClearance();
+    doThrow(new org.springframework.dao.DataAccessResourceFailureException("pool exhausted"))
+        .when(onlinePaymentIntentService).isCreatedFor("pi_RowUnreadable", user.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_RowUnreadable")))
+        .andExpect(status().isForbidden());
+
+    verify(stripePaymentService, never()).isPaidBy(anyString(), any());
+    assertThat(orderFailedDetails()).isEmpty();
+  }
+
   /** The audit is best effort: its failure must not turn the refusal into a 500. */
   @Test
   void checkout_paidRefusalAuditFails_stillAnswers403() throws Exception {

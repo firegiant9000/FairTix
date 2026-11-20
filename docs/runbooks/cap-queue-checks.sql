@@ -140,7 +140,7 @@ GROUP BY granted;
 -- (PaidNotChecked), Stripe could not be asked, so the intent may be unpaid.
 -- These two can list another user's holds, which holds_still_confirmed counts
 -- too: a count above 0 may not be the payer's, so check the payer's own holds
--- (the query below) before escalating on it. Their listed
+-- (the seat_holds query above) before escalating on it. Their listed
 -- holds may or may not be the ones paid for, and the paid ones may sit on
 -- another event. The intent can still buy its own holds, so check the user's
 -- ACTIVE or CONFIRMED holds on every event, not just the listed one (drop the

@@ -290,12 +290,9 @@ public class StripePaymentService {
       return "succeeded".equals(intent.getStatus())
           && metadata != null
           && userId.toString().equals(metadata.get(USER_ID_METADATA));
-    } catch (InvalidRequestException e) {
-      if (Integer.valueOf(404).equals(e.getStatusCode())) {
-        return false; // No such intent in this account: nothing was paid.
-      }
-      throw new RuntimeException("Failed to retrieve Stripe payment intent: " + e.getMessage(), e);
     } catch (StripeException e) {
+      // Including a 404: callers ask only about intents FairTix stored, so a missing one points
+      // at a key or account mismatch, not at an unpaid intent.
       throw new RuntimeException("Failed to retrieve Stripe payment intent: " + e.getMessage(), e);
     }
   }

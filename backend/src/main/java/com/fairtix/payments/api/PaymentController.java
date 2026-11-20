@@ -302,8 +302,12 @@ public class PaymentController {
         return;
       }
     } catch (RuntimeException lookupFailure) {
-      log.warn("Checkout refused ({}) and the intent's stored row could not be read:"
-          + " stripe_intent={}", check, paymentIntentId, lookupFailure);
+      // Not on to Stripe: an id with no verified row must not reach the audit log. The runbook
+      // treats this line like any other audit row that could not be written.
+      log.error("Charge may have succeeded, order not created, and the audit row could not be"
+          + " written (the intent's stored row could not be read): stripe_intent={},"
+          + " holdIds={}, error={}", paymentIntentId, holdIds, check, lookupFailure);
+      refusal.addSuppressed(lookupFailure);
       return;
     }
     boolean paidChecked = true;

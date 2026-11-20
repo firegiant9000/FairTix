@@ -127,14 +127,16 @@ class StripePaymentServiceTest {
   }
 
   @Test
-  void isPaidBy_noSuchIntent_isFalse() {
+  void isPaidBy_noSuchIntent_throws() {
+    // Callers ask only about stored intents, so a 404 is a key or account mismatch, not "unpaid".
     InvalidRequestException missing = new InvalidRequestException("no such intent", null,
         "req_1", "resource_missing", 404, null);
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
       mocked.when(() -> PaymentIntent.retrieve("pi_missing",
           StripePaymentService.PAID_CHECK_OPTIONS)).thenThrow(missing);
 
-      assertFalse(service.isPaidBy("pi_missing", UUID.randomUUID()));
+      assertThatThrownBy(() -> service.isPaidBy("pi_missing", UUID.randomUUID()))
+          .hasCauseInstanceOf(InvalidRequestException.class);
     }
   }
 
