@@ -133,7 +133,14 @@ GROUP BY granted;
 -- error=IntentNotBound (checkout answered 409: the intent was paid for other
 -- holds, another payout routing, or has no online_payment_intents row) is
 -- marked not_verified too, and so is error=BindingNotChecked (the charge
--- succeeded but checking that binding failed, so it is unknown). Their listed
+-- succeeded but checking that binding failed, so it is unknown). So are
+-- error=QueueNotCleared (checkout answered 403: no queue clearance) and
+-- error=HoldNotOwned (400: a submitted hold is not the user's), written when
+-- checkout refused the user's paid intent before verifying it; with the suffix
+-- (PaidNotChecked), Stripe could not be asked, so the intent may be unpaid.
+-- These two can list another user's holds, which holds_still_confirmed counts
+-- too: a count above 0 may not be the payer's, so check the payer's own holds
+-- (the seat_holds query above) before escalating on it. Their listed
 -- holds may or may not be the ones paid for, and the paid ones may sit on
 -- another event. The intent can still buy its own holds, so check the user's
 -- ACTIVE or CONFIRMED holds on every event, not just the listed one (drop the
@@ -244,7 +251,9 @@ FROM (
          a.created_at,
          (a.details LIKE '%error=PaymentNotVerified%'
            OR a.details LIKE '%error=IntentNotBound%'
-           OR a.details LIKE '%error=BindingNotChecked%') AS not_verified,
+           OR a.details LIKE '%error=BindingNotChecked%'
+           OR a.details LIKE '%error=QueueNotCleared%'
+           OR a.details LIKE '%error=HoldNotOwned%') AS not_verified,
          a.details LIKE '%error=PaymentIntentUnbound%' AS unbound,
          CASE WHEN a.details ~ 'holdIds=\[[^]]*[0-9a-f]{8}-' THEN
            (SELECT COUNT(*)

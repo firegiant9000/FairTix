@@ -60,6 +60,10 @@ public class PaymentController {
   /** Attempts to create the order for a succeeded charge while the cap lock is busy. */
   private static final int STRIPE_ORDER_ATTEMPTS = 3;
 
+  /** A Stripe PaymentIntent id; anything else submitted to checkout is never looked up. */
+  private static final java.util.regex.Pattern STRIPE_INTENT_ID =
+      java.util.regex.Pattern.compile("pi_[A-Za-z0-9]{1,255}");
+
   private final OrderService orderService;
   private final PaymentRecordRepository paymentRecordRepository;
   private final UserRepository userRepository;
@@ -186,6 +190,11 @@ public class PaymentController {
    *       answered 409 {@code PAYMENT_NOT_BOUND}. The listed holds may
    *       or may not be the ones paid for, and the intent can still buy its own
    *       holds, so the runbook checks all of the user's holds before refunding.
+   *   <li>Checkout refused a paid intent of this user before verification: {@code
+   *       STRIPE_ORDER_FAILED} with {@code error=QueueNotCleared} (403) or
+   *       {@code error=HoldNotOwned} (400), suffixed {@code (PaidNotChecked)} when Stripe could
+   *       not be asked. The binding is not checked either, so the runbook treats these like
+   *       {@code IntentNotBound}. See {@link #auditPaidRefusalSafely}.
    *   <li>Anything else: {@code STRIPE_ORDER_FAILED}.
    * </ul>
    */
@@ -216,6 +225,12 @@ public class PaymentController {
       summary = "Charge succeeded, but checking that the intent was made for these holds failed;"
           + " order not created: ";
       error = errorLabel(ex);
+    } else if (ex instanceof RefusedBeforeVerificationException refused) {
+      summary = refused.paidChecked
+          ? "Charge succeeded, but checkout was refused before verification; order not created: "
+          : "Checkout refused before verification, and whether the intent is paid could not be"
+              + " checked; order not created: ";
+      error = errorLabel(ex);
     } else {
       summary = "Charge succeeded but order creation failed: ";
       error = errorLabel(ex);
@@ -238,22 +253,75 @@ public class PaymentController {
       auditStripeOrderNotCreated(userId, holdIds, paymentIntentId, ex);
     } catch (RuntimeException auditFailure) {
       String what = ex instanceof PaymentNotVerifiedException
+          || (ex instanceof RefusedBeforeVerificationException refused && !refused.paidChecked)
           ? "Payment not verified (check the intent in Stripe),"
           : "Charge succeeded,";
       log.error("{} order not created, and the audit row could not be written:"
           + " stripe_intent={}, holdIds={}, error={}", what, paymentIntentId, holdIds,
           errorLabel(ex), auditFailure);
-      // The caller rethrows the cause for a BindingNotCheckedException, not the wrapper.
-      Throwable thrown = ex instanceof BindingNotCheckedException ? ex.getCause() : ex;
+      // For the audit-only wrappers the caller rethrows the cause, not the wrapper.
+      Throwable thrown = ex instanceof BindingNotCheckedException
+          || ex instanceof RefusedBeforeVerificationException ? ex.getCause() : ex;
       thrown.addSuppressed(auditFailure);
     }
   }
 
   /** The {@code error=} token of a not-created audit row or log line. */
   private static String errorLabel(RuntimeException ex) {
-    return ex instanceof BindingNotCheckedException
-        ? "BindingNotChecked (" + ex.getCause().getClass().getSimpleName() + ")"
-        : ex.getClass().getSimpleName();
+    if (ex instanceof BindingNotCheckedException) {
+      return "BindingNotChecked (" + ex.getCause().getClass().getSimpleName() + ")";
+    }
+    if (ex instanceof RefusedBeforeVerificationException refused) {
+      return refused.paidChecked ? refused.check : refused.check + " (PaidNotChecked)";
+    }
+    return ex.getClass().getSimpleName();
+  }
+
+  /**
+   * Checkout refused the attempt before verifying the payment (queue clearance missing, or a
+   * submitted hold is not the caller's). If the submitted intent is the caller's and has
+   * succeeded in Stripe, its charge goes on record like the other not-created paths
+   * ({@code STRIPE_ORDER_FAILED}, {@code error=<check>}). An unpaid intent, or one created for
+   * another user or channel, writes nothing. If Stripe can't be asked, the row is written with
+   * {@code error=<check> (PaidNotChecked)}: the runbook opens every such intent in Stripe before
+   * any refund. Never throws, so the caller answers with its own refusal.
+   *
+   * <p>A client can repeat this refusal at will, so Stripe is asked only about a well-formed id
+   * with a stored {@code online_payment_intents} row for this user (an indexed lookup). Made-up
+   * ids never reach Stripe or the audit log. Like {@code IntentNotBound}, an intent created
+   * before rows were stored is not recorded here.
+   */
+  private void auditPaidRefusalSafely(UUID userId, java.util.List<UUID> holdIds,
+      String paymentIntentId, String check, ResponseStatusException refusal) {
+    if (!stripeEnabled || paymentIntentId == null
+        || !STRIPE_INTENT_ID.matcher(paymentIntentId).matches()) {
+      return;
+    }
+    try {
+      if (!onlinePaymentIntentService.isCreatedFor(paymentIntentId, userId)) {
+        return;
+      }
+    } catch (RuntimeException lookupFailure) {
+      // Not on to Stripe: an id with no verified row must not reach the audit log. The runbook
+      // treats this line like any other audit row that could not be written.
+      log.error("Charge may have succeeded, order not created, and the audit row could not be"
+          + " written (the intent's stored row could not be read): stripe_intent={},"
+          + " holdIds={}, error={}", paymentIntentId, holdIds, check, lookupFailure);
+      refusal.addSuppressed(lookupFailure);
+      return;
+    }
+    boolean paidChecked = true;
+    try {
+      if (!stripePaymentService.isPaidBy(paymentIntentId, userId)) {
+        return;
+      }
+    } catch (RuntimeException lookupFailure) {
+      log.warn("Checkout refused ({}) and the intent's payment could not be checked:"
+          + " stripe_intent={}", check, paymentIntentId, lookupFailure);
+      paidChecked = false;
+    }
+    auditStripeOrderNotCreatedSafely(userId, holdIds, paymentIntentId,
+        new RefusedBeforeVerificationException(check, paidChecked, refusal));
   }
 
   /**
@@ -316,6 +384,22 @@ public class PaymentController {
   private static final class BindingNotCheckedException extends RuntimeException {
     BindingNotCheckedException(RuntimeException cause) {
       super(cause);
+    }
+  }
+
+  /**
+   * Audit label only: checkout refused the attempt before verification. {@code check} names the
+   * check that failed; {@code paidChecked} is false when Stripe could not be asked. Never thrown.
+   */
+  private static final class RefusedBeforeVerificationException extends RuntimeException {
+    private final String check;
+    private final boolean paidChecked;
+
+    RefusedBeforeVerificationException(String check, boolean paidChecked,
+        ResponseStatusException refusal) {
+      super(refusal);
+      this.check = check;
+      this.paidChecked = paidChecked;
     }
   }
 
@@ -432,17 +516,23 @@ public class PaymentController {
       }
     }
 
-    request.holdIds().stream()
-        .flatMap(holdId -> seatHoldRepository.findById(holdId).stream())
-        .map(hold -> hold.getSeat().getEvent())
-        .filter(event -> event.isQueueRequired())
-        .distinct()
-        .forEach(event -> {
-          if (!queueService.hasCheckoutClearance(event.getId(), principal.getUserId())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                "Queue admission required. You must be admitted from the waiting room before purchasing tickets.");
-          }
-        });
+    try {
+      request.holdIds().stream()
+          .flatMap(holdId -> seatHoldRepository.findById(holdId).stream())
+          .map(hold -> hold.getSeat().getEvent())
+          .filter(event -> event.isQueueRequired())
+          .distinct()
+          .forEach(event -> {
+            if (!queueService.hasCheckoutClearance(event.getId(), principal.getUserId())) {
+              throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                  "Queue admission required. You must be admitted from the waiting room before purchasing tickets.");
+            }
+          });
+    } catch (ResponseStatusException denied) {
+      auditPaidRefusalSafely(principal.getUserId(), request.holdIds(),
+          request.paymentIntentId(), "QueueNotCleared", denied);
+      throw denied;
+    }
 
     if (stripeEnabled) {
       String paymentIntentId = request.paymentIntentId();
@@ -450,12 +540,19 @@ public class PaymentController {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
             "paymentIntentId is required when Stripe is enabled");
       }
-      BigDecimal expectedTotal = request.holdIds().stream()
-          .map(id -> seatHoldRepository.findByIdAndOwnerId(id, principal.getUserId())
-              .map(h -> h.getSeat().getPrice())
-              .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                  "Hold not found or not owned by current user: " + id)))
-          .reduce(BigDecimal.ZERO, BigDecimal::add);
+      BigDecimal expectedTotal;
+      try {
+        expectedTotal = request.holdIds().stream()
+            .map(id -> seatHoldRepository.findByIdAndOwnerId(id, principal.getUserId())
+                .map(h -> h.getSeat().getPrice())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Hold not found or not owned by current user: " + id)))
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+      } catch (ResponseStatusException notOwned) {
+        auditPaidRefusalSafely(principal.getUserId(), request.holdIds(), paymentIntentId,
+            "HoldNotOwned", notOwned);
+        throw notOwned;
+      }
       long expectedAmountCents = expectedTotal.multiply(BigDecimal.valueOf(100)).longValue();
       // Throws PaymentIntentNotOwnedException (409) for an intent that wasn't created
       // for this user, before any order.
