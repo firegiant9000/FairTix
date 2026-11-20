@@ -86,6 +86,7 @@ class TransferServiceTest {
                 mock(com.fairtix.events.application.EventSaleGuard.class));
 
         when(riskScoringService.getTier(USER_ID)).thenReturn(RiskTier.LOW);
+        when(ticketRepository.lockById(TICKET_ID)).thenReturn(Optional.of(TICKET_ID));
     }
 
     @AfterEach
@@ -156,6 +157,68 @@ class TransferServiceTest {
                 .isInstanceOf(IllegalStateException.class);
 
         verifyNoInteractions(velocityLimiter);
+    }
+
+    /**
+     * The ticket is locked and re-read before the request is written: one cancelled while
+     * the lock was awaited is refused, and nothing is inserted.
+     */
+    @Test
+    void ticketCancelledWhileTheLockWasAwaited_isRefusedAndNothingIsInserted() {
+        Ticket ticket = ownedValidTicket();
+        knownRecipient();
+        doAnswer(inv -> {
+            when(ticket.getStatus()).thenReturn(TicketStatus.CANCELLED);
+            return null;
+        }).when(entityManager).refresh(ticket);
+
+        assertThatThrownBy(() ->
+                transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com"))
+                .isInstanceOf(IllegalStateException.class);
+
+        // The slot and the recipient lookup come before the lock: a slow Redis never holds
+        // the ticket row.
+        var order = inOrder(velocityLimiter, ticketRepository, entityManager);
+        order.verify(velocityLimiter).acquire(USER_ID);
+        order.verify(ticketRepository).lockById(TICKET_ID);
+        order.verify(entityManager).refresh(ticket);
+        verify(transferRepository, never()).save(any());
+    }
+
+    /** A ticket handed to someone else while the lock was awaited is not the sender's. */
+    @Test
+    void ticketTransferredAwayWhileTheLockWasAwaited_isNotFoundAndNothingIsInserted() {
+        Ticket ticket = ownedValidTicket();
+        knownRecipient();
+        User newOwner = mock(User.class);
+        when(newOwner.getId()).thenReturn(UUID.randomUUID());
+        doAnswer(inv -> {
+            when(ticket.getUser()).thenReturn(newOwner);
+            return null;
+        }).when(entityManager).refresh(ticket);
+
+        assertThatThrownBy(() ->
+                transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com"))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verify(transferRepository, never()).save(any());
+    }
+
+    /** A request committed by a concurrent call while the lock was awaited is seen. */
+    @Test
+    void requestCreatedWhileTheLockWasAwaited_isRefusedAndNothingIsInserted() {
+        ownedValidTicket();
+        knownRecipient();
+        when(transferRepository.findByTicket_IdAndStatus(TICKET_ID, TransferStatus.PENDING))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.of(mock(TicketTransferRequest.class)));
+
+        assertThatThrownBy(() ->
+                transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("pending transfer request already exists");
+
+        verify(transferRepository, never()).save(any());
     }
 
     /**
@@ -393,6 +456,13 @@ class TransferServiceTest {
         when(ticket.getSeat()).thenReturn(mock(Seat.class));
         when(ticketRepository.findById(TICKET_ID)).thenReturn(Optional.of(ticket));
         return ticket;
+    }
+
+    private User knownRecipient() {
+        User recipient = mock(User.class);
+        when(recipient.getId()).thenReturn(UUID.randomUUID());
+        when(userRepository.findByEmail("other@example.com")).thenReturn(Optional.of(recipient));
+        return recipient;
     }
 
     private static Ticket ticketOwnedBy(UUID ownerId, TicketStatus status) {

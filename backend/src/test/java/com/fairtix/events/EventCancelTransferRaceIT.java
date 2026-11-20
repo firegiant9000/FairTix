@@ -148,6 +148,51 @@ class EventCancelTransferRaceIT extends PostgresIT {
   }
 
   /**
+   * The cancellation gets the ticket first; the transfer request waits for it and then finds
+   * the ticket cancelled. Red before the fix: the request read the ticket unlocked, its
+   * INSERT waited on the cancellation's ticket lock and then succeeded, leaving a PENDING
+   * request on a CANCELLED ticket (and emailing the recipient).
+   */
+  @Test
+  @Timeout(60)
+  void cancelStartedFirst_overlappingATransferRequest_leavesNoPendingRequest() throws Exception {
+    UUID ticketId = buy(1).tickets().get(0);
+
+    List<Throwable> failures = raceUnderTicketLock(ticketId,
+        () -> eventService.cancelEvent(event.getId(), adminId, "Venue flooded"),
+        () -> transferService.createTransferRequest(ticketId, sender.getId(), recipient.getEmail()));
+
+    assertThat(ticketStatus(ticketId)).isEqualTo("CANCELLED");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM ticket_transfer_requests WHERE ticket_id = ?", Integer.class,
+        ticketId)).as("no request on the cancelled ticket").isZero();
+    assertThat(auditRows("TRANSFER_REQUESTED")).isZero();
+    assertThat(failures).as("only the request fails").hasSize(1);
+    assertThat(failures.get(0)).isInstanceOf(IllegalStateException.class);
+  }
+
+  /**
+   * The transfer request gets the ticket first and commits; the cancellation then finds the
+   * pending request and cancels it with the ticket.
+   */
+  @Test
+  @Timeout(60)
+  void transferRequestStartedFirst_overlappingTheCancel_endsWithTheRequestCancelled()
+      throws Exception {
+    UUID ticketId = buy(1).tickets().get(0);
+
+    List<Throwable> failures = raceUnderTicketLock(ticketId,
+        () -> transferService.createTransferRequest(ticketId, sender.getId(), recipient.getEmail()),
+        () -> eventService.cancelEvent(event.getId(), adminId, "Venue flooded"));
+
+    assertThat(failures).isEmpty();
+    assertThat(ticketStatus(ticketId)).isEqualTo("CANCELLED");
+    assertThat(jdbcTemplate.queryForList(
+        "SELECT status FROM ticket_transfer_requests WHERE ticket_id = ?", String.class,
+        ticketId)).containsExactly("CANCELLED");
+  }
+
+  /**
    * A refund of a two-ticket order is finalising (it holds the refund row and waits for the
    * first ticket) when the event is cancelled. Both complete, with no deadlock, and the
    * tickets end REFUNDED, not overwritten with CANCELLED.

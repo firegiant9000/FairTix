@@ -13,6 +13,7 @@ import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.orders.application.PurchaseCapExceededException;
 import com.fairtix.refunds.domain.RefundStatus;
 import com.fairtix.refunds.infrastructure.RefundRepository;
+import com.fairtix.tickets.domain.Ticket;
 import com.fairtix.tickets.domain.TicketStatus;
 import com.fairtix.tickets.domain.TicketTransferRequest;
 import com.fairtix.tickets.domain.TransferStatus;
@@ -88,26 +89,18 @@ public class TransferService {
         var ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket not found: " + ticketId));
 
-        if (!ticket.getUser().getId().equals(fromUserId)) {
-            throw new ResourceNotFoundException("Ticket not found: " + ticketId);
-        }
-
-        if (ticket.getStatus() != TicketStatus.VALID) {
-            throw new IllegalStateException("Only VALID tickets can be transferred");
-        }
+        // Checked unlocked first, so a mistake about the sender's own ticket uses no slot.
+        requireTransferable(ticket, ticketId, fromUserId);
 
         // A request on an ended event could never be accepted. Unlocked: the acceptance
         // checks again under the event's sale lock.
         eventSaleGuard.requireOnSale(ticket.getEvent());
 
-        transferRepository.findByTicket_IdAndStatus(ticketId, TransferStatus.PENDING).ifPresent(r -> {
-            throw new IllegalStateException("A pending transfer request already exists for this ticket");
-        });
-
         // The slot is taken here, after the checks on the sender's own ticket and
         // before the recipient lookup: a 404 for an unknown email reveals whether an
         // account exists, so every lookup counts toward the limit, while mistakes
-        // about the sender's own ticket do not.
+        // about the sender's own ticket do not. Both run before the ticket lock, so a
+        // slow Redis never holds the ticket row.
         velocityLimiter.acquire(fromUserId);
 
         var toUser = userRepository.findByEmail(toEmail)
@@ -116,6 +109,20 @@ public class TransferService {
         if (toUser.getId().equals(fromUserId)) {
             throw new IllegalArgumentException("Cannot transfer a ticket to yourself");
         }
+
+        // Lock the ticket row, then re-read it and check again: an event cancellation, a
+        // refund's finalise or an acceptance may have changed it since the read above.
+        // Without the lock, the request's INSERT waited on a cancellation's ticket lock and
+        // then succeeded, leaving a PENDING request on a CANCELLED ticket. A native query on
+        // tickets alone, as in RefundService.finalise: an entity lock joins users and would
+        // lose a row whose owner changed while it waited. Two requests for one ticket also
+        // serialise here, so the pending check below sees the first. Lock order: sale lock
+        // (none taken here) -> ticket row -> transfer request rows; this path locks no
+        // request row, it only inserts one.
+        ticketRepository.lockById(ticketId)
+                .orElseThrow(() -> new ResourceNotFoundException("Ticket not found: " + ticketId));
+        entityManager.refresh(ticket);
+        requireTransferable(ticket, ticketId, fromUserId);
 
         var expiresAt = Instant.now().plus(TRANSFER_EXPIRY_DAYS, ChronoUnit.DAYS);
         var request = new TicketTransferRequest(ticket, ticket.getUser(), toUser, expiresAt);
@@ -137,6 +144,19 @@ public class TransferService {
                         toEmail, fromEmail, eventTitle, seatDesc, null)));
 
         return request;
+    }
+
+    /** The sender owns the ticket, it is VALID, and no request on it is pending. */
+    private void requireTransferable(Ticket ticket, UUID ticketId, UUID fromUserId) {
+        if (!ticket.getUser().getId().equals(fromUserId)) {
+            throw new ResourceNotFoundException("Ticket not found: " + ticketId);
+        }
+        if (ticket.getStatus() != TicketStatus.VALID) {
+            throw new IllegalStateException("Only VALID tickets can be transferred");
+        }
+        transferRepository.findByTicket_IdAndStatus(ticketId, TransferStatus.PENDING).ifPresent(r -> {
+            throw new IllegalStateException("A pending transfer request already exists for this ticket");
+        });
     }
 
     /**
