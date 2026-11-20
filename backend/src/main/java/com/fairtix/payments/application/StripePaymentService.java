@@ -26,9 +26,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
-import java.time.Clock;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -47,15 +44,6 @@ public class StripePaymentService {
   /** Online PaymentIntent metadata key carrying the user it was created for. */
   static final String USER_ID_METADATA = "fairtix_user_id";
 
-  /**
-   * How long an online intent without {@link #USER_ID_METADATA} (created before
-   * that metadata was added) is still accepted at checkout. Matches Stripe's
-   * idempotency window, after which such an intent can't be handed out again.
-   */
-  static final Duration UNBOUND_INTENT_GRACE = Duration.ofHours(24);
-
-  private Clock clock = Clock.systemUTC();
-
   @Value("${stripe.enabled:false}")
   private boolean stripeEnabled;
 
@@ -69,11 +57,6 @@ public class StripePaymentService {
       AuditService auditService) {
     this.paymentRecordRepository = paymentRecordRepository;
     this.auditService = auditService;
-  }
-
-  /** For tests of the unbound-intent grace window. */
-  void setClock(Clock clock) {
-    this.clock = clock;
   }
 
   @PostConstruct
@@ -275,8 +258,7 @@ public class StripePaymentService {
    * As {@link #verifyPaymentSucceeded(String, long)}, but first requires that the
    * intent was created for {@code userId}, whatever its status: otherwise throws
    * {@link PaymentIntentNotOwnedException}. An intent without
-   * {@link #USER_ID_METADATA} (created before it existed) is accepted only within
-   * {@link #UNBOUND_INTENT_GRACE} of its creation.
+   * {@link #USER_ID_METADATA} (created before it existed) is never accepted.
    */
   public boolean verifyPaymentSucceeded(String paymentIntentId, long expectedAmountCents,
       UUID userId) {
@@ -334,15 +316,8 @@ public class StripePaymentService {
     if (metadata != null && metadata.containsKey(CHANNEL_METADATA)) {
       throw new PaymentIntentNotOwnedException(paymentIntentId, userId, "other_channel", paid);
     }
-    // Only online intents created before USER_ID_METADATA existed get here; once
-    // UNBOUND_INTENT_GRACE has passed since that deploy, none is accepted.
-    Long created = intent.getCreated();
-    if (created != null
-        && Instant.ofEpochSecond(created).isAfter(clock.instant().minus(UNBOUND_INTENT_GRACE))) {
-      log.info("Accepting PaymentIntent {} without {} (created before it was recorded)",
-          paymentIntentId, USER_ID_METADATA);
-      return;
-    }
+    // Only online intents created before USER_ID_METADATA existed get here. None is
+    // accepted.
     throw new PaymentIntentNotOwnedException(paymentIntentId, userId,
         PaymentIntentNotOwnedException.REASON_UNBOUND, paid);
   }

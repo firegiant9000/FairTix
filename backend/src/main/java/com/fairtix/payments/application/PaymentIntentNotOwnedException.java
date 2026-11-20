@@ -5,12 +5,11 @@ import java.util.UUID;
 /**
  * The PaymentIntent submitted at checkout was not created for the calling user:
  * its {@code fairtix_user_id} metadata names someone else, it belongs to another
- * channel (box office), or it has no owner and is older than the grace window for
- * intents created before that metadata existed.
+ * channel (box office), or it has no owner (created before that metadata existed).
  */
 public class PaymentIntentNotOwnedException extends RuntimeException {
 
-  /** No owner, and past the grace window for intents created before owner binding. */
+  /** No owner: created before owner binding. */
   public static final String REASON_UNBOUND = "unbound";
 
   private final String paymentIntentId;

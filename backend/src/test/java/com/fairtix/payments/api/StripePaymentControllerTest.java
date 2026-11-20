@@ -594,12 +594,12 @@ class StripePaymentControllerTest {
   }
 
   /**
-   * A paid intent created before intents carried their user, submitted after the grace
-   * window: it can never complete an order, so its charge goes on record for
-   * stripe_charges_without_order, in the format the runbook query parses.
+   * A paid intent created before intents carried their user: it can never complete an
+   * order, so its charge goes on record for stripe_charges_without_order, in the format
+   * the runbook query parses.
    */
   @Test
-  void checkout_paidUnboundIntentPastGrace_writesOrderFailedAuditForRunbook() throws Exception {
+  void checkout_paidUnboundIntent_writesOrderFailedAuditForRunbook() throws Exception {
     doThrow(new PaymentIntentNotOwnedException("pi_unbound_paid", user.getId(), "unbound", true))
         .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
 
@@ -662,7 +662,7 @@ class StripePaymentControllerTest {
 
   /** An unbound intent that was never paid has no charge to refund. */
   @Test
-  void checkout_unpaidUnboundIntentPastGrace_isRejectedWithoutAudit() throws Exception {
+  void checkout_unpaidUnboundIntent_isRejectedWithoutAudit() throws Exception {
     doThrow(new PaymentIntentNotOwnedException("pi_unbound_unpaid", user.getId(), "unbound", false))
         .when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
 
