@@ -44,6 +44,13 @@ public class StripePaymentService {
   /** Online PaymentIntent metadata key carrying the user it was created for. */
   static final String USER_ID_METADATA = "fairtix_user_id";
 
+  /** {@link #isPaidBy}'s request options: fail fast rather than hold the caller's connection. */
+  static final RequestOptions PAID_CHECK_OPTIONS = RequestOptions.builder()
+      .setConnectTimeout(2_000)
+      .setReadTimeout(5_000)
+      .setMaxNetworkRetries(0)
+      .build();
+
   @Value("${stripe.enabled:false}")
   private boolean stripeEnabled;
 
@@ -271,15 +278,23 @@ public class StripePaymentService {
    * Checkout uses it to decide whether an attempt refused before verification leaves a charge
    * to put on record. It checks neither the amount nor refunds or disputes, so it is no
    * substitute for {@link #verifyPaymentSucceeded(String, long, UUID)}. Throws if Stripe fails.
+   *
+   * <p>Runs on a refusal path that a client can repeat, while the request may hold a pooled
+   * database connection, so it uses short timeouts and no retries.
    */
   public boolean isPaidBy(String paymentIntentId, UUID userId) {
     Objects.requireNonNull(userId, "userId");
     try {
-      PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId);
+      PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId, PAID_CHECK_OPTIONS);
       Map<String, String> metadata = intent.getMetadata();
       return "succeeded".equals(intent.getStatus())
           && metadata != null
           && userId.toString().equals(metadata.get(USER_ID_METADATA));
+    } catch (InvalidRequestException e) {
+      if (Integer.valueOf(404).equals(e.getStatusCode())) {
+        return false; // No such intent in this account: nothing was paid.
+      }
+      throw new RuntimeException("Failed to retrieve Stripe payment intent: " + e.getMessage(), e);
     } catch (StripeException e) {
       throw new RuntimeException("Failed to retrieve Stripe payment intent: " + e.getMessage(), e);
     }

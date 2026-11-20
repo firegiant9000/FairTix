@@ -173,6 +173,17 @@ public class OnlinePaymentIntentService {
   }
 
   /**
+   * Whether {@link #clientSecretFor} stored a row for this intent and this user, whatever its
+   * hold set, routing or status. A cheap local check before asking Stripe about an id a client
+   * submitted. False for an intent created before rows were stored, or whose row was deleted.
+   */
+  public boolean isCreatedFor(String stripePaymentIntentId, UUID userId) {
+    return repository.findByStripePaymentIntentId(stripePaymentIntentId)
+        .filter(row -> userId.equals(row.getUserId()))
+        .isPresent();
+  }
+
+  /**
    * Ends the ACTIVE row for an intent whose order has been created, so retention can delete it.
    * Returns the number of rows changed: 0 when there is no ACTIVE row (already ended, or an
    * intent created before rows were stored).

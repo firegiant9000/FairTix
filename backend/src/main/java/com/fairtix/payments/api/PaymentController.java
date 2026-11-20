@@ -60,6 +60,10 @@ public class PaymentController {
   /** Attempts to create the order for a succeeded charge while the cap lock is busy. */
   private static final int STRIPE_ORDER_ATTEMPTS = 3;
 
+  /** A Stripe PaymentIntent id; anything else submitted to checkout is never looked up. */
+  private static final java.util.regex.Pattern STRIPE_INTENT_ID =
+      java.util.regex.Pattern.compile("pi_[A-Za-z0-9]{1,255}");
+
   private final OrderService orderService;
   private final PaymentRecordRepository paymentRecordRepository;
   private final UserRepository userRepository;
@@ -281,10 +285,25 @@ public class PaymentController {
    * another user or channel, writes nothing. If Stripe can't be asked, the row is written with
    * {@code error=<check> (PaidNotChecked)}: the runbook opens every such intent in Stripe before
    * any refund. Never throws, so the caller answers with its own refusal.
+   *
+   * <p>A client can repeat this refusal at will, so Stripe is asked only about a well-formed id
+   * with a stored {@code online_payment_intents} row for this user (an indexed lookup). Made-up
+   * ids never reach Stripe or the audit log. Like {@code IntentNotBound}, an intent created
+   * before rows were stored is not recorded here.
    */
   private void auditPaidRefusalSafely(UUID userId, java.util.List<UUID> holdIds,
       String paymentIntentId, String check, ResponseStatusException refusal) {
-    if (!stripeEnabled || paymentIntentId == null || paymentIntentId.isBlank()) {
+    if (!stripeEnabled || paymentIntentId == null
+        || !STRIPE_INTENT_ID.matcher(paymentIntentId).matches()) {
+      return;
+    }
+    try {
+      if (!onlinePaymentIntentService.isCreatedFor(paymentIntentId, userId)) {
+        return;
+      }
+    } catch (RuntimeException lookupFailure) {
+      log.warn("Checkout refused ({}) and the intent's stored row could not be read:"
+          + " stripe_intent={}", check, paymentIntentId, lookupFailure);
       return;
     }
     boolean paidChecked = true;

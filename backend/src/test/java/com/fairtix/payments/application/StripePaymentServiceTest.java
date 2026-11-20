@@ -90,7 +90,7 @@ class StripePaymentServiceTest {
     PaymentIntent paid = intentWith("succeeded",
         Map.of(StripePaymentService.USER_ID_METADATA, userId.toString()));
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
-      mocked.when(() -> PaymentIntent.retrieve("pi_paid")).thenReturn(paid);
+      mocked.when(() -> PaymentIntent.retrieve("pi_paid", StripePaymentService.PAID_CHECK_OPTIONS)).thenReturn(paid);
 
       assertTrue(service.isPaidBy("pi_paid", userId));
     }
@@ -102,7 +102,7 @@ class StripePaymentServiceTest {
     PaymentIntent unpaid = intentWith("requires_payment_method",
         Map.of(StripePaymentService.USER_ID_METADATA, userId.toString()));
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
-      mocked.when(() -> PaymentIntent.retrieve("pi_unpaid")).thenReturn(unpaid);
+      mocked.when(() -> PaymentIntent.retrieve("pi_unpaid", StripePaymentService.PAID_CHECK_OPTIONS)).thenReturn(unpaid);
 
       assertFalse(service.isPaidBy("pi_unpaid", userId));
     }
@@ -116,9 +116,9 @@ class StripePaymentServiceTest {
     PaymentIntent noOwner = intentWith("succeeded", Map.of());
     PaymentIntent nullMetadata = intentWith("succeeded", null);
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
-      mocked.when(() -> PaymentIntent.retrieve("pi_other")).thenReturn(other);
-      mocked.when(() -> PaymentIntent.retrieve("pi_no_owner")).thenReturn(noOwner);
-      mocked.when(() -> PaymentIntent.retrieve("pi_null_metadata")).thenReturn(nullMetadata);
+      mocked.when(() -> PaymentIntent.retrieve("pi_other", StripePaymentService.PAID_CHECK_OPTIONS)).thenReturn(other);
+      mocked.when(() -> PaymentIntent.retrieve("pi_no_owner", StripePaymentService.PAID_CHECK_OPTIONS)).thenReturn(noOwner);
+      mocked.when(() -> PaymentIntent.retrieve("pi_null_metadata", StripePaymentService.PAID_CHECK_OPTIONS)).thenReturn(nullMetadata);
 
       assertFalse(service.isPaidBy("pi_other", userId));
       assertFalse(service.isPaidBy("pi_no_owner", userId));
@@ -127,9 +127,28 @@ class StripePaymentServiceTest {
   }
 
   @Test
+  void isPaidBy_noSuchIntent_isFalse() {
+    InvalidRequestException missing = new InvalidRequestException("no such intent", null,
+        "req_1", "resource_missing", 404, null);
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      mocked.when(() -> PaymentIntent.retrieve("pi_missing",
+          StripePaymentService.PAID_CHECK_OPTIONS)).thenThrow(missing);
+
+      assertFalse(service.isPaidBy("pi_missing", UUID.randomUUID()));
+    }
+  }
+
+  @Test
+  void isPaidBy_usesShortTimeoutsAndNoRetries() {
+    assertThat(StripePaymentService.PAID_CHECK_OPTIONS.getConnectTimeout()).isEqualTo(2_000);
+    assertThat(StripePaymentService.PAID_CHECK_OPTIONS.getReadTimeout()).isEqualTo(5_000);
+    assertThat(StripePaymentService.PAID_CHECK_OPTIONS.getMaxNetworkRetries()).isZero();
+  }
+
+  @Test
   void isPaidBy_stripeFailure_throws() {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
-      mocked.when(() -> PaymentIntent.retrieve("pi_down")).thenThrow(
+      mocked.when(() -> PaymentIntent.retrieve("pi_down", StripePaymentService.PAID_CHECK_OPTIONS)).thenThrow(
           new ApiConnectionException("down"));
 
       assertThatThrownBy(() -> service.isPaidBy("pi_down", UUID.randomUUID()))

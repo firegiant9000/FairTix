@@ -948,16 +948,17 @@ class StripePaymentControllerTest {
   void checkout_paidIntentWithoutQueueClearance_answers403AndAuditsQueueNotCleared()
       throws Exception {
     requireQueueWithoutClearance();
-    doReturn(true).when(stripePaymentService).isPaidBy("pi_paid_no_queue", user.getId());
+    insertActiveIntentRow("pi_PaidNoQueue");
+    doReturn(true).when(stripePaymentService).isPaidBy("pi_PaidNoQueue", user.getId());
 
     mockMvc.perform(post("/api/payments/checkout")
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
             .contentType(MediaType.APPLICATION_JSON)
-            .content(checkoutBody(confirmedHold.getId(), "pi_paid_no_queue")))
+            .content(checkoutBody(confirmedHold.getId(), "pi_PaidNoQueue")))
         .andExpect(status().isForbidden());
 
     assertThat(orderFailedDetails()).singleElement().asString()
-        .contains("stripe_intent=pi_paid_no_queue,")
+        .contains("stripe_intent=pi_PaidNoQueue,")
         .contains("holdIds=[" + confirmedHold.getId() + "]")
         .endsWith("error=QueueNotCleared");
     verify(stripePaymentService, never()).verifyPaymentSucceeded(anyString(), anyLong(), any());
@@ -966,12 +967,13 @@ class StripePaymentControllerTest {
   @Test
   void checkout_unpaidIntentWithoutQueueClearance_answers403AndWritesNoAudit() throws Exception {
     requireQueueWithoutClearance();
-    doReturn(false).when(stripePaymentService).isPaidBy("pi_unpaid_no_queue", user.getId());
+    insertActiveIntentRow("pi_UnpaidNoQueue");
+    doReturn(false).when(stripePaymentService).isPaidBy("pi_UnpaidNoQueue", user.getId());
 
     mockMvc.perform(post("/api/payments/checkout")
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
             .contentType(MediaType.APPLICATION_JSON)
-            .content(checkoutBody(confirmedHold.getId(), "pi_unpaid_no_queue")))
+            .content(checkoutBody(confirmedHold.getId(), "pi_UnpaidNoQueue")))
         .andExpect(status().isForbidden());
 
     assertThat(orderFailedDetails()).isEmpty();
@@ -985,17 +987,18 @@ class StripePaymentControllerTest {
   void checkout_paidCheckFailsWithoutQueueClearance_answers403AndAuditsPaidNotChecked()
       throws Exception {
     requireQueueWithoutClearance();
+    insertActiveIntentRow("pi_UnknownNoQueue");
     doThrow(new RuntimeException("Stripe down"))
-        .when(stripePaymentService).isPaidBy("pi_unknown_no_queue", user.getId());
+        .when(stripePaymentService).isPaidBy("pi_UnknownNoQueue", user.getId());
 
     mockMvc.perform(post("/api/payments/checkout")
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
             .contentType(MediaType.APPLICATION_JSON)
-            .content(checkoutBody(confirmedHold.getId(), "pi_unknown_no_queue")))
+            .content(checkoutBody(confirmedHold.getId(), "pi_UnknownNoQueue")))
         .andExpect(status().isForbidden());
 
     assertThat(orderFailedDetails()).singleElement().asString()
-        .contains("stripe_intent=pi_unknown_no_queue,")
+        .contains("stripe_intent=pi_UnknownNoQueue,")
         .endsWith("error=QueueNotCleared (PaidNotChecked)");
   }
 
@@ -1003,16 +1006,17 @@ class StripePaymentControllerTest {
   void checkout_paidIntentWithAnotherUsersHold_answers400AndAuditsHoldNotOwned()
       throws Exception {
     SeatHold othersHold = confirmedHoldFor(otherUser(), "9");
-    doReturn(true).when(stripePaymentService).isPaidBy("pi_paid_wrong_hold", user.getId());
+    insertActiveIntentRow("pi_PaidWrongHold");
+    doReturn(true).when(stripePaymentService).isPaidBy("pi_PaidWrongHold", user.getId());
 
     mockMvc.perform(post("/api/payments/checkout")
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
             .contentType(MediaType.APPLICATION_JSON)
-            .content(checkoutBody(othersHold.getId(), "pi_paid_wrong_hold")))
+            .content(checkoutBody(othersHold.getId(), "pi_PaidWrongHold")))
         .andExpect(status().isBadRequest());
 
     assertThat(orderFailedDetails()).singleElement().asString()
-        .contains("stripe_intent=pi_paid_wrong_hold,")
+        .contains("stripe_intent=pi_PaidWrongHold,")
         .contains("holdIds=[" + othersHold.getId() + "]")
         .endsWith("error=HoldNotOwned");
     verify(stripePaymentService, never()).verifyPaymentSucceeded(anyString(), anyLong(), any());
@@ -1021,14 +1025,81 @@ class StripePaymentControllerTest {
   @Test
   void checkout_unpaidIntentWithAnotherUsersHold_answers400AndWritesNoAudit() throws Exception {
     SeatHold othersHold = confirmedHoldFor(otherUser(), "9");
-    doReturn(false).when(stripePaymentService).isPaidBy("pi_unpaid_wrong_hold", user.getId());
+    insertActiveIntentRow("pi_UnpaidWrongHold");
+    doReturn(false).when(stripePaymentService).isPaidBy("pi_UnpaidWrongHold", user.getId());
 
     mockMvc.perform(post("/api/payments/checkout")
             .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
             .contentType(MediaType.APPLICATION_JSON)
-            .content(checkoutBody(othersHold.getId(), "pi_unpaid_wrong_hold")))
+            .content(checkoutBody(othersHold.getId(), "pi_UnpaidWrongHold")))
         .andExpect(status().isBadRequest());
 
+    assertThat(orderFailedDetails()).isEmpty();
+  }
+
+  @Test
+  void checkout_paidCheckFailsWithAnotherUsersHold_answers400AndAuditsPaidNotChecked()
+      throws Exception {
+    SeatHold othersHold = confirmedHoldFor(otherUser(), "9");
+    insertActiveIntentRow("pi_UnknownWrongHold");
+    doThrow(new RuntimeException("Stripe down"))
+        .when(stripePaymentService).isPaidBy("pi_UnknownWrongHold", user.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(othersHold.getId(), "pi_UnknownWrongHold")))
+        .andExpect(status().isBadRequest());
+
+    assertThat(orderFailedDetails()).singleElement().asString()
+        .endsWith("error=HoldNotOwned (PaidNotChecked)");
+  }
+
+  /** The audit is best effort: its failure must not turn the refusal into a 500. */
+  @Test
+  void checkout_paidRefusalAuditFails_stillAnswers403() throws Exception {
+    requireQueueWithoutClearance();
+    insertActiveIntentRow("pi_AuditDown");
+    doReturn(true).when(stripePaymentService).isPaidBy("pi_AuditDown", user.getId());
+    doThrow(new org.springframework.dao.DataAccessResourceFailureException("pool exhausted"))
+        .when(auditService).log(any(), eq("STRIPE_ORDER_FAILED"), anyString(), any(), anyString());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_AuditDown")))
+        .andExpect(status().isForbidden());
+
+    verify(auditService).log(eq(user.getId()), eq("STRIPE_ORDER_FAILED"), eq("PAYMENT"), any(),
+        anyString());
+  }
+
+  /**
+   * Only an intent stored for this user is looked up in Stripe: an id with no row, another
+   * user's row, a malformed id or no id at all never reaches Stripe or the audit log.
+   */
+  @Test
+  void checkout_refusedWithoutAStoredIntentOfThisUser_neverAsksStripe() throws Exception {
+    requireQueueWithoutClearance();
+    User other = otherUser();
+    entityManager.flush();
+    jdbcTemplate.update(
+        "INSERT INTO online_payment_intents (id, user_id, hold_set_hash, amount_cents,"
+            + " routing_hash, stripe_payment_intent_id, status)"
+            + " VALUES (?, ?, ?, 5000, ?, ?, 'ACTIVE')",
+        java.util.UUID.randomUUID(), other.getId(), "a".repeat(64), "b".repeat(64),
+        "pi_OthersIntent");
+
+    for (String intentId : java.util.List.of("pi_NoStoredRow", "pi_OthersIntent",
+        "pi_X, holdIds=[00000000-0000-0000-0000-000000000000], ", "")) {
+      mockMvc.perform(post("/api/payments/checkout")
+              .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+              .contentType(MediaType.APPLICATION_JSON)
+              .content(checkoutBody(confirmedHold.getId(), intentId)))
+          .andExpect(status().isForbidden());
+    }
+
+    verify(stripePaymentService, never()).isPaidBy(anyString(), any());
     assertThat(orderFailedDetails()).isEmpty();
   }
 
