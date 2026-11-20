@@ -6,7 +6,10 @@ import com.fairtix.payments.application.StripePaymentService.StripeIntent;
 import com.fairtix.payments.domain.IntentInvalidationReason;
 import com.fairtix.payments.domain.OnlinePaymentIntent;
 import com.fairtix.payments.domain.OnlinePaymentIntentStatus;
+import com.fairtix.payments.application.OnlinePaymentIntentService.AbandonedIntentOutcome;
+import com.fairtix.payments.domain.PaymentRecord;
 import com.fairtix.payments.infrastructure.OnlinePaymentIntentRepository;
+import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -44,6 +47,7 @@ class OnlinePaymentIntentServiceTest {
   private StripePaymentService stripe;
   private OnlinePaymentIntentRepository repo;
   private AuditService audit;
+  private PaymentRecordRepository records;
   private OnlinePaymentIntentService service;
 
   @BeforeEach
@@ -51,7 +55,8 @@ class OnlinePaymentIntentServiceTest {
     stripe = mock(StripePaymentService.class);
     repo = mock(OnlinePaymentIntentRepository.class);
     audit = mock(AuditService.class);
-    service = new OnlinePaymentIntentService(stripe, repo, audit);
+    records = mock(PaymentRecordRepository.class);
+    service = new OnlinePaymentIntentService(stripe, repo, audit, records);
     service.setClock(Clock.fixed(NOW, ZoneOffset.UTC));
   }
 
@@ -507,5 +512,97 @@ class OnlinePaymentIntentServiceTest {
     storedRow("pi_two", USER, List.of(HOLD_A, holdB), null);
 
     assertEquals(true, service.isBoundTo("pi_two", USER, List.of(holdB, HOLD_A), null));
+  }
+
+  private OnlinePaymentIntent abandonedRow(String intentId) {
+    OnlinePaymentIntent row = mock(OnlinePaymentIntent.class);
+    when(row.getId()).thenReturn(UUID.randomUUID());
+    when(row.getUserId()).thenReturn(USER);
+    when(row.getStripePaymentIntentId()).thenReturn(intentId);
+    when(records.findByTransactionId(intentId)).thenReturn(Optional.empty());
+    return row;
+  }
+
+  @Test
+  void endIfAbandoned_orderAlreadyRecorded_marksCompletedWithoutCallingStripe() {
+    OnlinePaymentIntent row = abandonedRow("pi_ordered");
+    when(records.findByTransactionId("pi_ordered")).thenReturn(Optional.of(mock(PaymentRecord.class)));
+
+    assertEquals(AbandonedIntentOutcome.COMPLETED, service.endIfAbandoned(row));
+
+    verify(repo).invalidateActiveByStripePaymentIntentId(
+        "pi_ordered", IntentInvalidationReason.COMPLETED, NOW);
+    verifyNoInteractions(stripe, audit);
+  }
+
+  @Test
+  void endIfAbandoned_unpaid_cancelsInStripeAuditsAndInvalidates() {
+    OnlinePaymentIntent row = abandonedRow("pi_unpaid");
+    when(stripe.retrievePaymentIntent("pi_unpaid"))
+        .thenReturn(intent("pi_unpaid", "requires_payment_method", "sec"));
+    when(stripe.cancelPaymentIntent("pi_unpaid")).thenReturn(intent("pi_unpaid", "canceled", "sec"));
+
+    assertEquals(AbandonedIntentOutcome.CANCELED, service.endIfAbandoned(row));
+
+    InOrder order = inOrder(stripe, audit, repo);
+    order.verify(stripe).cancelPaymentIntent("pi_unpaid");
+    order.verify(audit).log(USER, "PAYMENT_INTENT_ABANDONED", "PAYMENT", null,
+        "stripe_intent=pi_unpaid");
+    order.verify(repo).invalidate(row.getId(), IntentInvalidationReason.CANCELED, NOW);
+  }
+
+  @Test
+  void endIfAbandoned_alreadyCanceledInStripe_invalidatesWithoutCancelOrAudit() {
+    OnlinePaymentIntent row = abandonedRow("pi_dead");
+    when(stripe.retrievePaymentIntent("pi_dead")).thenReturn(intent("pi_dead", "canceled", "sec"));
+
+    assertEquals(AbandonedIntentOutcome.CANCELED, service.endIfAbandoned(row));
+
+    verify(repo).invalidate(row.getId(), IntentInvalidationReason.CANCELED, NOW);
+    verify(stripe, never()).cancelPaymentIntent(anyString());
+    verifyNoInteractions(audit);
+  }
+
+  @Test
+  void endIfAbandoned_paidOrInFlight_isLeftActiveAndNeverCanceled() {
+    for (String status : List.of("succeeded", "processing", "requires_capture")) {
+      OnlinePaymentIntent row = abandonedRow("pi_" + status);
+      when(stripe.retrievePaymentIntent("pi_" + status))
+          .thenReturn(intent("pi_" + status, status, "sec"));
+
+      assertEquals(AbandonedIntentOutcome.LEFT_PAID, service.endIfAbandoned(row), status);
+    }
+
+    verify(stripe, never()).cancelPaymentIntent(anyString());
+    verify(repo, never()).invalidate(any(), any(), any());
+    verify(repo, never()).invalidateActiveByStripePaymentIntentId(anyString(), any(), any());
+    verifyNoInteractions(audit);
+  }
+
+  @Test
+  void endIfAbandoned_paidBetweenRetrieveAndCancel_isLeftActive() {
+    OnlinePaymentIntent row = abandonedRow("pi_race");
+    when(stripe.retrievePaymentIntent("pi_race"))
+        .thenReturn(intent("pi_race", "requires_payment_method", "sec"));
+    when(stripe.cancelPaymentIntent("pi_race")).thenReturn(intent("pi_race", "succeeded", "sec"));
+
+    assertEquals(AbandonedIntentOutcome.LEFT_PAID, service.endIfAbandoned(row));
+
+    verify(repo, never()).invalidate(any(), any(), any());
+    verifyNoInteractions(audit);
+  }
+
+  @Test
+  void endIfAbandoned_cancelLeavesAnotherStatus_isLeftActive() {
+    OnlinePaymentIntent row = abandonedRow("pi_stuck");
+    when(stripe.retrievePaymentIntent("pi_stuck"))
+        .thenReturn(intent("pi_stuck", "requires_action", "sec"));
+    when(stripe.cancelPaymentIntent("pi_stuck"))
+        .thenReturn(intent("pi_stuck", "requires_action", "sec"));
+
+    assertEquals(AbandonedIntentOutcome.NOT_CANCELED, service.endIfAbandoned(row));
+
+    verify(repo, never()).invalidate(any(), any(), any());
+    verifyNoInteractions(audit);
   }
 }
