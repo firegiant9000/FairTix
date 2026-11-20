@@ -70,6 +70,9 @@ class OnlinePaymentIntentRetentionSchedulerTest {
     when(repository.findActiveCreatedBefore(eq(CUTOFF), any(), any())).thenAnswer(inv -> {
       UUID after = inv.getArgument(1);
       Limit limit = inv.getArgument(2);
+      if (!START.equals(after) && !ids.contains(after)) {
+        throw new AssertionError("unknown cursor " + after);
+      }
       int from = START.equals(after) ? 0 : ids.indexOf(after) + 1;
       return rows.subList(from, Math.min(from + limit.max(), rows.size()));
     });
@@ -132,11 +135,14 @@ class OnlinePaymentIntentRetentionSchedulerTest {
     verify(intents, times(MAX_FAILURES)).endIfAbandoned(any());
     verify(intents, never()).endIfAbandoned(all.get(MAX_FAILURES));
     verify(repository).deleteInvalidatedBefore(CUTOFF);
+    UUID lastFailed = all.get(MAX_FAILURES - 1).getId();
 
-    clearInvocations(intents);
+    clearInvocations(intents, repository);
     scheduler.deleteOldRows();
 
+    verify(repository).findActiveCreatedBefore(eq(CUTOFF), eq(lastFailed), any());
     verify(intents, never()).endIfAbandoned(all.get(0));
+    verify(intents, never()).endIfAbandoned(all.get(MAX_FAILURES - 1));
     verify(intents).endIfAbandoned(all.get(MAX_FAILURES));
     verify(intents).endIfAbandoned(all.get(MAX_FAILURES + 1));
 
@@ -144,6 +150,21 @@ class OnlinePaymentIntentRetentionSchedulerTest {
     scheduler.deleteOldRows();
 
     verify(intents).endIfAbandoned(all.get(0));
+  }
+
+  @Test
+  void deleteOldRows_failuresSeparatedBySuccesses_doNotStopThePass() {
+    int n = 2 * MAX_FAILURES;
+    List<OnlinePaymentIntent> all = rows(n);
+    keysetOver(all);
+    when(intents.endIfAbandoned(any())).thenReturn(AbandonedIntentOutcome.CANCELED);
+    for (int i = 0; i < n; i += 2) {
+      when(intents.endIfAbandoned(all.get(i))).thenThrow(new RuntimeException("stripe down"));
+    }
+
+    scheduler.deleteOldRows();
+
+    verify(intents, times(n)).endIfAbandoned(any());
   }
 
   @Test
