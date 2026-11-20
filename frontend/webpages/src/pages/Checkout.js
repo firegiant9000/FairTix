@@ -34,6 +34,12 @@ const NOT_USABLE_MESSAGE =
   + 'If you were charged, contact support and the payment will be refunded. '
   + 'To buy these seats, go back to My Holds and start checkout again.';
 
+// Not "start checkout again": the customer has paid (perhaps for these very seats, if the
+// organizer's payout account changed), so a new checkout could charge them twice.
+const NOT_BOUND_MESSAGE =
+  "This payment can't be used to complete this order, so no order was created. "
+  + 'Contact support and the payment will be refunded.';
+
 const EVENT_NOT_ON_SALE_MESSAGE =
   'This event is no longer on sale (it was cancelled or has ended), so no order was created. '
   + 'If you were charged, contact support and the payment will be refunded.';
@@ -247,6 +253,8 @@ function Checkout() {
       } else if (err.code === 'PAYMENT_NOT_USABLE') {
         // The server can't tell the client whether this intent was charged.
         message = NOT_USABLE_MESSAGE;
+      } else if (err.code === 'PAYMENT_NOT_BOUND') {
+        message = NOT_BOUND_MESSAGE;
       } else if (err.code === 'EVENT_NOT_ON_SALE') {
         message = EVENT_NOT_ON_SALE_MESSAGE;
       } else {

@@ -271,14 +271,19 @@ test('an event cancelled while paying gets a final screen that points to a refun
 });
 
 test('a payment not made for these seats gets a final screen with no retry', async () => {
-  const message = 'This payment was not made for these seats. Contact support for a refund.';
-  mockPost({ status: 409, code: 'PAYMENT_NOT_BOUND', message });
+  mockPost({
+    status: 409,
+    code: 'PAYMENT_NOT_BOUND',
+    message: 'This payment was not made for these seats. Contact support for a refund.',
+  });
   mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
 
   renderCheckout();
   await clickPay();
 
-  expect(await screen.findByText(message)).toBeInTheDocument();
+  expect(await screen.findByText(/this payment can't be used to complete this order/i)).toBeInTheDocument();
+  expect(screen.getByText(/contact support and the payment will be refunded/i)).toBeInTheDocument();
+  expect(screen.queryByText(/start checkout again/i)).not.toBeInTheDocument();
   expect(screen.queryByText(/your payment went through/i)).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /try again|complete order/i })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /back to my holds/i }));
