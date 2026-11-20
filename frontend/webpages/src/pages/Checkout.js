@@ -15,8 +15,9 @@ const stripePromise = stripeEnabled
 // A Stripe checkout reaches the server only after confirmCardPayment succeeded,
 // so its failure means "charged, no order" unless the server says the card was
 // declined (422), the payment was refunded (PAYMENT_REFUNDED) or the payment
-// can't be used for this checkout (PAYMENT_NOT_USABLE; PAYMENT_NOT_BOUND when it was
-// made for other seats; or EVENT_NOT_ON_SALE when the event was cancelled or ended
+// can't be used for this checkout (PAYMENT_NOT_USABLE; PAYMENT_NOT_BOUND when the
+// intent's stored user, holds or payout routing don't match this checkout; or
+// EVENT_NOT_ON_SALE when the event was cancelled or ended
 // while paying); each of those gets a final screen.
 // A 402 here means the charged amount didn't match the order total: still paid.
 function finalScreenFor(code) {
@@ -35,10 +36,11 @@ const NOT_USABLE_MESSAGE =
   + 'To buy these seats, go back to My Holds and start checkout again.';
 
 // Not "start checkout again": the customer has paid (perhaps for these very seats, if the
-// organizer's payout account changed), so a new checkout could charge them twice.
+// organizer's payout account changed), so a new checkout could charge them twice. No
+// refund promise either: support first checks whether the payment can still buy its holds.
 const NOT_BOUND_MESSAGE =
   "This payment can't be used to complete this order, so no order was created. "
-  + 'Contact support and the payment will be refunded.';
+  + 'Please contact support about this payment instead of paying again.';
 
 const EVENT_NOT_ON_SALE_MESSAGE =
   'This event is no longer on sale (it was cancelled or has ended), so no order was created. '
