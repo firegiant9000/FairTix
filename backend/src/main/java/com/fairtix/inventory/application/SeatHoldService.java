@@ -312,15 +312,39 @@ public class SeatHoldService {
    *       would fail the lock query with an optimistic-lock conflict whenever a
    *       concurrent extension for the same holds (a double click) committed
    *       first (#298).</li>
-   *   <li>The expiry is set by a conditional update that takes the hold-row locks
-   *       first, the same order as the sweep (hold rows, then seat), so the two
-   *       cannot deadlock. It never rewrites {@code status}, so a hold the sweep
-   *       just expired stays expired. A concurrent extension waits here.</li>
+   *   <li>The expiry is set by a conditional update, before any seat lock. It locks
+   *       only the hold rows it changes: those still CONFIRMED that expire before the
+   *       new expiry. A row the sweep has written but not yet committed is waited for
+   *       (the wait the deadlock note below is about), then skipped if it is no longer
+   *       CONFIRMED, or updated and locked if the sweep rolled back. It never rewrites
+   *       {@code status}, so a hold the sweep just expired stays expired. A concurrent
+   *       extension waits here. The rows it skips stay unlocked: one no longer
+   *       CONFIRMED is refused in step 3, and one that already expires after the new
+   *       expiry is not one the sweep selects from a fresh read.</li>
    *   <li>The seats are locked in sorted order, and the hold and seat states are
    *       re-read from the database (the values read in step 1 may be stale).</li>
    *   <li>The seat versions are bumped, so a sweep that read a seat before this
    *       commits fails on its seat update and rolls back its hold changes.</li>
    * </ol>
+   *
+   * <p>What step 4 assumes: the sweep writes whole hold rows ({@code SeatHold} has no
+   * {@code @Version} or {@code @DynamicUpdate}), so a sweep that read a hold's old
+   * expiry puts back that expiry as well as its {@code status}, undoing this or an
+   * earlier extension. Only the seat-version bump stops it, and only if the sweep
+   * read the seat before that extension committed. The sweep loads each seat eagerly,
+   * right after its page query, so the gap is the time between those two reads;
+   * nothing else closes it.
+   *
+   * <p>Lock order does not rule out a deadlock with the CONFIRMED-hold sweep. The
+   * update in step 2 locks its hold rows in no fixed order, and the sweep writes hold
+   * and seat rows in no fixed order either (an unsorted page, flushed as it goes), so
+   * the two can deadlock when they share two or more holds. None has been reported;
+   * it needs a hold past the sweep's grace cutoff to be extended during a sweep.
+   * PostgreSQL then aborts one transaction. An aborted sweep rolls back its page and
+   * retries on the next tick. An aborted extension answers 500 ({@code INTERNAL_ERROR},
+   * since no handler maps {@code PessimisticLockingFailureException}) before this
+   * request creates or reuses a payment intent; nothing has changed, so a retry is
+   * safe.
    *
    * @throws SeatHoldNotFoundException if a hold is missing or not the caller's
    * @throws SeatHoldConflictException if a hold is not CONFIRMED or its seat is
