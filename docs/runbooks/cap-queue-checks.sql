@@ -155,8 +155,9 @@ GROUP BY granted;
 -- stays until its attempts leave the 14-day window, and so does one whose webhook
 -- was missed or was recorded before that flag existed. A dropped row does not
 -- come back if that refund later fails (Stripe reverses it and sends a failed-
--- refund notification, which FairTix does not handle), so act on Stripe's
--- failed-refund notices for charges without an order. Unbound rows stay until
+-- refund notification, which FairTix does not handle). For a failed-refund
+-- notice on a charge without an order, treat the charge as unrefunded and work
+-- it like a listed row. Unbound rows stay until
 -- the owner's review is on record. So open the charge in Stripe and refund only
 -- if amount_refunded is 0 and refunded is false. A second refund after a partial
 -- one pays out twice.
