@@ -270,6 +270,27 @@ test('an event cancelled while paying gets a final screen that points to a refun
   expect(checkoutCalls()).toHaveLength(1);
 });
 
+test('a payment not bound to this checkout gets a final screen with no retry and no pay-again prompt', async () => {
+  mockPost({
+    status: 409,
+    code: 'PAYMENT_NOT_BOUND',
+    message: 'This payment was not made for these seats. Contact support for a refund.',
+  });
+  mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
+
+  renderCheckout();
+  await clickPay();
+
+  expect(await screen.findByText(/this payment can't be used to complete this order/i)).toBeInTheDocument();
+  expect(screen.getByText(/contact support about this payment instead of paying again/i)).toBeInTheDocument();
+  expect(screen.queryByText(/start checkout again/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/your payment went through/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /try again|complete order/i })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /back to my holds/i }));
+  expect(mockNavigate).toHaveBeenCalledWith('/my-holds');
+  expect(checkoutCalls()).toHaveLength(1);
+});
+
 test('Try Again after a card decline returns to the card form', async () => {
   mockPost({ status: 422, code: 'CARD_DECLINED', message: 'Your card was declined.' });
   mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });

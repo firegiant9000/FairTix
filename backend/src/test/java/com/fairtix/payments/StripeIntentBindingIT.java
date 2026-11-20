@@ -98,7 +98,8 @@ class StripeIntentBindingIT extends PostgresIT {
   void intentForHoldsA_isRefusedForHoldsBOfEqualTotal_onAnotherOrgsEvent() throws Exception {
     createIntent(holdX, "pi_test_bind_x");
 
-    checkout("pi_test_bind_x", holdY).andExpect(status().isConflict());
+    checkout("pi_test_bind_x", holdY).andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_NOT_BOUND"));
 
     assertRefusedAndOnRecord("pi_test_bind_x", holdY);
   }
@@ -110,7 +111,8 @@ class StripeIntentBindingIT extends PostgresIT {
     orgX.setStripeConnectAccountId("acct_test_x_new");
     organizationRepository.save(orgX);
 
-    checkout("pi_test_bind_route", holdX).andExpect(status().isConflict());
+    checkout("pi_test_bind_route", holdX).andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_NOT_BOUND"));
 
     assertRefusedAndOnRecord("pi_test_bind_route", holdX);
   }
@@ -118,7 +120,8 @@ class StripeIntentBindingIT extends PostgresIT {
   /** No stored row (a legacy intent, or a row the retention job deleted). */
   @Test
   void intentWithNoStoredRow_isRefused() throws Exception {
-    checkout("pi_test_bind_no_row", holdX).andExpect(status().isConflict());
+    checkout("pi_test_bind_no_row", holdX).andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_NOT_BOUND"));
 
     assertRefusedAndOnRecord("pi_test_bind_no_row", holdX);
   }
@@ -130,7 +133,8 @@ class StripeIntentBindingIT extends PostgresIT {
     jdbcTemplate.update("UPDATE online_payment_intents SET user_id = ?"
         + " WHERE stripe_payment_intent_id = ?", organizer.getId(), "pi_test_bind_other_user");
 
-    checkout("pi_test_bind_other_user", holdX).andExpect(status().isConflict());
+    checkout("pi_test_bind_other_user", holdX).andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("PAYMENT_NOT_BOUND"));
 
     assertRefusedAndOnRecord("pi_test_bind_other_user", holdX);
   }
