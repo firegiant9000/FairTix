@@ -134,6 +134,10 @@ class StripeWebhookControllerTest {
   }
 
   private static String chargeRefundedEvent(String piId, long amountRefundedCents) {
+    return chargeRefundedEvent(piId, amountRefundedCents, true);
+  }
+
+  private static String chargeRefundedEvent(String piId, long amountRefundedCents, boolean refunded) {
     return """
         {
           "id": "evt_test_charge",
@@ -145,12 +149,12 @@ class StripeWebhookControllerTest {
               "id": "ch_test",
               "object": "charge",
               "payment_intent": "%s",
-              "refunded": true,
+              "refunded": %b,
               "amount_refunded": %d
             }
           }
         }
-        """.formatted(Stripe.API_VERSION, piId, amountRefundedCents);
+        """.formatted(Stripe.API_VERSION, piId, refunded, amountRefundedCents);
   }
 
   private void postSigned(String payload) throws Exception {
@@ -355,7 +359,8 @@ class StripeWebhookControllerTest {
   /**
    * No payment record yet: the order may still be committing. The refund goes on
    * record as unmatched (refunds_on_live_orders matches it to an order later), not
-   * as an alert on an order.
+   * as an alert on an order. A full refund is marked so stripe_charges_without_order
+   * drops the charge.
    */
   @Test
   void chargeRefunded_withoutPaymentRecord_isRecordedAsUnmatched() throws Exception {
@@ -366,7 +371,20 @@ class StripeWebhookControllerTest {
 
     verify(auditService).logInCurrentTransaction(eq(new UUID(0L, 0L)), eq("STRIPE_REFUND_UNMATCHED"), eq("PAYMENT"),
         isNull(), eq("Stripe refund with no payment record yet: stripe_intent=" + piId
-            + ", charge=ch_test, amount_refunded_cents=5000"));
+            + ", charge=ch_test, amount_refunded_cents=5000, refunded=true"));
     verify(auditService, never()).logInCurrentTransaction(any(), eq("REFUND_ON_LIVE_ORDER"), any(), any(), anyString());
+  }
+
+  /** A partial refund leaves part of the charge without an order, so it is not marked refunded. */
+  @Test
+  void chargeRefunded_partialWithoutPaymentRecord_isNotMarkedFullyRefunded() throws Exception {
+    String piId = "pi_no_order_partial";
+    when(paymentRecordRepository.findByTransactionId(piId)).thenReturn(Optional.empty());
+
+    postSigned(chargeRefundedEvent(piId, 2000, false));
+
+    verify(auditService).logInCurrentTransaction(eq(new UUID(0L, 0L)), eq("STRIPE_REFUND_UNMATCHED"), eq("PAYMENT"),
+        isNull(), eq("Stripe refund with no payment record yet: stripe_intent=" + piId
+            + ", charge=ch_test, amount_refunded_cents=2000, refunded=false"));
   }
 }

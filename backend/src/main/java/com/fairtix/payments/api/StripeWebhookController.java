@@ -146,10 +146,13 @@ public class StripeWebhookController {
         // stripe_charges_without_order), or checkout is still creating it and the
         // payment record commits with the order. Put the refund on record so the
         // runbook check refunds_on_live_orders can match it to an order later.
+        // refunded=true (Stripe's flag for a full refund) lets the check
+        // stripe_charges_without_order drop the charge; keep it the last field.
         auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_REFUND_UNMATCHED", "PAYMENT", null,
             "Stripe refund with no payment record yet: stripe_intent=" + piId
                 + ", charge=" + charge.getId()
-                + ", amount_refunded_cents=" + amountRefundedCents(charge));
+                + ", amount_refunded_cents=" + amountRefundedCents(charge)
+                + ", refunded=" + Boolean.TRUE.equals(charge.getRefunded()));
         return;
       }
       payment.ifPresent(record -> {

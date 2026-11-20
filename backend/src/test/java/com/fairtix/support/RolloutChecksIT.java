@@ -345,7 +345,7 @@ class RolloutChecksIT extends PostgresIT {
 
   /**
    * An unbound charge doesn't age out after 14 days: it stays until the owner's review
-   * is on record. A refund webhook alone doesn't clear it (the refund may be partial),
+   * is on record. A refund webhook alone doesn't clear it (only the owner's review does),
    * nor does a review of another intent whose id merely starts with this one. Other
    * charges still age out.
    */
@@ -371,6 +371,45 @@ class RolloutChecksIT extends PostgresIT {
     assertThat(listed).contains("pi_unbound_open", "pi_unbound_refunded")
         .doesNotContain("pi_unbound_reviewed", "pi_bound_old");
     assertThat(chargeWithoutOrder("pi_unbound_open")).containsEntry("escalate", true);
+  }
+
+  /**
+   * A bound charge that Stripe reports fully refunded (charge.refunded with refunded=true)
+   * has nothing left to refund, so it leaves the check at once. A partial refund, a refund
+   * row written before the flag existed, or a full refund of another intent whose id merely
+   * starts with this one does not clear it. Unbound charges still wait for the owner's review.
+   */
+  @Test
+  void stripeChargesWithoutOrder_dropsFullyRefundedBoundCharges() throws Exception {
+    UUID user = newUser("refunded-bound@test.com");
+    for (String pi : List.of("pi_bound_full", "pi_bound_partial", "pi_bound_partial_then_full",
+        "pi_bound_legacy_refund", "pi_bound_prefix")) {
+      failedStripeOrder(user, pi, "STRIPE_ORDER_FAILED", UUID.randomUUID(), "1 day");
+    }
+    unboundFailure(user, "pi_unbound_full", "1 day");
+    refundWebhook("pi_bound_full", ", amount_refunded_cents=5000, refunded=true");
+    refundWebhook("pi_bound_partial", ", amount_refunded_cents=2000, refunded=false");
+    refundWebhook("pi_bound_partial_then_full", ", amount_refunded_cents=2000, refunded=false");
+    refundWebhook("pi_bound_partial_then_full", ", amount_refunded_cents=5000, refunded=true");
+    refundWebhook("pi_bound_legacy_refund", ", amount_refunded_cents=5000");
+    refundWebhook("pi_bound_prefix_2", ", amount_refunded_cents=5000, refunded=true");
+    refundWebhook("pi_unbound_full", ", amount_refunded_cents=5000, refunded=true");
+
+    List<Object> listed = jdbcTemplate.queryForList(checks().get("stripe_charges_without_order"))
+        .stream().map(row -> row.get("payment_intent")).toList();
+    assertThat(listed)
+        .contains("pi_bound_partial", "pi_bound_legacy_refund", "pi_bound_prefix", "pi_unbound_full")
+        .doesNotContain("pi_bound_full", "pi_bound_partial_then_full");
+  }
+
+  // Same details format as StripeWebhookController writes; tail is everything after the charge id.
+  private void refundWebhook(String paymentIntentId, String tail) {
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_REFUND_UNMATCHED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), new UUID(0L, 0L),
+        "Stripe refund with no payment record yet: stripe_intent=" + paymentIntentId
+            + ", charge=ch_x" + tail);
   }
 
   /** One unbound attempt makes the whole intent unbound, whatever its earlier attempts. */
