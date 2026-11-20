@@ -266,6 +266,25 @@ public class StripePaymentService {
     return verify(paymentIntentId, expectedAmountCents, userId);
   }
 
+  /**
+   * True when the intent has succeeded and its {@link #USER_ID_METADATA} is {@code userId}.
+   * Checkout uses it to decide whether an attempt refused before verification leaves a charge
+   * to put on record. It checks neither the amount nor refunds or disputes, so it is no
+   * substitute for {@link #verifyPaymentSucceeded(String, long, UUID)}. Throws if Stripe fails.
+   */
+  public boolean isPaidBy(String paymentIntentId, UUID userId) {
+    Objects.requireNonNull(userId, "userId");
+    try {
+      PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId);
+      Map<String, String> metadata = intent.getMetadata();
+      return "succeeded".equals(intent.getStatus())
+          && metadata != null
+          && userId.toString().equals(metadata.get(USER_ID_METADATA));
+    } catch (StripeException e) {
+      throw new RuntimeException("Failed to retrieve Stripe payment intent: " + e.getMessage(), e);
+    }
+  }
+
   private boolean verify(String paymentIntentId, long expectedAmountCents, UUID userId) {
     try {
       PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId,

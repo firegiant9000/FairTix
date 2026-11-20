@@ -441,6 +441,38 @@ class RolloutChecksIT extends PostgresIT {
   }
 
   /**
+   * A paid intent refused before verification (queue clearance, hold ownership): the binding
+   * was never checked, so its listed holds may not be the paid ones.
+   */
+  @Test
+  void stripeChargesWithoutOrder_marksRefusedBeforeVerificationRows() throws Exception {
+    UUID user = newUser("refusedearly@test.com");
+    // Same details formats as PaymentController writes for the two checks.
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), user,
+        "Charge succeeded, but checkout was refused before verification; order not created:"
+            + " stripe_intent=pi_no_queue, holdIds=" + List.of(UUID.randomUUID())
+            + ", error=QueueNotCleared");
+    jdbcTemplate.update(
+        "INSERT INTO audit_logs (id, user_id, action, resource_type, details, created_at)"
+            + " VALUES (?, ?, 'STRIPE_ORDER_FAILED', 'PAYMENT', ?, now())",
+        UUID.randomUUID(), user,
+        "Checkout refused before verification, and whether the intent is paid could not be"
+            + " checked; order not created: stripe_intent=pi_not_owned, holdIds="
+            + List.of(UUID.randomUUID()) + ", error=HoldNotOwned (PaidNotChecked)");
+
+    List<Map<String, Object>> rows =
+        jdbcTemplate.queryForList(checks().get("stripe_charges_without_order"));
+    for (String intent : List.of("pi_no_queue", "pi_not_owned")) {
+      Map<String, Object> row = rows.stream()
+          .filter(r -> intent.equals(r.get("payment_intent"))).findFirst().orElseThrow();
+      assertThat(row).containsEntry("not_verified", true).containsEntry("unbound", false);
+    }
+  }
+
+  /**
    * One attempt with readable hold ids (none confirmed) and one without: MAX alone
    * would ignore the NULL and show 0, listing the charge as safe to refund.
    */

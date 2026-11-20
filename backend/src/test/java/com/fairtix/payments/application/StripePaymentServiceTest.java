@@ -77,6 +77,67 @@ class StripePaymentServiceTest {
     return intent;
   }
 
+  private static PaymentIntent intentWith(String status, Map<String, String> metadata) {
+    PaymentIntent intent = mock(PaymentIntent.class);
+    when(intent.getStatus()).thenReturn(status);
+    when(intent.getMetadata()).thenReturn(metadata);
+    return intent;
+  }
+
+  @Test
+  void isPaidBy_succeededIntentOfThisUser_isTrue() {
+    UUID userId = UUID.randomUUID();
+    PaymentIntent paid = intentWith("succeeded",
+        Map.of(StripePaymentService.USER_ID_METADATA, userId.toString()));
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      mocked.when(() -> PaymentIntent.retrieve("pi_paid")).thenReturn(paid);
+
+      assertTrue(service.isPaidBy("pi_paid", userId));
+    }
+  }
+
+  @Test
+  void isPaidBy_unpaidIntentOfThisUser_isFalse() {
+    UUID userId = UUID.randomUUID();
+    PaymentIntent unpaid = intentWith("requires_payment_method",
+        Map.of(StripePaymentService.USER_ID_METADATA, userId.toString()));
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      mocked.when(() -> PaymentIntent.retrieve("pi_unpaid")).thenReturn(unpaid);
+
+      assertFalse(service.isPaidBy("pi_unpaid", userId));
+    }
+  }
+
+  @Test
+  void isPaidBy_succeededIntentOfAnotherUserOrNoOwner_isFalse() {
+    UUID userId = UUID.randomUUID();
+    PaymentIntent other = intentWith("succeeded",
+        Map.of(StripePaymentService.USER_ID_METADATA, UUID.randomUUID().toString()));
+    PaymentIntent noOwner = intentWith("succeeded", Map.of());
+    PaymentIntent nullMetadata = intentWith("succeeded", null);
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      mocked.when(() -> PaymentIntent.retrieve("pi_other")).thenReturn(other);
+      mocked.when(() -> PaymentIntent.retrieve("pi_no_owner")).thenReturn(noOwner);
+      mocked.when(() -> PaymentIntent.retrieve("pi_null_metadata")).thenReturn(nullMetadata);
+
+      assertFalse(service.isPaidBy("pi_other", userId));
+      assertFalse(service.isPaidBy("pi_no_owner", userId));
+      assertFalse(service.isPaidBy("pi_null_metadata", userId));
+    }
+  }
+
+  @Test
+  void isPaidBy_stripeFailure_throws() {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      mocked.when(() -> PaymentIntent.retrieve("pi_down")).thenThrow(
+          new ApiConnectionException("down"));
+
+      assertThatThrownBy(() -> service.isPaidBy("pi_down", UUID.randomUUID()))
+          .isInstanceOf(RuntimeException.class)
+          .hasCauseInstanceOf(ApiConnectionException.class);
+    }
+  }
+
   @Test
   void verifyPaymentSucceeded_returnsTrueForSucceeded() throws Exception {
     try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {

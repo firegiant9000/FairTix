@@ -940,6 +940,119 @@ class StripePaymentControllerTest {
         .andExpect(jsonPath("$.orderId").value(orderId));
   }
 
+  /**
+   * A paid intent refused by the queue-clearance check never reaches verification, so the
+   * charge goes on record for stripe_charges_without_order there; the answer stays 403.
+   */
+  @Test
+  void checkout_paidIntentWithoutQueueClearance_answers403AndAuditsQueueNotCleared()
+      throws Exception {
+    requireQueueWithoutClearance();
+    doReturn(true).when(stripePaymentService).isPaidBy("pi_paid_no_queue", user.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_paid_no_queue")))
+        .andExpect(status().isForbidden());
+
+    assertThat(orderFailedDetails()).singleElement().asString()
+        .contains("stripe_intent=pi_paid_no_queue,")
+        .contains("holdIds=[" + confirmedHold.getId() + "]")
+        .endsWith("error=QueueNotCleared");
+    verify(stripePaymentService, never()).verifyPaymentSucceeded(anyString(), anyLong(), any());
+  }
+
+  @Test
+  void checkout_unpaidIntentWithoutQueueClearance_answers403AndWritesNoAudit() throws Exception {
+    requireQueueWithoutClearance();
+    doReturn(false).when(stripePaymentService).isPaidBy("pi_unpaid_no_queue", user.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_unpaid_no_queue")))
+        .andExpect(status().isForbidden());
+
+    assertThat(orderFailedDetails()).isEmpty();
+  }
+
+  /**
+   * Whether the intent is paid is unknown, so the refused attempt still goes on record (the
+   * runbook opens the intent in Stripe before any refund), and the answer stays 403.
+   */
+  @Test
+  void checkout_paidCheckFailsWithoutQueueClearance_answers403AndAuditsPaidNotChecked()
+      throws Exception {
+    requireQueueWithoutClearance();
+    doThrow(new RuntimeException("Stripe down"))
+        .when(stripePaymentService).isPaidBy("pi_unknown_no_queue", user.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(confirmedHold.getId(), "pi_unknown_no_queue")))
+        .andExpect(status().isForbidden());
+
+    assertThat(orderFailedDetails()).singleElement().asString()
+        .contains("stripe_intent=pi_unknown_no_queue,")
+        .endsWith("error=QueueNotCleared (PaidNotChecked)");
+  }
+
+  @Test
+  void checkout_paidIntentWithAnotherUsersHold_answers400AndAuditsHoldNotOwned()
+      throws Exception {
+    SeatHold othersHold = confirmedHoldFor(otherUser(), "9");
+    doReturn(true).when(stripePaymentService).isPaidBy("pi_paid_wrong_hold", user.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(othersHold.getId(), "pi_paid_wrong_hold")))
+        .andExpect(status().isBadRequest());
+
+    assertThat(orderFailedDetails()).singleElement().asString()
+        .contains("stripe_intent=pi_paid_wrong_hold,")
+        .contains("holdIds=[" + othersHold.getId() + "]")
+        .endsWith("error=HoldNotOwned");
+    verify(stripePaymentService, never()).verifyPaymentSucceeded(anyString(), anyLong(), any());
+  }
+
+  @Test
+  void checkout_unpaidIntentWithAnotherUsersHold_answers400AndWritesNoAudit() throws Exception {
+    SeatHold othersHold = confirmedHoldFor(otherUser(), "9");
+    doReturn(false).when(stripePaymentService).isPaidBy("pi_unpaid_wrong_hold", user.getId());
+
+    mockMvc.perform(post("/api/payments/checkout")
+            .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(checkoutBody(othersHold.getId(), "pi_unpaid_wrong_hold")))
+        .andExpect(status().isBadRequest());
+
+    assertThat(orderFailedDetails()).isEmpty();
+  }
+
+  private void requireQueueWithoutClearance() {
+    Event event = confirmedHold.getSeat().getEvent();
+    event.updateQueueSettings(true, null);
+    eventRepository.save(event);
+    doReturn(false).when(queueService).hasCheckoutClearance(any(), any());
+  }
+
+  private User otherUser() {
+    User other = new User();
+    other.setEmail("stripe-other@test.com");
+    other.setPassword(passwordEncoder.encode("Test1234!"));
+    other.setEmailVerified(true);
+    return userRepository.save(other);
+  }
+
+  private java.util.List<String> orderFailedDetails() {
+    return jdbcTemplate.queryForList(
+        "SELECT details FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED' AND user_id = ?",
+        String.class, user.getId());
+  }
+
   private SeatHold confirmedHoldFor(User owner, String seatNumber) {
     Event event = confirmedHold.getSeat().getEvent();
     Seat seat = new Seat(event, "B", "2", seatNumber, new BigDecimal("50.00"));
