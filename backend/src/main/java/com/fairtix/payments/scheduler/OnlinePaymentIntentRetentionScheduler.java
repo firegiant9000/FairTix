@@ -28,17 +28,18 @@ public class OnlinePaymentIntentRetentionScheduler {
   static final Duration RETENTION = Duration.ofDays(30);
 
   /** Rows read per page when ending abandoned ACTIVE rows. */
-  static final int BATCH_SIZE = 100;
+  static final int BATCH_SIZE = 30;
 
   /** Stops the abandoned-row pass when Stripe keeps failing, rather than calling it for every row. */
   static final int MAX_CONSECUTIVE_FAILURES = 3;
 
   /**
    * Per-run budget. All {@code @Scheduled} jobs share one thread (hold expiry, queue admission),
-   * so the pass yields after this many rows or this long and resumes from there the next run.
+   * so the pass yields after this many rows or this long and resumes from there the next run. The
+   * time is checked between rows, so one slow Stripe call can overrun it.
    */
-  static final int MAX_ROWS_PER_RUN = 200;
-  static final Duration MAX_RUN_TIME = Duration.ofMinutes(2);
+  static final int MAX_ROWS_PER_RUN = 50;
+  static final Duration MAX_RUN_TIME = Duration.ofSeconds(20);
 
   private static final UUID START = new UUID(0L, 0L);
 
@@ -109,6 +110,8 @@ public class OnlinePaymentIntentRetentionScheduler {
           log.warn("Could not end old online intent row {}", row.getStripePaymentIntentId(), e);
           if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
             stoppedBecause = consecutiveFailures + " failures in a row";
+            log.error("Stopped ending old online intent rows after {} failures in a row;"
+                + " resuming next run", consecutiveFailures);
             break pages;
           }
         }

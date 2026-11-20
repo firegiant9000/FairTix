@@ -1,7 +1,9 @@
 package com.fairtix.payments.scheduler;
 
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -13,7 +15,9 @@ import com.fairtix.payments.application.OnlinePaymentIntentService.AbandonedInte
 import com.fairtix.payments.domain.OnlinePaymentIntent;
 import com.fairtix.payments.infrastructure.OnlinePaymentIntentRepository;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,6 +31,10 @@ class OnlinePaymentIntentRetentionSchedulerTest {
   private static final Instant NOW = Instant.parse("2026-11-18T03:30:00Z");
   private static final Instant CUTOFF = Instant.parse("2026-10-19T03:30:00Z");
   private static final UUID START = new UUID(0L, 0L);
+  private static final int BATCH = OnlinePaymentIntentRetentionScheduler.BATCH_SIZE;
+  private static final int BUDGET = OnlinePaymentIntentRetentionScheduler.MAX_ROWS_PER_RUN;
+  private static final int MAX_FAILURES =
+      OnlinePaymentIntentRetentionScheduler.MAX_CONSECUTIVE_FAILURES;
 
   private OnlinePaymentIntentRepository repository;
   private OnlinePaymentIntentService intents;
@@ -52,6 +60,21 @@ class OnlinePaymentIntentRetentionSchedulerTest {
     return rows;
   }
 
+  /**
+   * Answers the keyset query from {@code rows}, taken as already in id order: the rows after the
+   * given one, up to the limit. Rows stay in the list whatever the service does, like rows the
+   * job leaves ACTIVE.
+   */
+  private void keysetOver(List<OnlinePaymentIntent> rows) {
+    List<UUID> ids = rows.stream().map(OnlinePaymentIntent::getId).toList();
+    when(repository.findActiveCreatedBefore(eq(CUTOFF), any(), any())).thenAnswer(inv -> {
+      UUID after = inv.getArgument(1);
+      Limit limit = inv.getArgument(2);
+      int from = START.equals(after) ? 0 : ids.indexOf(after) + 1;
+      return rows.subList(from, Math.min(from + limit.max(), rows.size()));
+    });
+  }
+
   @Test
   void deleteOldRows_deletesRowsInvalidatedBeforeThirtyDayCutoff() {
     scheduler.deleteOldRows();
@@ -60,29 +83,28 @@ class OnlinePaymentIntentRetentionSchedulerTest {
   }
 
   @Test
-  void deleteOldRows_endsEveryActiveRowOlderThanTheCutoff_pageByPage() {
-    int batch = OnlinePaymentIntentRetentionScheduler.BATCH_SIZE;
-    List<OnlinePaymentIntent> first = rows(batch);
-    List<OnlinePaymentIntent> second = rows(1);
-    UUID lastOfFirst = first.get(batch - 1).getId();
-    UUID lastOfSecond = second.get(0).getId();
-    when(repository.findActiveCreatedBefore(CUTOFF, START, Limit.of(batch))).thenReturn(first);
-    when(repository.findActiveCreatedBefore(CUTOFF, lastOfFirst, Limit.of(batch)))
-        .thenReturn(second);
-    when(intents.endIfAbandoned(any())).thenReturn(AbandonedIntentOutcome.CANCELED);
+  void deleteOldRows_endsEveryOldActiveRowAcrossPages_thenNextRunStartsOver() {
+    List<OnlinePaymentIntent> all = rows(BATCH + 1);
+    keysetOver(all);
+    when(intents.endIfAbandoned(any())).thenReturn(AbandonedIntentOutcome.LEFT_PAID);
+    UUID lastOfFirstPage = all.get(BATCH - 1).getId();
 
     scheduler.deleteOldRows();
 
-    verify(intents, times(batch + 1)).endIfAbandoned(any());
-    verify(intents).endIfAbandoned(second.get(0));
-    verify(repository, never())
-        .findActiveCreatedBefore(eq(CUTOFF), eq(lastOfSecond), any());
+    verify(intents, times(BATCH + 1)).endIfAbandoned(any());
+    verify(repository).findActiveCreatedBefore(eq(CUTOFF), eq(lastOfFirstPage), any());
+
+    clearInvocations(intents, repository);
+    scheduler.deleteOldRows();
+
+    verify(intents).endIfAbandoned(all.get(0));
+    verify(repository).findActiveCreatedBefore(eq(CUTOFF), eq(START), any());
   }
 
   @Test
   void deleteOldRows_aFailingRowDoesNotStopTheOthers() {
     List<OnlinePaymentIntent> page = rows(3);
-    when(repository.findActiveCreatedBefore(eq(CUTOFF), eq(START), any())).thenReturn(page);
+    keysetOver(page);
     when(intents.endIfAbandoned(page.get(0))).thenThrow(new RuntimeException("stripe down"));
     when(intents.endIfAbandoned(page.get(1))).thenReturn(AbandonedIntentOutcome.LEFT_PAID);
     when(intents.endIfAbandoned(page.get(2))).thenReturn(AbandonedIntentOutcome.CANCELED);
@@ -94,71 +116,81 @@ class OnlinePaymentIntentRetentionSchedulerTest {
   }
 
   @Test
-  void deleteOldRows_stopsAfterTooManyFailuresInARow() {
-    int limit = OnlinePaymentIntentRetentionScheduler.MAX_CONSECUTIVE_FAILURES;
-    List<OnlinePaymentIntent> page = rows(limit + 5);
-    when(repository.findActiveCreatedBefore(eq(CUTOFF), eq(START), any())).thenReturn(page);
-    when(intents.endIfAbandoned(any())).thenThrow(new RuntimeException("stripe down"));
-
-    scheduler.deleteOldRows();
-
-    verify(intents, times(limit)).endIfAbandoned(any());
-    verify(repository).deleteInvalidatedBefore(CUTOFF);
-  }
-
-  @Test
-  void deleteOldRows_afterAFailureStop_nextRunResumesAfterTheLastFailedRow() {
-    int limit = OnlinePaymentIntentRetentionScheduler.MAX_CONSECUTIVE_FAILURES;
-    List<OnlinePaymentIntent> page = rows(limit + 2);
-    UUID lastFailed = page.get(limit - 1).getId();
-    List<OnlinePaymentIntent> rest = page.subList(limit, page.size());
-    when(repository.findActiveCreatedBefore(eq(CUTOFF), eq(START), any())).thenReturn(page);
-    when(repository.findActiveCreatedBefore(eq(CUTOFF), eq(lastFailed), any())).thenReturn(rest);
-    when(intents.endIfAbandoned(any())).thenThrow(new RuntimeException("stripe down"));
-
-    scheduler.deleteOldRows();
-    scheduler.deleteOldRows();
-
-    verify(repository).findActiveCreatedBefore(eq(CUTOFF), eq(lastFailed), any());
-  }
-
-  @Test
-  void deleteOldRows_stopsAtTheRowBudget_andResumesThereNextRun() {
-    int budget = OnlinePaymentIntentRetentionScheduler.MAX_ROWS_PER_RUN;
-    int batch = OnlinePaymentIntentRetentionScheduler.BATCH_SIZE;
-    List<OnlinePaymentIntent> all = rows(budget + 1);
-    for (int from = 0; from < all.size(); from += batch) {
-      UUID after = from == 0 ? START : all.get(from - 1).getId();
-      List<OnlinePaymentIntent> page = all.subList(from, Math.min(from + batch, all.size()));
-      when(repository.findActiveCreatedBefore(eq(CUTOFF), eq(after), any())).thenReturn(page);
+  void deleteOldRows_stopsAfterTooManyFailuresInARow_thenResumesAfterThem_thenStartsOver() {
+    List<OnlinePaymentIntent> all = rows(MAX_FAILURES + 2);
+    keysetOver(all);
+    for (int i = 0; i < MAX_FAILURES; i++) {
+      when(intents.endIfAbandoned(all.get(i))).thenThrow(new RuntimeException("stripe down"));
     }
+    when(intents.endIfAbandoned(all.get(MAX_FAILURES)))
+        .thenReturn(AbandonedIntentOutcome.CANCELED);
+    when(intents.endIfAbandoned(all.get(MAX_FAILURES + 1)))
+        .thenReturn(AbandonedIntentOutcome.CANCELED);
+
+    scheduler.deleteOldRows();
+
+    verify(intents, times(MAX_FAILURES)).endIfAbandoned(any());
+    verify(intents, never()).endIfAbandoned(all.get(MAX_FAILURES));
+    verify(repository).deleteInvalidatedBefore(CUTOFF);
+
+    clearInvocations(intents);
+    scheduler.deleteOldRows();
+
+    verify(intents, never()).endIfAbandoned(all.get(0));
+    verify(intents).endIfAbandoned(all.get(MAX_FAILURES));
+    verify(intents).endIfAbandoned(all.get(MAX_FAILURES + 1));
+
+    clearInvocations(intents);
+    scheduler.deleteOldRows();
+
+    verify(intents).endIfAbandoned(all.get(0));
+  }
+
+  @Test
+  void deleteOldRows_stopsAtTheRowBudgetMidPage_andResumesThereNextRun() {
+    // The budget is not a multiple of the page size, so the stop falls inside a page.
+    assertNotEquals(0, BUDGET % BATCH);
+    List<OnlinePaymentIntent> all = rows(BUDGET + BATCH);
+    keysetOver(all);
     when(intents.endIfAbandoned(any())).thenReturn(AbandonedIntentOutcome.LEFT_PAID);
 
     scheduler.deleteOldRows();
 
-    verify(intents, times(budget)).endIfAbandoned(any());
-    verify(intents, never()).endIfAbandoned(all.get(budget));
+    verify(intents, times(BUDGET)).endIfAbandoned(any());
+    verify(intents, never()).endIfAbandoned(all.get(BUDGET));
 
+    clearInvocations(intents);
     scheduler.deleteOldRows();
 
-    verify(intents).endIfAbandoned(all.get(budget));
+    verify(intents, never()).endIfAbandoned(all.get(BUDGET - 1));
+    verify(intents).endIfAbandoned(all.get(BUDGET));
+    verify(intents).endIfAbandoned(all.get(BUDGET + BATCH - 1));
   }
 
   @Test
-  void deleteOldRows_stopsWhenTheTimeBudgetIsUsed() {
-    List<OnlinePaymentIntent> page = rows(3);
-    when(repository.findActiveCreatedBefore(eq(CUTOFF), eq(START), any())).thenReturn(page);
+  void deleteOldRows_stopsWhenTheTimeBudgetIsUsed_andResumesNextRun() {
+    List<OnlinePaymentIntent> all = rows(3);
+    keysetOver(all);
     MutableClock clock = new MutableClock(NOW);
     scheduler.setClock(clock);
-    when(intents.endIfAbandoned(page.get(0))).thenAnswer(inv -> {
+    when(intents.endIfAbandoned(any())).thenReturn(AbandonedIntentOutcome.CANCELED);
+    when(intents.endIfAbandoned(all.get(0))).thenAnswer(inv -> {
       clock.advance(OnlinePaymentIntentRetentionScheduler.MAX_RUN_TIME);
       return AbandonedIntentOutcome.CANCELED;
     });
+    when(intents.endIfAbandoned(all.get(1))).thenReturn(AbandonedIntentOutcome.CANCELED);
 
     scheduler.deleteOldRows();
 
-    verify(intents).endIfAbandoned(page.get(0));
-    verify(intents, never()).endIfAbandoned(page.get(1));
+    verify(intents).endIfAbandoned(all.get(0));
+    verify(intents, never()).endIfAbandoned(all.get(1));
+
+    clock.set(NOW);
+    clearInvocations(intents);
+    scheduler.deleteOldRows();
+
+    verify(intents, never()).endIfAbandoned(all.get(0));
+    verify(intents).endIfAbandoned(all.get(1));
   }
 
   private static final class MutableClock extends Clock {
@@ -168,17 +200,21 @@ class OnlinePaymentIntentRetentionSchedulerTest {
       this.now = now;
     }
 
-    void advance(java.time.Duration by) {
+    void advance(Duration by) {
       now = now.plus(by);
     }
 
+    void set(Instant to) {
+      now = to;
+    }
+
     @Override
-    public java.time.ZoneId getZone() {
+    public ZoneId getZone() {
       return ZoneOffset.UTC;
     }
 
     @Override
-    public Clock withZone(java.time.ZoneId zone) {
+    public Clock withZone(ZoneId zone) {
       return this;
     }
 
