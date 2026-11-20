@@ -1,5 +1,6 @@
 package com.fairtix.auth.application;
 
+import com.fairtix.users.application.UserEmailLookup;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,18 +26,18 @@ public class LoginAttemptService {
   }
 
   public boolean isLocked(String email) {
-    RAtomicLong counter = redissonClient.getAtomicLong(KEY_PREFIX + email.toLowerCase());
+    RAtomicLong counter = redissonClient.getAtomicLong(key(email));
     return counter.get() >= maxAttempts;
   }
 
   public long getAttemptCount(String email) {
-    RAtomicLong counter = redissonClient.getAtomicLong(KEY_PREFIX + email.toLowerCase());
+    RAtomicLong counter = redissonClient.getAtomicLong(key(email));
     return counter.get();
   }
 
   /** Returns the failure count including this one. */
   public long recordFailure(String email) {
-    RAtomicLong counter = redissonClient.getAtomicLong(KEY_PREFIX + email.toLowerCase());
+    RAtomicLong counter = redissonClient.getAtomicLong(key(email));
     long current = counter.incrementAndGet();
     if (current == 1 || current >= maxAttempts) {
       // Set TTL on first failure; refresh it when lockout threshold is reached
@@ -47,16 +48,24 @@ public class LoginAttemptService {
   }
 
   public void resetAttempts(String email) {
-    redissonClient.getAtomicLong(KEY_PREFIX + email.toLowerCase()).delete();
+    redissonClient.getAtomicLong(key(email)).delete();
   }
 
   public long getRemainingLockoutSeconds(String email) {
-    RAtomicLong counter = redissonClient.getAtomicLong(KEY_PREFIX + email.toLowerCase());
+    RAtomicLong counter = redissonClient.getAtomicLong(key(email));
     long ttl = counter.remainTimeToLive();
     return ttl > 0 ? ttl / 1000 : 0;
   }
 
   public int getMaxAttempts() {
     return maxAttempts;
+  }
+
+  /**
+   * Keyed on the folding login's account lookup honours (UserEmailLookup.normalize), so
+   * every spelling that can reach an account shares that account's count.
+   */
+  private static String key(String email) {
+    return KEY_PREFIX + UserEmailLookup.normalize(email);
   }
 }

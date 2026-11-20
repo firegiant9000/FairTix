@@ -63,7 +63,8 @@ class CompServiceTest {
     transactionLock = mock(TransactionLock.class);
     purchaseCapGuard = mock(PurchaseCapGuard.class);
     service = new CompService(events, seats, tickets, users, orders, audit,
-        transactionLock, purchaseCapGuard, mock(com.fairtix.events.application.EventSaleGuard.class));
+        transactionLock, purchaseCapGuard, mock(com.fairtix.events.application.EventSaleGuard.class),
+        new com.fairtix.users.application.UserEmailLookup(users));
 
     issuerId = UUID.randomUUID();
     eventId = UUID.randomUUID();

@@ -18,6 +18,7 @@ import com.fairtix.tickets.domain.TicketTransferRequest;
 import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
+import com.fairtix.users.application.UserEmailLookup;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.persistence.EntityManager;
@@ -74,7 +75,6 @@ class TransferServiceTest {
         transferService = new TransferService(
                 ticketRepository,
                 transferRepository,
-                userRepository,
                 auditService,
                 notificationGate,
                 mock(EmailTemplateService.class),
@@ -83,7 +83,8 @@ class TransferServiceTest {
                 mock(PurchaseCapGuard.class),
                 refundRepository,
                 entityManager,
-                mock(com.fairtix.events.application.EventSaleGuard.class));
+                mock(com.fairtix.events.application.EventSaleGuard.class),
+                new UserEmailLookup(userRepository));
 
         when(riskScoringService.getTier(USER_ID)).thenReturn(RiskTier.LOW);
         when(ticketRepository.lockById(TICKET_ID)).thenReturn(Optional.of(TICKET_ID));
@@ -120,7 +121,7 @@ class TransferServiceTest {
                 .isInstanceOf(TransferVelocityExceededException.class)
                 .hasMessageContaining("Transfer limit exceeded");
 
-        verify(userRepository, never()).findByEmail(anyString());
+        verify(userRepository, never()).findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc(anyString());
     }
 
     /** A mistake about the sender's own ticket reveals nothing, so it uses no slot. */
@@ -228,7 +229,8 @@ class TransferServiceTest {
     @Test
     void unknownRecipient_usesASlot() {
         ownedValidTicket();
-        when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
+        when(userRepository.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("nobody@example.com"))
+                .thenReturn(List.of());
 
         assertThatThrownBy(() ->
                 transferService.createTransferRequest(TICKET_ID, USER_ID, "nobody@example.com"))
@@ -340,7 +342,9 @@ class TransferServiceTest {
         Ticket ticket = ownedValidTicket();
         User recipient = mock(User.class);
         when(recipient.getId()).thenReturn(UUID.randomUUID());
-        when(userRepository.findByEmail("other@example.com")).thenReturn(Optional.of(recipient));
+        when(recipient.getEmail()).thenReturn("other@example.com");
+        when(userRepository.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("other@example.com"))
+                .thenReturn(List.of(recipient));
         TransactionSynchronizationManager.initSynchronization();
 
         transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com");
@@ -355,7 +359,9 @@ class TransferServiceTest {
         ownedValidTicket();
         User recipient = mock(User.class);
         when(recipient.getId()).thenReturn(UUID.randomUUID());
-        when(userRepository.findByEmail("other@example.com")).thenReturn(Optional.of(recipient));
+        when(recipient.getEmail()).thenReturn("other@example.com");
+        when(userRepository.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("other@example.com"))
+                .thenReturn(List.of(recipient));
         TransactionSynchronizationManager.initSynchronization();
 
         transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com");
@@ -461,7 +467,9 @@ class TransferServiceTest {
     private User knownRecipient() {
         User recipient = mock(User.class);
         when(recipient.getId()).thenReturn(UUID.randomUUID());
-        when(userRepository.findByEmail("other@example.com")).thenReturn(Optional.of(recipient));
+        when(recipient.getEmail()).thenReturn("other@example.com");
+        when(userRepository.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("other@example.com"))
+                .thenReturn(List.of(recipient));
         return recipient;
     }
 

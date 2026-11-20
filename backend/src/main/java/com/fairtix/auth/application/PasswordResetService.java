@@ -6,6 +6,7 @@ import com.fairtix.auth.infrastructure.PasswordResetTokenRepository;
 import com.fairtix.notifications.application.EmailTemplateService;
 import com.fairtix.notifications.application.NotificationGate;
 import com.fairtix.notifications.domain.NotificationCategory;
+import com.fairtix.users.application.UserEmailLookup;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import org.redisson.api.RAtomicLong;
@@ -50,6 +51,7 @@ public class PasswordResetService {
     private final AuditService auditService;
     private final RedissonClient redissonClient;
     private final String baseUrl;
+    private final UserEmailLookup userEmailLookup;
 
     public PasswordResetService(
             PasswordResetTokenRepository tokenRepository,
@@ -60,7 +62,9 @@ public class PasswordResetService {
             PasswordEncoder passwordEncoder,
             AuditService auditService,
             RedissonClient redissonClient,
-            @Value("${app.base-url}") String baseUrl) {
+            @Value("${app.base-url}") String baseUrl,
+            UserEmailLookup userEmailLookup) {
+        this.userEmailLookup = userEmailLookup;
         this.tokenRepository = tokenRepository;
         this.userRepository = userRepository;
         this.notificationGate = notificationGate;
@@ -80,7 +84,10 @@ public class PasswordResetService {
     public void requestReset(String email) {
         checkRateLimit(email);
 
-        User user = userRepository.findByEmail(email).orElse(null);
+        // As login: ignoring case when exactly one account matches, else the exact match only,
+        // so an ambiguous address never resets someone else's password. The mail goes to the
+        // address stored on the account, not the one typed.
+        User user = userEmailLookup.findForSignIn(email).orElse(null);
 
         // Return silently if user doesn't exist or is deleted — don't leak email existence
         if (user == null || user.isDeleted()) {
@@ -152,7 +159,8 @@ public class PasswordResetService {
     }
 
     private void checkRateLimit(String email) {
-        String key = RATE_KEY_PREFIX + email.toLowerCase();
+        // The folding the account lookup honours, so every spelling of one address shares a count.
+        String key = RATE_KEY_PREFIX + UserEmailLookup.normalize(email);
         RAtomicLong counter = redissonClient.getAtomicLong(key);
         long count = counter.incrementAndGet();
         if (count == 1) {

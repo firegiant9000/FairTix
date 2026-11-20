@@ -19,7 +19,7 @@ import com.fairtix.tickets.domain.TicketTransferRequest;
 import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
-import com.fairtix.users.infrastructure.UserRepository;
+import com.fairtix.users.application.UserEmailLookup;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import org.slf4j.MDC;
@@ -39,7 +39,6 @@ public class TransferService {
 
     private final TicketRepository ticketRepository;
     private final TicketTransferRequestRepository transferRepository;
-    private final UserRepository userRepository;
     private final AuditService auditService;
     private final NotificationGate notificationGate;
     private final EmailTemplateService emailTemplateService;
@@ -49,10 +48,10 @@ public class TransferService {
     private final RefundRepository refundRepository;
     private final EntityManager entityManager;
     private final EventSaleGuard eventSaleGuard;
+    private final UserEmailLookup userEmailLookup;
 
     public TransferService(TicketRepository ticketRepository,
                            TicketTransferRequestRepository transferRepository,
-                           UserRepository userRepository,
                            AuditService auditService,
                            NotificationGate notificationGate,
                            EmailTemplateService emailTemplateService,
@@ -61,14 +60,15 @@ public class TransferService {
                            PurchaseCapGuard purchaseCapGuard,
                            RefundRepository refundRepository,
                            EntityManager entityManager,
-                           EventSaleGuard eventSaleGuard) {
+                           EventSaleGuard eventSaleGuard,
+                           UserEmailLookup userEmailLookup) {
+        this.userEmailLookup = userEmailLookup;
         this.eventSaleGuard = eventSaleGuard;
         this.purchaseCapGuard = purchaseCapGuard;
         this.refundRepository = refundRepository;
         this.entityManager = entityManager;
         this.ticketRepository = ticketRepository;
         this.transferRepository = transferRepository;
-        this.userRepository = userRepository;
         this.auditService = auditService;
         this.notificationGate = notificationGate;
         this.emailTemplateService = emailTemplateService;
@@ -103,7 +103,8 @@ public class TransferService {
         // slow Redis never holds the ticket row.
         velocityLimiter.acquire(fromUserId);
 
-        var toUser = userRepository.findByEmail(toEmail)
+        // Ignoring case, ranked as comps rank it: registration keeps the address as typed.
+        var toUser = userEmailLookup.findRecipient(toEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("No user found with email: " + toEmail));
 
         if (toUser.getId().equals(fromUserId)) {
