@@ -7,6 +7,7 @@ import com.fairtix.payments.domain.IntentInvalidationReason;
 import com.fairtix.payments.domain.OnlinePaymentIntent;
 import com.fairtix.payments.domain.OnlinePaymentIntentStatus;
 import com.fairtix.payments.infrastructure.OnlinePaymentIntentRepository;
+import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -42,13 +43,16 @@ public class OnlinePaymentIntentService {
   private final StripePaymentService stripe;
   private final OnlinePaymentIntentRepository repository;
   private final AuditService auditService;
+  private final PaymentRecordRepository paymentRecordRepository;
   private Clock clock = Clock.systemUTC();
 
   public OnlinePaymentIntentService(StripePaymentService stripe,
-      OnlinePaymentIntentRepository repository, AuditService auditService) {
+      OnlinePaymentIntentRepository repository, AuditService auditService,
+      PaymentRecordRepository paymentRecordRepository) {
     this.stripe = stripe;
     this.repository = repository;
     this.auditService = auditService;
+    this.paymentRecordRepository = paymentRecordRepository;
   }
 
   void setClock(Clock clock) {
@@ -176,6 +180,63 @@ public class OnlinePaymentIntentService {
   public int markCompleted(String stripePaymentIntentId) {
     return repository.invalidateActiveByStripePaymentIntentId(
         stripePaymentIntentId, IntentInvalidationReason.COMPLETED, clock.instant());
+  }
+
+  /** What {@link #endIfAbandoned} did with an old ACTIVE row. */
+  public enum AbandonedIntentOutcome {
+    /** The order exists; the row was ended as COMPLETED. */
+    COMPLETED,
+    /** The intent is canceled in Stripe; the row was ended as CANCELED. */
+    CANCELED,
+    /** Paid or in flight without an order: left ACTIVE for the runbook. */
+    LEFT_PAID,
+    /** Stripe did not cancel it; left ACTIVE for the next run. */
+    NOT_CANCELED
+  }
+
+  /**
+   * Ends an old ACTIVE row so retention can delete it, for a checkout that never completed.
+   * An age cutoff alone is unsafe (confirmed holds can be extended indefinitely, and deleting the
+   * row would let the next /intent create a second payable intent), so the intent is canceled in
+   * Stripe first. A paid or in-flight intent is never canceled. If the customer does come back, the
+   * lookup in {@link #clientSecretFor} sees the canceled intent and replaces it. The cutoff is the
+   * row's age, not when it was last handed out, so a customer still on the checkout page when the
+   * job runs gets one failed payment attempt and a fresh intent on reload; no money moves.
+   *
+   * <p>Not transactional: the Stripe calls stay outside DB transactions.
+   */
+  public AbandonedIntentOutcome endIfAbandoned(OnlinePaymentIntent row) {
+    String intentId = row.getStripePaymentIntentId();
+    if (paymentRecordRepository.findByTransactionId(intentId).isPresent()) {
+      markCompleted(intentId);
+      return AbandonedIntentOutcome.COMPLETED;
+    }
+    StripeIntent current = stripe.retrievePaymentIntent(intentId);
+    if (PAID_OR_IN_FLIGHT.contains(current.status())) {
+      log.warn("Old online intent is paid or in flight without an order, left ACTIVE: {}",
+          intentId);
+      return AbandonedIntentOutcome.LEFT_PAID;
+    }
+    if ("canceled".equals(current.status())) {
+      // Canceled elsewhere, or by an earlier run whose audit write failed: still put it on record.
+      auditService.log(row.getUserId(), "PAYMENT_INTENT_ABANDONED", "PAYMENT", null,
+          "stripe_intent=" + intentId + ", already_canceled=true");
+    } else {
+      StripeIntent after = stripe.cancelPaymentIntent(intentId);
+      if (PAID_OR_IN_FLIGHT.contains(after.status())) {
+        log.warn("Old online intent was paid while being canceled, left ACTIVE: {}", intentId);
+        return AbandonedIntentOutcome.LEFT_PAID;
+      }
+      if (!"canceled".equals(after.status())) {
+        log.warn("Old online intent {} could not be canceled (status {})", intentId,
+            after.status());
+        return AbandonedIntentOutcome.NOT_CANCELED;
+      }
+      auditService.log(row.getUserId(), "PAYMENT_INTENT_ABANDONED", "PAYMENT", null,
+          "stripe_intent=" + intentId);
+    }
+    repository.invalidate(row.getId(), IntentInvalidationReason.CANCELED, clock.instant());
+    return AbandonedIntentOutcome.CANCELED;
   }
 
   /**

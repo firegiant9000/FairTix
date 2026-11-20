@@ -3,6 +3,7 @@ package com.fairtix.payments.infrastructure;
 import com.fairtix.payments.domain.IntentInvalidationReason;
 import com.fairtix.payments.domain.OnlinePaymentIntent;
 import com.fairtix.payments.domain.OnlinePaymentIntentStatus;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -10,6 +11,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -49,9 +51,21 @@ public interface OnlinePaymentIntentRepository extends JpaRepository<OnlinePayme
       @Param("reason") IntentInvalidationReason reason, @Param("at") Instant at);
 
   /**
+   * One page of ACTIVE rows created before the cutoff, in id order after {@code after}: a keyset,
+   * so rows the caller leaves ACTIVE (paid, or a Stripe error) don't fill every page. Start with
+   * the nil UUID, which sorts first.
+   */
+  @Query("SELECT i FROM OnlinePaymentIntent i"
+      + " WHERE i.status = com.fairtix.payments.domain.OnlinePaymentIntentStatus.ACTIVE"
+      + " AND i.createdAt < :cutoff AND i.id > :after ORDER BY i.id")
+  List<OnlinePaymentIntent> findActiveCreatedBefore(@Param("cutoff") Instant cutoff,
+      @Param("after") UUID after, Limit limit);
+
+  /**
    * Deletes only INVALIDATED rows, by invalidation time. ACTIVE rows are never deleted: confirmed
    * holds can be extended indefinitely, and losing the row would let the next /intent create a
-   * second payable intent for the same hold set.
+   * second payable intent for the same hold set. Old ACTIVE rows are ended first, by canceling
+   * their unpaid intents in Stripe ({@code OnlinePaymentIntentService.endIfAbandoned}).
    */
   @Transactional
   @Modifying

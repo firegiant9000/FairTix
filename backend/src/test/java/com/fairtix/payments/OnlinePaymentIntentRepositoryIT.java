@@ -12,11 +12,13 @@ import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Limit;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 class OnlinePaymentIntentRepositoryIT extends PostgresIT {
@@ -143,5 +145,29 @@ class OnlinePaymentIntentRepositoryIT extends PostgresIT {
     assertThat(repository.findAll())
         .extracting(OnlinePaymentIntent::getId)
         .containsExactlyInAnyOrder(oldActive, recentlyInvalidated, fresh.getId());
+  }
+
+  @Test
+  void findActiveCreatedBefore_pagesOldActiveRowsByIdAfterTheGivenId() {
+    UUID a = insertRow("pi_abandoned_a", "1".repeat(64), "ACTIVE", "31 days", null);
+    UUID b = insertRow("pi_abandoned_b", "2".repeat(64), "ACTIVE", "40 days", null);
+    UUID c = insertRow("pi_abandoned_c", "3".repeat(64), "ACTIVE", "45 days", null);
+    insertRow("pi_old_invalidated", "4".repeat(64), "INVALIDATED", "45 days", "40 days");
+    repository.saveAndFlush(intent("pi_recent_active"));
+    Instant cutoff = Instant.now().minus(Duration.ofDays(30));
+    // Order by Postgres's UUID ordering, which the query's keyset uses.
+    List<UUID> ordered = jdbcTemplate.queryForList(
+        "SELECT id FROM online_payment_intents WHERE id IN (?, ?, ?) ORDER BY id", UUID.class,
+        a, b, c);
+
+    List<OnlinePaymentIntent> firstPage =
+        repository.findActiveCreatedBefore(cutoff, new UUID(0L, 0L), Limit.of(2));
+    List<OnlinePaymentIntent> secondPage =
+        repository.findActiveCreatedBefore(cutoff, firstPage.get(1).getId(), Limit.of(2));
+
+    assertThat(firstPage).extracting(OnlinePaymentIntent::getId)
+        .containsExactly(ordered.get(0), ordered.get(1));
+    assertThat(secondPage).extracting(OnlinePaymentIntent::getId)
+        .containsExactly(ordered.get(2));
   }
 }
