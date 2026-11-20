@@ -1,16 +1,23 @@
 package com.fairtix.boxoffice.domain;
 
+import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
+import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 @Entity
@@ -64,6 +71,23 @@ public class BoxOfficeSale {
   @Column(name = "created_at", nullable = false, updatable = false)
   private Instant createdAt = Instant.now();
 
+  /**
+   * The seat holds a card sale was created with (V53); its confirm completes exactly these.
+   * Empty for cash and comp sales, and for card sales created before V53.
+   */
+  @ElementCollection
+  @CollectionTable(name = "box_office_sale_holds", joinColumns = @JoinColumn(name = "sale_id"))
+  @Column(name = "hold_id", nullable = false)
+  private Set<UUID> holdIds = new HashSet<>();
+
+  /**
+   * When the drawer closed on this card sale with no order. Written only by
+   * {@code BoxOfficeSaleRepository.markPendingCardSalesAbandoned}, a guarded UPDATE, never
+   * through the entity: a stale copy must not write it, or anything else, back.
+   */
+  @Column(name = "abandoned_at", insertable = false, updatable = false)
+  private Instant abandonedAt;
+
   protected BoxOfficeSale() {}
 
   public BoxOfficeSale(UUID sessionId, UUID organizationId, UUID eventId, UUID orderId,
@@ -90,6 +114,11 @@ public class BoxOfficeSale {
     this.stripePaymentIntentId = stripePaymentIntentId;
   }
 
+  /** Records the holds this card sale owns; set once, when its seats are held. */
+  public void linkHolds(Collection<UUID> holdIds) {
+    this.holdIds.addAll(holdIds);
+  }
+
   /** Fills the customer + order linkage when a card-present hold is confirmed. */
   public void completeCard(UUID orderId, String customerEmail, String customerName) {
     this.orderId = orderId;
@@ -112,4 +141,6 @@ public class BoxOfficeSale {
   public String getTerminalReaderId() { return terminalReaderId; }
   public UUID getStaffUserId() { return staffUserId; }
   public Instant getCreatedAt() { return createdAt; }
+  public Set<UUID> getHoldIds() { return Collections.unmodifiableSet(holdIds); }
+  public Instant getAbandonedAt() { return abandonedAt; }
 }

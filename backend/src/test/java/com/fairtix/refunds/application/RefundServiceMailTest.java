@@ -67,6 +67,9 @@ class RefundServiceMailTest {
                 mock(PaymentRecordRepository.class), userRepository, mock(AuditService.class),
                 notificationGate, mock(EmailTemplateService.class), riskScoringService,
                 mock(StripePaymentService.class), mock(TicketTransferRequestRepository.class));
+        // reviewRefund locks the refund row through the EntityManager (@PersistenceContext).
+        ReflectionTestUtils.setField(refundService, "entityManager",
+                mock(jakarta.persistence.EntityManager.class));
         ReflectionTestUtils.setField(refundService, "refundEnabled", true);
         ReflectionTestUtils.setField(refundService, "refundWindowDays", 14);
         ReflectionTestUtils.setField(refundService, "autoApproveThreshold", new BigDecimal("50.00"));

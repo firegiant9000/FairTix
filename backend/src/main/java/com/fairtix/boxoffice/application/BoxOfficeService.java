@@ -8,6 +8,7 @@ import com.fairtix.boxoffice.domain.SessionStatus;
 import com.fairtix.boxoffice.infrastructure.BoxOfficeSaleRepository;
 import com.fairtix.boxoffice.infrastructure.BoxOfficeSessionRepository;
 import com.fairtix.common.ResourceNotFoundException;
+import com.fairtix.events.application.EventSaleGuard;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.application.SeatHoldConflictException;
@@ -50,9 +51,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -93,6 +96,7 @@ public class BoxOfficeService {
   private final OrgSalesCapService salesCapService;
   private final AuditService auditService;
   private final TransactionTemplate transactionTemplate;
+  private final EventSaleGuard eventSaleGuard;
 
   @PersistenceContext
   private EntityManager entityManager;
@@ -111,7 +115,9 @@ public class BoxOfficeService {
                           StripePaymentService stripePaymentService,
                           OrgSalesCapService salesCapService,
                           AuditService auditService,
-                          PlatformTransactionManager transactionManager) {
+                          PlatformTransactionManager transactionManager,
+                          EventSaleGuard eventSaleGuard) {
+    this.eventSaleGuard = eventSaleGuard;
     this.sessions = sessions;
     this.sales = sales;
     this.seatRepository = seatRepository;
@@ -190,9 +196,13 @@ public class BoxOfficeService {
     session.close(closingCash, expected, variance,
         varianceReason == null ? "" : varianceReason.trim(), signerUserId);
     sessions.save(session);
+    // Card sales still without an order can't be confirmed on a closed session. The reader may
+    // still have charged one, so this only flags them for box_office_charges_without_sale.
+    int abandoned = sales.markPendingCardSalesAbandoned(sessionId, Instant.now());
     auditService.log(signerUserId, "BOX_OFFICE_SESSION_CLOSED", "BOX_OFFICE_SESSION", session.getId(),
         "orgId=" + organizationId + " closingCash=" + closingCash + " expected=" + expected
-            + " variance=" + variance + (varianceReason == null ? "" : " reason=" + varianceReason));
+            + " variance=" + variance + " abandonedCardSales=" + abandoned
+            + (varianceReason == null ? "" : " reason=" + varianceReason));
     return session;
   }
 
@@ -264,7 +274,8 @@ public class BoxOfficeService {
             "Organization must complete Stripe Connect onboarding before taking card payments");
       }
 
-      BigDecimal amount = holdSeats(eventId, seatIds, staffUserId, organizationId);
+      HeldSeats held = holdSeats(eventId, seatIds, staffUserId, organizationId);
+      BigDecimal amount = held.total();
       long amountCents = amount.multiply(BigDecimal.valueOf(100)).longValueExact();
       salesCapService.checkCanCharge(organizationId, amountCents);
       Plan plan = org.getPlan() == null ? Plan.FREE : org.getPlan();
@@ -274,10 +285,15 @@ public class BoxOfficeService {
 
       // Pending sale row (no intent yet): its id keys the Stripe call, and
       // confirmCardSale correlates on the intent id attached below.
-      BoxOfficeSale sale = sales.save(new BoxOfficeSale(
+      BoxOfficeSale sale = new BoxOfficeSale(
           session.getId(), organizationId, eventId, null,
-          SaleMethod.CARD, amount, seatIds.size(),
-          null, null, null, null, terminalReaderId, staffUserId));
+          // The held count, not the request's: holdSeats ignores repeated seat ids, so the
+          // confirm's count check would otherwise refuse a sale the customer has paid for.
+          SaleMethod.CARD, amount, held.holdIds().size(),
+          null, null, null, null, terminalReaderId, staffUserId);
+      // The confirm completes exactly these holds, whatever else this staff member holds.
+      sale.linkHolds(held.holdIds());
+      sale = sales.save(sale);
       return new PendingCardSale(sale.getId(), amountCents, connect, feeCents);
     });
 
@@ -422,6 +438,11 @@ public class BoxOfficeService {
             "No pending box-office sale found for intent " + paymentIntentId));
     if (lockAndReload) {
       entityManager.refresh(pending, LockModeType.PESSIMISTIC_WRITE);
+      // A close that committed while this waited on the sale row: the session was read open
+      // above, but the close has flagged this sale and nothing may complete it now.
+      if (pending.getOrderId() == null && pending.getAbandonedAt() != null) {
+        throw new BoxOfficeStateException("Session is closed");
+      }
     }
     if (!pending.getSessionId().equals(sessionId)
         || !pending.getOrganizationId().equals(organizationId)) {
@@ -435,11 +456,15 @@ public class BoxOfficeService {
                                          long expectedAmountCents,
                                          String customerEmail, String customerName) {
     UUID eventId = pending.getEventId();
-    List<UUID> seatIds = seatHoldRepository.findAllByOwnerIdAndStatus(staffUserId, HoldStatus.ACTIVE)
-        .stream()
-        .filter(h -> h.getSeat().getEvent().getId().equals(eventId))
-        .map(h -> h.getSeat().getId())
-        .toList();
+    // The charge has succeeded, but an event cancelled since the intent sells nothing: the
+    // caller records BOX_OFFICE_CARD_NOT_COMPLETED for the refund runbook. Taken after the
+    // sale row lock; the cancellation never locks sale rows, so that order can't deadlock
+    // with it. Before the hold and seat writes (EventSaleGuard lock order). The longer
+    // after-charge wait: the card has already been charged.
+    eventSaleGuard.lockOnSaleAfterCharge(eventId);
+    List<UUID> seatIds = pending.getHoldIds().isEmpty()
+        ? unlinkedSaleSeatIds(staffUserId, eventId)
+        : linkedSaleSeatIds(pending, staffUserId, eventId);
     if (seatIds.size() != pending.getSeatCount()) {
       // Stripe has already verified this payment: retrying would charge the customer again.
       throw new BoxOfficeStateException("Held seats no longer match the sale. The card payment "
@@ -464,6 +489,41 @@ public class BoxOfficeService {
         "orgId=" + organizationId + " eventId=" + eventId + " seats=" + pending.getSeatCount()
             + " amount=" + pending.getAmount() + " intent=" + paymentIntentId);
     return completed;
+  }
+
+  /**
+   * The seats of the sale's own holds that are still live: ACTIVE, the staff member's, on the
+   * event. A hold that expired or was released drops out, so the count no longer matches and
+   * the confirm is refused.
+   */
+  private List<UUID> linkedSaleSeatIds(BoxOfficeSale sale, UUID staffUserId, UUID eventId) {
+    return seatHoldRepository.findAllById(sale.getHoldIds()).stream()
+        .filter(h -> h.getStatus() == HoldStatus.ACTIVE)
+        .filter(h -> h.getOwnerId().equals(staffUserId))
+        .filter(h -> h.getSeat().getEvent().getId().equals(eventId))
+        .map(h -> h.getSeat().getId())
+        .toList();
+  }
+
+  /**
+   * A card sale created before V53 has no linked holds: the old match, every ACTIVE hold of
+   * the staff member on the event, less those another (linked) sale owns. Only sales pending
+   * at deploy time reach this.
+   */
+  private List<UUID> unlinkedSaleSeatIds(UUID staffUserId, UUID eventId) {
+    List<SeatHold> candidates = seatHoldRepository
+        .findAllByOwnerIdAndStatus(staffUserId, HoldStatus.ACTIVE).stream()
+        .filter(h -> h.getSeat().getEvent().getId().equals(eventId))
+        .toList();
+    if (candidates.isEmpty()) {
+      return List.of();
+    }
+    Set<UUID> linked = new HashSet<>(
+        sales.findLinkedHoldIds(candidates.stream().map(SeatHold::getId).toList()));
+    return candidates.stream()
+        .filter(h -> !linked.contains(h.getId()))
+        .map(h -> h.getSeat().getId())
+        .toList();
   }
 
   // ---- Reporting ----
@@ -498,12 +558,15 @@ public class BoxOfficeService {
    * behalf of many customers). Lock ordering and atomicity guarantees are
    * preserved by sorting seat IDs and using the existing batch lock query.
    */
-  private BigDecimal holdSeats(UUID eventId, List<UUID> seatIds, UUID staffUserId, UUID organizationId) {
+  private HeldSeats holdSeats(UUID eventId, List<UUID> seatIds, UUID staffUserId, UUID organizationId) {
     Event event = eventRepository.findById(eventId)
         .orElseThrow(() -> new ResourceNotFoundException("Event not found: " + eventId));
     if (event.getOrganizationId() == null || !event.getOrganizationId().equals(organizationId)) {
       throw new AccessDeniedException("Event does not belong to this organization");
     }
+    // Before the seat locks (EventSaleGuard lock order). The card path calls this before
+    // Stripe, so an ended event is refused without creating an intent.
+    eventSaleGuard.lockOnSale(eventId);
     List<UUID> sortedIds = seatIds.stream().distinct().sorted().toList();
     List<Seat> locked = seatRepository.findAndLockByIdIn(sortedIds);
     if (locked.size() != sortedIds.size()) {
@@ -530,12 +593,15 @@ public class BoxOfficeService {
       holds.add(new SeatHold(seatById.get(id), staffUserId, expiresAt));
     }
     seatHoldRepository.saveAll(holds);
-    return total;
+    return new HeldSeats(total, holds.stream().map(SeatHold::getId).toList());
   }
+
+  /** What {@link #holdSeats} held: the summed seat price and the new holds' ids. */
+  private record HeldSeats(BigDecimal total, List<UUID> holdIds) {}
 
   /** Holds → confirms → marks SOLD in one shot for synchronous cash/comp sales. */
   private BigDecimal sellSeats(UUID eventId, List<UUID> seatIds, UUID staffUserId, UUID organizationId) {
-    BigDecimal total = holdSeats(eventId, seatIds, staffUserId, organizationId);
+    BigDecimal total = holdSeats(eventId, seatIds, staffUserId, organizationId).total();
     confirmHolds(seatIds, staffUserId);
     transitionToSold(seatIds, staffUserId);
     return total;

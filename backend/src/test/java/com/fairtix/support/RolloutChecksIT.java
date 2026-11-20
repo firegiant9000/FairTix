@@ -73,7 +73,10 @@ class RolloutChecksIT extends PostgresIT {
     cardNotCompleted(staff, closed, eventId, "pi_bo_closed", "BoxOfficeStateException");
     cardNotCompleted(staff, completed, eventId, "pi_bo_done", "BoxOfficeStateException");
     // Never confirmed (or the confirm failed before completing): no audit row.
-    cardSale(closedSession, org, eventId, staff, "pi_bo_unconfirmed", null);
+    UUID unconfirmedSale = cardSale(closedSession, org, eventId, staff, "pi_bo_unconfirmed", null);
+    // Flagged when its drawer closed; the reader may still have charged it, so it stays listed.
+    jdbcTemplate.update("UPDATE box_office_sales SET abandoned_at = now() WHERE id = ?",
+        unconfirmedSale);
     UUID fresh = cardSale(openSession, org, eventId, staff, "pi_bo_fresh", null);
     jdbcTemplate.update("UPDATE box_office_sales SET created_at = now() WHERE id = ?", fresh);
     jdbcTemplate.update("UPDATE box_office_sales SET method = 'CASH' WHERE id = ?",
@@ -92,6 +95,8 @@ class RolloutChecksIT extends PostgresIT {
     Map<String, Object> unconfirmed = row(rows, "pi_bo_unconfirmed");
     assertThat(((Number) unconfirmed.get("failed_confirms")).intValue()).isZero();
     assertThat(unconfirmed.get("errors")).isNull();
+    assertThat(unconfirmed).containsEntry("abandoned", true);
+    assertThat(open).containsEntry("abandoned", false);
   }
 
   private UUID boxOfficeSession(UUID org, UUID staff, String status) {

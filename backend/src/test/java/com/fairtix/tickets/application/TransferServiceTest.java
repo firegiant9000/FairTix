@@ -18,6 +18,7 @@ import com.fairtix.tickets.domain.TicketTransferRequest;
 import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
+import com.fairtix.users.application.UserEmailLookup;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.persistence.EntityManager;
@@ -74,7 +75,6 @@ class TransferServiceTest {
         transferService = new TransferService(
                 ticketRepository,
                 transferRepository,
-                userRepository,
                 auditService,
                 notificationGate,
                 mock(EmailTemplateService.class),
@@ -82,9 +82,12 @@ class TransferServiceTest {
                 riskScoringService,
                 mock(PurchaseCapGuard.class),
                 refundRepository,
-                entityManager);
+                entityManager,
+                mock(com.fairtix.events.application.EventSaleGuard.class),
+                new UserEmailLookup(userRepository));
 
         when(riskScoringService.getTier(USER_ID)).thenReturn(RiskTier.LOW);
+        when(ticketRepository.lockById(TICKET_ID)).thenReturn(Optional.of(TICKET_ID));
     }
 
     @AfterEach
@@ -118,7 +121,7 @@ class TransferServiceTest {
                 .isInstanceOf(TransferVelocityExceededException.class)
                 .hasMessageContaining("Transfer limit exceeded");
 
-        verify(userRepository, never()).findByEmail(anyString());
+        verify(userRepository, never()).findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc(anyString());
     }
 
     /** A mistake about the sender's own ticket reveals nothing, so it uses no slot. */
@@ -158,13 +161,76 @@ class TransferServiceTest {
     }
 
     /**
+     * The ticket is locked and re-read before the request is written: one cancelled while
+     * the lock was awaited is refused, and nothing is inserted.
+     */
+    @Test
+    void ticketCancelledWhileTheLockWasAwaited_isRefusedAndNothingIsInserted() {
+        Ticket ticket = ownedValidTicket();
+        knownRecipient();
+        doAnswer(inv -> {
+            when(ticket.getStatus()).thenReturn(TicketStatus.CANCELLED);
+            return null;
+        }).when(entityManager).refresh(ticket);
+
+        assertThatThrownBy(() ->
+                transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com"))
+                .isInstanceOf(IllegalStateException.class);
+
+        // The slot and the recipient lookup come before the lock: a slow Redis never holds
+        // the ticket row.
+        var order = inOrder(velocityLimiter, ticketRepository, entityManager);
+        order.verify(velocityLimiter).acquire(USER_ID);
+        order.verify(ticketRepository).lockById(TICKET_ID);
+        order.verify(entityManager).refresh(ticket);
+        verify(transferRepository, never()).save(any());
+    }
+
+    /** A ticket handed to someone else while the lock was awaited is not the sender's. */
+    @Test
+    void ticketTransferredAwayWhileTheLockWasAwaited_isNotFoundAndNothingIsInserted() {
+        Ticket ticket = ownedValidTicket();
+        knownRecipient();
+        User newOwner = mock(User.class);
+        when(newOwner.getId()).thenReturn(UUID.randomUUID());
+        doAnswer(inv -> {
+            when(ticket.getUser()).thenReturn(newOwner);
+            return null;
+        }).when(entityManager).refresh(ticket);
+
+        assertThatThrownBy(() ->
+                transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com"))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verify(transferRepository, never()).save(any());
+    }
+
+    /** A request committed by a concurrent call while the lock was awaited is seen. */
+    @Test
+    void requestCreatedWhileTheLockWasAwaited_isRefusedAndNothingIsInserted() {
+        ownedValidTicket();
+        knownRecipient();
+        when(transferRepository.findByTicket_IdAndStatus(TICKET_ID, TransferStatus.PENDING))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.of(mock(TicketTransferRequest.class)));
+
+        assertThatThrownBy(() ->
+                transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("pending transfer request already exists");
+
+        verify(transferRepository, never()).save(any());
+    }
+
+    /**
      * A 404 for an unknown email reveals whether an account exists, so every
      * recipient lookup uses a slot, found or not.
      */
     @Test
     void unknownRecipient_usesASlot() {
         ownedValidTicket();
-        when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
+        when(userRepository.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("nobody@example.com"))
+                .thenReturn(List.of());
 
         assertThatThrownBy(() ->
                 transferService.createTransferRequest(TICKET_ID, USER_ID, "nobody@example.com"))
@@ -276,7 +342,9 @@ class TransferServiceTest {
         Ticket ticket = ownedValidTicket();
         User recipient = mock(User.class);
         when(recipient.getId()).thenReturn(UUID.randomUUID());
-        when(userRepository.findByEmail("other@example.com")).thenReturn(Optional.of(recipient));
+        when(recipient.getEmail()).thenReturn("other@example.com");
+        when(userRepository.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("other@example.com"))
+                .thenReturn(List.of(recipient));
         TransactionSynchronizationManager.initSynchronization();
 
         transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com");
@@ -291,7 +359,9 @@ class TransferServiceTest {
         ownedValidTicket();
         User recipient = mock(User.class);
         when(recipient.getId()).thenReturn(UUID.randomUUID());
-        when(userRepository.findByEmail("other@example.com")).thenReturn(Optional.of(recipient));
+        when(recipient.getEmail()).thenReturn("other@example.com");
+        when(userRepository.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("other@example.com"))
+                .thenReturn(List.of(recipient));
         TransactionSynchronizationManager.initSynchronization();
 
         transferService.createTransferRequest(TICKET_ID, USER_ID, "other@example.com");
@@ -392,6 +462,15 @@ class TransferServiceTest {
         when(ticket.getSeat()).thenReturn(mock(Seat.class));
         when(ticketRepository.findById(TICKET_ID)).thenReturn(Optional.of(ticket));
         return ticket;
+    }
+
+    private User knownRecipient() {
+        User recipient = mock(User.class);
+        when(recipient.getId()).thenReturn(UUID.randomUUID());
+        when(recipient.getEmail()).thenReturn("other@example.com");
+        when(userRepository.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc("other@example.com"))
+                .thenReturn(List.of(recipient));
+        return recipient;
     }
 
     private static Ticket ticketOwnedBy(UUID ownerId, TicketStatus status) {

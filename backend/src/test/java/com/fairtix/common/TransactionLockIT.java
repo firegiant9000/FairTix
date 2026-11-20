@@ -83,6 +83,50 @@ class TransactionLockIT extends PostgresIT {
     });
   }
 
+  /** Both shared overloads put back the caller's own lock_timeout, not just the default. */
+  @Test
+  void lockTimeout_isRestoredAfterASharedLock() {
+    inTransaction(() -> {
+      entityManager.createNativeQuery("SELECT set_config('lock_timeout', '7s', true)")
+          .getSingleResult();
+      transactionLock.acquireShared("it:" + UUID.randomUUID());
+      assertThat(currentLockTimeout()).isEqualTo("7s");
+      transactionLock.acquireShared("it:" + UUID.randomUUID(), 500);
+      assertThat(currentLockTimeout()).isEqualTo("7s");
+    });
+  }
+
+  /**
+   * Anti-starvation: while an exclusive request waits on a shared holder, a later shared
+   * request queues behind it, although it is compatible with the lock actually held. So a
+   * stream of purchases can't keep a cancellation waiting forever.
+   */
+  @Test
+  @Timeout(30)
+  void sharedRequest_arrivingAfterAWaitingExclusiveOne_queuesBehindIt() throws Exception {
+    String key = "it:" + UUID.randomUUID();
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try (Connection sharer = holdFromAnotherConnection(key, true)) {
+      // Waits well past the two polls below, so a slow run can't time them out first.
+      Future<?> exclusive = pool.submit(
+          () -> inTransaction(() -> transactionLock.acquire(key, 15_000)));
+      assertThat(waitForLockWaiters(1, Duration.ofSeconds(2)))
+          .as("the exclusive request waited on the shared holder").isTrue();
+
+      Future<?> lateSharer = pool.submit(
+          () -> inTransaction(() -> transactionLock.acquireShared(key, 15_000)));
+      assertThat(waitForLockWaiters(2, Duration.ofSeconds(2)))
+          .as("the later shared request queued behind the exclusive one").isTrue();
+      assertThat(lateSharer.isDone()).isFalse();
+
+      sharer.commit();
+      exclusive.get(10, TimeUnit.SECONDS);
+      lateSharer.get(10, TimeUnit.SECONDS);
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
   private void inTransaction(Runnable work) {
     new TransactionTemplate(transactionManager).executeWithoutResult(status -> work.run());
   }
@@ -95,10 +139,15 @@ class TransactionLockIT extends PostgresIT {
 
   /** Takes the same lock on a connection of its own; the caller commits or closes it. */
   private Connection holdFromAnotherConnection(String key) throws Exception {
+    return holdFromAnotherConnection(key, false);
+  }
+
+  private Connection holdFromAnotherConnection(String key, boolean shared) throws Exception {
     Connection connection = dataSource.getConnection();
     connection.setAutoCommit(false);
+    String function = shared ? "pg_advisory_xact_lock_shared" : "pg_advisory_xact_lock";
     try (PreparedStatement st = connection.prepareStatement(
-        "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))")) {
+        "SELECT " + function + "(hashtextextended(?, 0))")) {
       st.setString(1, key);
       st.execute();
     }

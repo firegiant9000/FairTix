@@ -19,6 +19,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.auth.WithMockPrincipal;
 import com.fairtix.common.LockBusyException;
+import com.fairtix.events.application.EventService;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.application.SeatHoldService;
@@ -36,8 +37,15 @@ import com.fairtix.users.infrastructure.UserRepository;
 import com.zaxxer.hikari.HikariDataSource;
 import java.math.BigDecimal;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -77,8 +85,12 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
   @MockitoSpyBean private StripePaymentService stripePaymentService;
   @MockitoSpyBean private OrderService orderService;
   @MockitoSpyBean private AuditService auditService;
+  @MockitoSpyBean private com.fairtix.events.application.EventSaleGuard eventSaleGuard;
+
+  @Autowired private EventService eventService;
 
   private User buyer;
+  private Event event;
   private SeatHold hold;
 
   @BeforeEach
@@ -88,7 +100,7 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
     user.setPassword("$2a$10$dummyhashfortest");
     user.setEmailVerified(true);
     buyer = userRepository.save(user);
-    Event event = eventRepository.save(
+    event = eventRepository.save(
         new Event("After Charge Concert", null, Instant.now().plusSeconds(86400), (UUID) null));
     Seat seat = seatRepository.save(new Seat(event, "A", "1", "1", new BigDecimal("40.00")));
     hold = seatHoldService.createHold(event.getId(), List.of(seat.getId()), buyer.getId(), 10).get(0);
@@ -98,6 +110,19 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
     onlinePaymentIntentRepository.save(new OnlinePaymentIntent(buyer.getId(),
         StripeIdempotencyKeys.holdSetHash(List.of(hold.getId())), 4000L,
         StripeIdempotencyKeys.routingHash(null), INTENT));
+  }
+
+  /**
+   * The customer has paid, so checkout takes the event's sale lock with the longer
+   * after-charge wait, never the short pre-charge one.
+   */
+  @Test
+  void paidCheckout_takesTheSaleLockWithTheAfterChargeWait() throws Exception {
+    checkout().andExpect(status().isCreated());
+
+    verify(eventSaleGuard).lockOnSaleAfterCharge(List.of(event.getId()));
+    verify(eventSaleGuard, org.mockito.Mockito.never())
+        .lockOnSale(org.mockito.ArgumentMatchers.<java.util.Collection<UUID>>any());
   }
 
   /**
@@ -258,6 +283,99 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
     assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
     assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'PAYMENT_PROCESSED'")).isEqualTo(1);
     assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'TICKETS_ISSUED'")).isEqualTo(1);
+  }
+
+  /**
+   * The event is cancelled while a paid checkout runs: the cancellation holds the event row,
+   * the checkout waits on it, then finds the event cancelled. No order or ticket, a 409
+   * EVENT_NOT_ON_SALE, and the charge on record for the refund runbook.
+   */
+  @Test
+  @Timeout(60)
+  void cancelStartedFirst_overlappingAPaidCheckout_refusesTheOrder_andRecordsTheCharge()
+      throws Exception {
+    List<Object> results = raceUnderEventLock(
+        () -> eventService.cancelEvent(event.getId(), buyer.getId(), "Venue flooded"),
+        () -> checkout().andReturn().getResponse());
+
+    var response = (org.springframework.mock.web.MockHttpServletResponse) results.get(1);
+    assertThat(response.getStatus()).isEqualTo(409);
+    assertThat(response.getContentAsString()).contains("EVENT_NOT_ON_SALE");
+    assertThat(count("SELECT COUNT(*) FROM orders")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM tickets")).isZero();
+    assertThat(jdbcTemplate.queryForList(
+        "SELECT details FROM audit_logs WHERE action = 'STRIPE_ORDER_FAILED'", String.class))
+        .singleElement().asString()
+        .contains("stripe_intent=" + INTENT, "error=EventNotOnSaleException");
+  }
+
+  /**
+   * The paid checkout gets the event row first and commits; the cancellation then cancels the
+   * ticket and approves the order's refund. No VALID ticket is left on the cancelled event.
+   */
+  @Test
+  @Timeout(60)
+  void checkoutStartedFirst_overlappingTheCancel_endsWithTheTicketCancelledAndRefundApproved()
+      throws Exception {
+    List<Object> results = raceUnderEventLock(
+        () -> checkout().andReturn().getResponse(),
+        () -> eventService.cancelEvent(event.getId(), buyer.getId(), "Venue flooded"));
+
+    var response = (org.springframework.mock.web.MockHttpServletResponse) results.get(0);
+    assertThat(response.getStatus()).isEqualTo(201);
+    assertThat(count("SELECT COUNT(*) FROM tickets WHERE status = 'VALID'")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM tickets WHERE status = 'CANCELLED'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM payment_records WHERE transaction_id = '" + INTENT + "'"))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM refund_requests WHERE status = 'APPROVED'")).isEqualTo(1);
+  }
+
+  /**
+   * Holds the event row on a third connection, starts {@code first} and waits until it is
+   * blocked on a lock, then {@code second} likewise, then releases the row. Returns what each
+   * returned; a failure fails the test.
+   */
+  private List<Object> raceUnderEventLock(Callable<Object> first, Callable<Object> second)
+      throws Exception {
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    List<Object> results = new ArrayList<>();
+    try (Connection lock = dataSource.getConnection()) {
+      lock.setAutoCommit(false);
+      // The event's sale lock, held exclusively as a status change does (EventSaleGuard).
+      try (PreparedStatement ps = lock.prepareStatement(
+          "SELECT CAST(pg_advisory_xact_lock(hashtextextended(?, 0)) AS text)")) {
+        ps.setString(1, "event-sale:" + event.getId());
+        ps.executeQuery().close();
+      }
+      List<Future<Object>> futures = new ArrayList<>();
+      futures.add(pool.submit(first));
+      boolean firstBlocked = waitForLockWaiters(1, Duration.ofSeconds(10));
+      futures.add(pool.submit(second));
+      boolean bothBlocked = waitForLockWaiters(2, Duration.ofSeconds(10));
+      lock.commit();
+      assertThat(firstBlocked).as("the first transaction waited on the sale lock").isTrue();
+      assertThat(bothBlocked).as("both transactions waited on the sale lock").isTrue();
+      for (Future<Object> future : futures) {
+        results.add(future.get(30, TimeUnit.SECONDS));
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+    return results;
+  }
+
+  private boolean waitForLockWaiters(int waiters, Duration timeout) throws InterruptedException {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() < deadline) {
+      Integer waiting = jdbcTemplate.queryForObject(
+          "SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
+              + " AND datname = current_database()", Integer.class);
+      if (waiting != null && waiting >= waiters) {
+        return true;
+      }
+      Thread.sleep(50);
+    }
+    return false;
   }
 
   private org.springframework.test.web.servlet.ResultActions checkout() throws Exception {

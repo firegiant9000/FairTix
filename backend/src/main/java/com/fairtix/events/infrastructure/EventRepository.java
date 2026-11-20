@@ -4,6 +4,7 @@ import com.fairtix.events.domain.Event;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
 import java.util.List;
@@ -25,6 +26,13 @@ public interface EventRepository extends JpaRepository<Event, UUID>,
   List<Object[]> countByVenueGrouped();
 
   List<Event> findAllByOrganizationIdOrderByStartTimeDesc(UUID organizationId);
+
+  /**
+   * The event's committed status, read from the database rather than the persistence context
+   * (which may hold a copy loaded before a lock was taken). For {@code EventSaleGuard}.
+   */
+  @Query(value = "SELECT status FROM events WHERE id = :id", nativeQuery = true)
+  Optional<String> findStatusById(@Param("id") UUID id);
 
   @Query("SELECT e FROM Event e WHERE e.organizationId = :orgId "
       + "AND e.startTime >= :from AND e.startTime < :to "

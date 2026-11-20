@@ -63,6 +63,15 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
       nativeQuery = true)
   Optional<UUID> lockIfValid(@Param("id") UUID id);
 
+  /**
+   * Locks one ticket row whatever its status, returning its id; empty if it no longer exists.
+   * {@link #lockIfValid} without the status filter, for the same reason: a query on
+   * {@code tickets} alone, so a ticket whose owner changed while the lock was awaited is still
+   * returned. Lock several in {@link UUID#compareTo} order.
+   */
+  @Query(value = "SELECT id FROM tickets WHERE id = :id FOR UPDATE", nativeQuery = true)
+  Optional<UUID> lockById(@Param("id") UUID id);
+
   @Query(value = "SELECT CAST(issued_at AS DATE), COUNT(*) FROM tickets WHERE status = 'VALID' AND issued_at >= :since GROUP BY CAST(issued_at AS DATE) ORDER BY 1", nativeQuery = true)
   List<Object[]> soldPerDay(@Param("since") Instant since);
 }

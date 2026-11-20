@@ -252,6 +252,24 @@ test('an unusable payment gets its own final screen that does not claim the paym
   expect(checkoutCalls()).toHaveLength(1);
 });
 
+test('an event cancelled while paying gets a final screen that points to a refund', async () => {
+  mockPost({
+    status: 409,
+    code: 'EVENT_NOT_ON_SALE',
+    message: 'This event is cancelled and no longer on sale',
+  });
+  mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });
+
+  renderCheckout();
+  await clickPay();
+
+  expect(await screen.findByText(/this event is no longer on sale/i)).toBeInTheDocument();
+  expect(screen.getByText(/if you were charged, contact support/i)).toBeInTheDocument();
+  expect(screen.queryByText(/your payment went through/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /try again|complete order/i })).not.toBeInTheDocument();
+  expect(checkoutCalls()).toHaveLength(1);
+});
+
 test('Try Again after a card decline returns to the card form', async () => {
   mockPost({ status: 422, code: 'CARD_DECLINED', message: 'Your card was declined.' });
   mockConfirmCardPayment.mockResolvedValue({ paymentIntent: { id: 'pi_123', status: 'succeeded' } });

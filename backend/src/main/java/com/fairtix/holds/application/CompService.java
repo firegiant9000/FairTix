@@ -3,6 +3,7 @@ package com.fairtix.holds.application;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.common.TransactionLock;
+import com.fairtix.events.application.EventSaleGuard;
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.holds.dto.IssueCompRequest;
@@ -18,20 +19,19 @@ import com.fairtix.tickets.application.PurchaseCapGuard;
 import com.fairtix.tickets.domain.Ticket;
 import com.fairtix.tickets.domain.TicketKind;
 import com.fairtix.tickets.infrastructure.TicketRepository;
+import com.fairtix.users.application.UserEmailLookup;
 import com.fairtix.users.domain.Role;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.transaction.Transactional;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -45,10 +45,9 @@ import java.util.stream.Collectors;
 @Service
 public class CompService {
 
-  private static final Logger log = LoggerFactory.getLogger(CompService.class);
   private static final SecureRandom RANDOM = new SecureRandom();
   /** Password prefix of the stub account a comp creates for an unknown recipient email. */
-  private static final String STUB_PASSWORD_PREFIX = "comp:";
+  private static final String STUB_PASSWORD_PREFIX = UserEmailLookup.COMP_STUB_PASSWORD_PREFIX;
 
   private final EventRepository events;
   private final SeatRepository seats;
@@ -58,6 +57,8 @@ public class CompService {
   private final AuditService audit;
   private final TransactionLock transactionLock;
   private final PurchaseCapGuard purchaseCapGuard;
+  private final EventSaleGuard eventSaleGuard;
+  private final UserEmailLookup userEmailLookup;
 
   public CompService(EventRepository events,
                      SeatRepository seats,
@@ -66,7 +67,11 @@ public class CompService {
                      OrderRepository orders,
                      AuditService audit,
                      TransactionLock transactionLock,
-                     PurchaseCapGuard purchaseCapGuard) {
+                     PurchaseCapGuard purchaseCapGuard,
+                     EventSaleGuard eventSaleGuard,
+                     UserEmailLookup userEmailLookup) {
+    this.userEmailLookup = userEmailLookup;
+    this.eventSaleGuard = eventSaleGuard;
     this.transactionLock = transactionLock;
     this.purchaseCapGuard = purchaseCapGuard;
     this.events = events;
@@ -186,7 +191,7 @@ public class CompService {
 
   /**
    * Lock order: the event's comp-limit lock, then the recipient's purchase-cap
-   * lock, both before any seat row lock. The comp-limit lock serialises
+   * lock, then the event's sale lock (refused if the event has ended), all before any seat row lock. The comp-limit lock serialises
    * count-then-issue for the event's {@code comp_limit}; the cap lock is the one
    * the hold gate, checkout and transfer accept take for (event, recipient). The
    * recipient is resolved in between, since the cap lock is keyed on their id; a
@@ -206,6 +211,9 @@ public class CompService {
     if (event.getMaxTicketsPerUser() != null && hasRecipientAccount(recipientEmail)) {
       purchaseCapGuard.lock(event.getId(), holder.getId());
     }
+    // After the advisory locks and before any seat lock, here rather than in issueComp:
+    // convertToComp locks a seat between lockForIssue and issueComp (EventSaleGuard order).
+    eventSaleGuard.lockOnSale(event.getId());
     return holder;
   }
 
@@ -218,39 +226,22 @@ public class CompService {
    * Registration keeps the email as typed, so the lookup ignores case: otherwise a comp to
    * {@code alice@x.com} misses the account {@code Alice@x.com}, creates a stub, and is counted
    * against the stub's cap instead of hers. Stubs created before this, and case variants
-   * registered before registration refused them, can sit beside the real account; then a
-   * verified registered account wins, then any registered account, then a comp stub, the
-   * oldest first within each.
+   * registered before registration refused them, can sit beside the real account; then
+   * {@link UserEmailLookup#findRecipient} picks one (verified registered, then registered,
+   * then a comp stub; within each, the account stored exactly as typed, then the oldest),
+   * and the purchase cap counts that account only.
    */
   private User resolveRecipient(String email, User fallback) {
     if (email == null || email.isBlank()) return fallback;
-    String normalized = email.trim().toLowerCase();
-    List<User> matches = users.findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc(normalized);
-    if (matches.isEmpty()) {
+    return userEmailLookup.findRecipient(email).orElseGet(() -> {
       User stub = new User();
-      stub.setEmail(normalized);
+      stub.setEmail(email.trim().toLowerCase(Locale.ROOT));
       stub.setPassword(STUB_PASSWORD_PREFIX
           + Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes(24)));
       stub.setRole(Role.USER);
       stub.setEmailVerified(false);
       return users.save(stub);
-    }
-    // Stable sort: the query's oldest-first order holds within each rank.
-    User chosen = matches.stream()
-        .min(Comparator.comparingInt(CompService::recipientRank))
-        .orElseThrow();
-    if (matches.size() > 1) {
-      log.warn("Comp recipient email matches {} accounts ignoring case; using user {}."
-          + " The purchase cap counts that account only", matches.size(), chosen.getId());
-    }
-    return chosen;
-  }
-
-  /** 0 verified registered account, 1 unverified registered account, 2 comp stub. */
-  private static int recipientRank(User user) {
-    boolean stub = user.getPassword() != null && user.getPassword().startsWith(STUB_PASSWORD_PREFIX);
-    if (stub) return 2;
-    return user.isEmailVerified() ? 0 : 1;
+    });
   }
 
   private static byte[] randomBytes(int n) {

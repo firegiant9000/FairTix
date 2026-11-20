@@ -10,6 +10,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.notifications.application.NotificationPreferenceService;
+import com.fairtix.users.application.UserEmailLookup;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.dto.LoginRequest;
 import com.fairtix.users.dto.RegisterRequest;
@@ -35,6 +36,7 @@ public class AuthService {
   private final AuditService auditService;
   private final TransactionTemplate transactionTemplate;
   private final RegistrationPolicy registrationPolicy;
+  private final UserEmailLookup userEmailLookup;
 
   private static final Pattern UPPERCASE = Pattern.compile("[A-Z]");
   private static final Pattern LOWERCASE = Pattern.compile("[a-z]");
@@ -51,7 +53,9 @@ public class AuthService {
       EmailVerificationService emailVerificationService,
       AuditService auditService,
       PlatformTransactionManager transactionManager,
-      RegistrationPolicy registrationPolicy) {
+      RegistrationPolicy registrationPolicy,
+      UserEmailLookup userEmailLookup) {
+    this.userEmailLookup = userEmailLookup;
     this.transactionTemplate = new TransactionTemplate(transactionManager);
     this.registrationPolicy = registrationPolicy;
     this.userRepository = userRepository;
@@ -126,7 +130,9 @@ public class AuthService {
       recaptchaService.assertValidToken(request.recaptchaToken());
     }
 
-    User user = userRepository.findByEmail(email).orElse(null);
+    // Ignoring case when exactly one account matches, else the exact match only. The
+    // lockout above is keyed on the lower-cased address, so case variants share one count.
+    User user = userEmailLookup.findForSignIn(email).orElse(null);
 
     if (user == null || user.isDeleted()
         || !passwordEncoder.matches(request.password(), user.getPassword())) {

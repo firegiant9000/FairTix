@@ -1,6 +1,7 @@
 package com.fairtix.orders.application;
 
 import com.fairtix.audit.application.AuditService;
+import com.fairtix.events.application.EventSaleGuard;
 import com.fairtix.events.domain.Event;
 import com.fairtix.inventory.application.SeatHoldConflictException;
 import com.fairtix.inventory.domain.HoldStatus;
@@ -62,6 +63,7 @@ public class OrderService {
   private final AuditService auditService;
   private final NotificationGate notificationGate;
   private final EmailTemplateService emailTemplateService;
+  private final EventSaleGuard eventSaleGuard;
 
   public OrderService(OrderRepository orderRepository,
       SeatHoldRepository seatHoldRepository,
@@ -75,7 +77,9 @@ public class OrderService {
       QueueService queueService,
       AuditService auditService,
       NotificationGate notificationGate,
-      EmailTemplateService emailTemplateService) {
+      EmailTemplateService emailTemplateService,
+      EventSaleGuard eventSaleGuard) {
+    this.eventSaleGuard = eventSaleGuard;
     this.orderRepository = orderRepository;
     this.seatHoldRepository = seatHoldRepository;
     this.seatRepository = seatRepository;
@@ -109,8 +113,7 @@ public class OrderService {
     User user = userRepository.findById(userId)
         .orElseThrow(() -> new IllegalArgumentException("User not found: " + userId));
 
-    List<SeatHold> holds = validateHolds(userId, holdIds);
-    validatePurchaseCaps(userId, holds);
+    List<SeatHold> holds = lockForCheckout(userId, holdIds, false);
 
     // Transition seats from BOOKED → SOLD
     for (SeatHold hold : holds) {
@@ -185,8 +188,7 @@ public class OrderService {
     User user = userRepository.findById(userId)
         .orElseThrow(() -> new IllegalArgumentException("User not found: " + userId));
 
-    List<SeatHold> holds = validateHolds(userId, holdIds);
-    validatePurchaseCaps(userId, holds);
+    List<SeatHold> holds = lockForCheckout(userId, holdIds, true);
 
     for (SeatHold hold : holds) {
       Seat seat = hold.getSeat();
@@ -283,20 +285,50 @@ public class OrderService {
     }
   }
 
+  /**
+   * Checkout's locks, in order: the purchase-cap lock of each event (sorted), then each
+   * event's sale lock, shared, and a refusal if the event has ended (EventSaleGuard), before
+   * any seat is written. The holds must be confirmed; that is checked after the event, so a
+   * checkout on an event cancelled meanwhile (which released its holds) is answered
+   * EVENT_NOT_ON_SALE.
+   *
+   * @param afterCharge whether the card has already been charged: then the sale lock waits
+   *     longer, since giving up leaves a charge for the refund runbook
+   */
+  private List<SeatHold> lockForCheckout(UUID userId, List<UUID> holdIds, boolean afterCharge) {
+    List<SeatHold> holds = findOwnedHolds(userId, holdIds);
+    validatePurchaseCaps(userId, holds);
+    List<UUID> eventIds = holds.stream().map(h -> h.getSeat().getEvent().getId()).toList();
+    if (afterCharge) {
+      eventSaleGuard.lockOnSaleAfterCharge(eventIds);
+    } else {
+      eventSaleGuard.lockOnSale(eventIds);
+    }
+    requireConfirmed(holds);
+    return holds;
+  }
+
   private List<SeatHold> validateHolds(UUID userId, List<UUID> holdIds) {
-    List<SeatHold> holds = holdIds.stream()
+    List<SeatHold> holds = findOwnedHolds(userId, holdIds);
+    requireConfirmed(holds);
+    return holds;
+  }
+
+  private List<SeatHold> findOwnedHolds(UUID userId, List<UUID> holdIds) {
+    return holdIds.stream()
         .map(holdId -> seatHoldRepository.findByIdAndOwnerId(holdId, userId)
             .orElseThrow(() -> new IllegalArgumentException(
                 "Hold not found or does not belong to you: " + holdId)))
         .toList();
+  }
 
+  private static void requireConfirmed(List<SeatHold> holds) {
     for (SeatHold hold : holds) {
       if (hold.getStatus() != HoldStatus.CONFIRMED) {
         throw new IllegalArgumentException(
             "Hold " + hold.getId() + " is not confirmed (status: " + hold.getStatus() + ")");
       }
     }
-    return holds;
   }
 
   /**

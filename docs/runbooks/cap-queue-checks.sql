@@ -347,6 +347,9 @@ ORDER BY s.failed_at DESC;
 -- completing failed); errors lists their error classes. A row drops out once
 -- the sale has an order. session_closed = false: a confirm on that session can
 -- still complete the sale, so refund only once the session is closed.
+-- abandoned = true: the drawer closed with this sale still pending (V53). Most of
+-- these were never paid at the reader, but a paid one whose confirm was lost
+-- looks the same here, so they stay listed: check the intent in Stripe.
 SELECT s.id                                                   AS sale_id,
        s.stripe_payment_intent_id                             AS payment_intent,
        s.organization_id                                      AS org_id,
@@ -355,6 +358,7 @@ SELECT s.id                                                   AS sale_id,
        s.staff_user_id,
        s.created_at,
        (bs.status <> 'OPEN')                                  AS session_closed,
+       (s.abandoned_at IS NOT NULL)                           AS abandoned,
        COUNT(a.id)                                            AS failed_confirms,
        string_agg(DISTINCT substring(a.details from 'error=([^ ]+)'), ',') AS errors
 FROM box_office_sales s

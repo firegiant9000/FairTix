@@ -174,10 +174,19 @@ public class RefundService {
     return refund;
   }
 
+  /**
+   * Locks the refund row and re-reads it before deciding: the row has no version column, so
+   * an approval committed meanwhile (an event cancellation, the webhook) would otherwise be
+   * overwritten. Takes no other lock, so it can't be part of a deadlock.
+   */
   @Transactional
   public RefundRequest reviewRefund(UUID adminUserId, UUID refundId, boolean approved, String notes) {
     RefundRequest refund = refundRepository.findById(refundId)
         .orElseThrow(() -> new IllegalArgumentException("Refund request not found: " + refundId));
+    // RefundRequest has no associations, so this locks the refund row only. Flushed first, as
+    // in finalise: a row written earlier in this transaction must exist before it is re-read.
+    entityManager.flush();
+    entityManager.refresh(refund, LockModeType.PESSIMISTIC_WRITE);
 
     if (refund.getStatus() != RefundStatus.REQUESTED && refund.getStatus() != RefundStatus.PENDING_MANUAL) {
       throw new IllegalStateException(
@@ -301,14 +310,21 @@ public class RefundService {
       paymentRecordRepository.save(refundRecord);
     }
 
-    // Mark tickets as REFUNDED and release seats. Each ticket row is locked first,
-    // in id order, and re-read: TransferService.acceptTransfer takes the same lock,
-    // so an acceptance either committed before this or waits and then sees REFUNDED.
+    // Mark tickets as REFUNDED and release seats. Each ticket row is locked first, one query
+    // per row in UUID.compareTo order (EventService.cancelEvent's order), then re-read:
+    // TransferService.acceptTransfer takes the same lock, so an acceptance either committed
+    // before this or waits and then sees REFUNDED. The lock is a query on tickets alone: an
+    // entity lock joins users, and a row whose owner an acceptance changed while this waited
+    // would drop out of it, failing the refund after Stripe has moved the money. The native
+    // query flushes the session first, so the order update above is written before these
+    // locks: refund row, then order row, then tickets, then transfer requests.
     List<Ticket> tickets = ticketRepository.findAllByOrder_Id(refund.getOrderId()).stream()
         .sorted(Comparator.comparing(Ticket::getId))
         .toList();
     for (Ticket ticket : tickets) {
-      entityManager.refresh(ticket, LockModeType.PESSIMISTIC_WRITE);
+      ticketRepository.lockById(ticket.getId()).orElseThrow(() -> new IllegalStateException(
+          "Ticket " + ticket.getId() + " vanished while finalising refund " + refundId));
+      entityManager.refresh(ticket);
     }
     for (Ticket ticket : tickets) {
       ticket.setStatus(TicketStatus.REFUNDED);

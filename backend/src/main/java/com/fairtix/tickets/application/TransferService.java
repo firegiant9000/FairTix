@@ -3,6 +3,7 @@ package com.fairtix.tickets.application;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.common.AfterCommit;
 import com.fairtix.common.ResourceNotFoundException;
+import com.fairtix.events.application.EventSaleGuard;
 import com.fairtix.fraud.application.RiskScoringService;
 import com.fairtix.fraud.application.UserFlaggedForAbuseException;
 import com.fairtix.fraud.domain.RiskTier;
@@ -12,12 +13,13 @@ import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.orders.application.PurchaseCapExceededException;
 import com.fairtix.refunds.domain.RefundStatus;
 import com.fairtix.refunds.infrastructure.RefundRepository;
+import com.fairtix.tickets.domain.Ticket;
 import com.fairtix.tickets.domain.TicketStatus;
 import com.fairtix.tickets.domain.TicketTransferRequest;
 import com.fairtix.tickets.domain.TransferStatus;
 import com.fairtix.tickets.infrastructure.TicketRepository;
 import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
-import com.fairtix.users.infrastructure.UserRepository;
+import com.fairtix.users.application.UserEmailLookup;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import org.slf4j.MDC;
@@ -37,7 +39,6 @@ public class TransferService {
 
     private final TicketRepository ticketRepository;
     private final TicketTransferRequestRepository transferRepository;
-    private final UserRepository userRepository;
     private final AuditService auditService;
     private final NotificationGate notificationGate;
     private final EmailTemplateService emailTemplateService;
@@ -46,10 +47,11 @@ public class TransferService {
     private final PurchaseCapGuard purchaseCapGuard;
     private final RefundRepository refundRepository;
     private final EntityManager entityManager;
+    private final EventSaleGuard eventSaleGuard;
+    private final UserEmailLookup userEmailLookup;
 
     public TransferService(TicketRepository ticketRepository,
                            TicketTransferRequestRepository transferRepository,
-                           UserRepository userRepository,
                            AuditService auditService,
                            NotificationGate notificationGate,
                            EmailTemplateService emailTemplateService,
@@ -57,13 +59,16 @@ public class TransferService {
                            RiskScoringService riskScoringService,
                            PurchaseCapGuard purchaseCapGuard,
                            RefundRepository refundRepository,
-                           EntityManager entityManager) {
+                           EntityManager entityManager,
+                           EventSaleGuard eventSaleGuard,
+                           UserEmailLookup userEmailLookup) {
+        this.userEmailLookup = userEmailLookup;
+        this.eventSaleGuard = eventSaleGuard;
         this.purchaseCapGuard = purchaseCapGuard;
         this.refundRepository = refundRepository;
         this.entityManager = entityManager;
         this.ticketRepository = ticketRepository;
         this.transferRepository = transferRepository;
-        this.userRepository = userRepository;
         this.auditService = auditService;
         this.notificationGate = notificationGate;
         this.emailTemplateService = emailTemplateService;
@@ -84,30 +89,41 @@ public class TransferService {
         var ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket not found: " + ticketId));
 
-        if (!ticket.getUser().getId().equals(fromUserId)) {
-            throw new ResourceNotFoundException("Ticket not found: " + ticketId);
-        }
+        // Checked unlocked first, so a mistake about the sender's own ticket uses no slot.
+        requireTransferable(ticket, ticketId, fromUserId);
 
-        if (ticket.getStatus() != TicketStatus.VALID) {
-            throw new IllegalStateException("Only VALID tickets can be transferred");
-        }
-
-        transferRepository.findByTicket_IdAndStatus(ticketId, TransferStatus.PENDING).ifPresent(r -> {
-            throw new IllegalStateException("A pending transfer request already exists for this ticket");
-        });
+        // A request on an ended event could never be accepted. Unlocked: the acceptance
+        // checks again under the event's sale lock.
+        eventSaleGuard.requireOnSale(ticket.getEvent());
 
         // The slot is taken here, after the checks on the sender's own ticket and
         // before the recipient lookup: a 404 for an unknown email reveals whether an
         // account exists, so every lookup counts toward the limit, while mistakes
-        // about the sender's own ticket do not.
+        // about the sender's own ticket do not. Both run before the ticket lock, so a
+        // slow Redis never holds the ticket row.
         velocityLimiter.acquire(fromUserId);
 
-        var toUser = userRepository.findByEmail(toEmail)
+        // Ignoring case, ranked as comps rank it: registration keeps the address as typed.
+        var toUser = userEmailLookup.findRecipient(toEmail)
                 .orElseThrow(() -> new ResourceNotFoundException("No user found with email: " + toEmail));
 
         if (toUser.getId().equals(fromUserId)) {
             throw new IllegalArgumentException("Cannot transfer a ticket to yourself");
         }
+
+        // Lock the ticket row, then re-read it and check again: an event cancellation, a
+        // refund's finalise or an acceptance may have changed it since the read above.
+        // Without the lock, the request's INSERT waited on a cancellation's ticket lock and
+        // then succeeded, leaving a PENDING request on a CANCELLED ticket. A native query on
+        // tickets alone, as in RefundService.finalise: an entity lock joins users and would
+        // lose a row whose owner changed while it waited. Two requests for one ticket also
+        // serialise here, so the pending check below sees the first. Lock order: sale lock
+        // (none taken here) -> ticket row -> transfer request rows; this path locks no
+        // request row, it only inserts one.
+        ticketRepository.lockById(ticketId)
+                .orElseThrow(() -> new ResourceNotFoundException("Ticket not found: " + ticketId));
+        entityManager.refresh(ticket);
+        requireTransferable(ticket, ticketId, fromUserId);
 
         var expiresAt = Instant.now().plus(TRANSFER_EXPIRY_DAYS, ChronoUnit.DAYS);
         var request = new TicketTransferRequest(ticket, ticket.getUser(), toUser, expiresAt);
@@ -131,8 +147,21 @@ public class TransferService {
         return request;
     }
 
+    /** The sender owns the ticket, it is VALID, and no request on it is pending. */
+    private void requireTransferable(Ticket ticket, UUID ticketId, UUID fromUserId) {
+        if (!ticket.getUser().getId().equals(fromUserId)) {
+            throw new ResourceNotFoundException("Ticket not found: " + ticketId);
+        }
+        if (ticket.getStatus() != TicketStatus.VALID) {
+            throw new IllegalStateException("Only VALID tickets can be transferred");
+        }
+        transferRepository.findByTicket_IdAndStatus(ticketId, TransferStatus.PENDING).ifPresent(r -> {
+            throw new IllegalStateException("A pending transfer request already exists for this ticket");
+        });
+    }
+
     /**
-     * Lock order: the recipient's cap lock, then the ticket row. The ticket row
+     * Lock order: the recipient's cap lock, then the event's sale lock, then the ticket row. The ticket row
      * lock is the one {@code RefundService.finalise} takes, so an acceptance and a
      * refund of the same ticket run one after the other, and the second sees what
      * the first committed.
@@ -159,6 +188,9 @@ public class TransferService {
         if (cap != null) {
             purchaseCapGuard.lock(event.getId(), toUserId);
         }
+        // No transfers on an ended event. After the cap lock, before the ticket row: an event
+        // cancellation takes the sale lock before its tickets (EventSaleGuard lock order).
+        eventSaleGuard.lockOnSale(event.getId());
 
         // Lock the ticket, then the request, and re-read both: they were loaded
         // without a lock, and a refund, a cancel, a reject, an expiry or another

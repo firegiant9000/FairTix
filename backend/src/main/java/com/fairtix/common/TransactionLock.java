@@ -63,6 +63,27 @@ public class TransactionLock {
    */
   @Transactional(propagation = Propagation.MANDATORY)
   public void acquire(String key, long waitMillis) {
+    acquire(key, waitMillis, "pg_advisory_xact_lock");
+  }
+
+  /**
+   * As {@link #acquire(String)}, in shared mode: any number of transactions hold it together,
+   * and {@link #acquire(String)} on the same key waits for all of them. PostgreSQL queues
+   * advisory locks first come, first served, so a waiting exclusive request also holds back
+   * shared requests that arrive after it, and a stream of sharers can't starve it.
+   */
+  @Transactional(propagation = Propagation.MANDATORY)
+  public void acquireShared(String key) {
+    acquireShared(key, waitMillis);
+  }
+
+  /** As {@link #acquireShared(String)}, with a wait limit of the caller's choosing. */
+  @Transactional(propagation = Propagation.MANDATORY)
+  public void acquireShared(String key, long waitMillis) {
+    acquire(key, waitMillis, "pg_advisory_xact_lock_shared");
+  }
+
+  private void acquire(String key, long waitMillis, String function) {
     // lock_timeout is put back afterwards so that the bound applies to this wait
     // only, not to the row locks the rest of the transaction takes.
     String previousTimeout = (String) entityManager
@@ -72,7 +93,7 @@ public class TransactionLock {
     try {
       // The cast is there because the function returns void, which has no JDBC mapping.
       entityManager
-          .createNativeQuery("SELECT CAST(pg_advisory_xact_lock(hashtextextended(:key, 0)) AS text)")
+          .createNativeQuery("SELECT CAST(" + function + "(hashtextextended(:key, 0)) AS text)")
           .setParameter("key", key)
           .getSingleResult();
     } catch (RuntimeException ex) {
