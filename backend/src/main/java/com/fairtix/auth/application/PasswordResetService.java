@@ -111,7 +111,9 @@ public class PasswordResetService {
             notificationGate.sendEmail(user.getId(), NotificationCategory.PASSWORD_RESET,
                     user.getEmail(), "Reset your FairTix password", html);
         } catch (Exception e) {
-            log.error("Failed to send password reset email to={} error={}", user.getEmail(), e.getMessage());
+            // User id and exception type only: a mail failure's message can quote the address.
+            log.error("Failed to send password reset email userId={} error={}", user.getId(),
+                    e.getClass().getSimpleName());
             // Don't fail the request — token is saved, user can retry
         }
 
