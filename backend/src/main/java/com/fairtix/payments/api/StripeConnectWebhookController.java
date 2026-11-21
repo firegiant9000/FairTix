@@ -69,10 +69,16 @@ public class StripeConnectWebhookController {
     this.payoutReportService = payoutReportService;
   }
 
+  /**
+   * Fails startup when Stripe is on without a Connect signing secret, for the same reason
+   * as {@code StripeWebhookController}: the endpoint would answer 200 and drop account,
+   * payout and dispute events.
+   */
   @PostConstruct
-  void warnIfMisconfigured() {
+  void requireSecretWhenEnabled() {
     if (stripeEnabled && webhookSecret.isBlank()) {
-      log.warn("Stripe is enabled but STRIPE_CONNECT_WEBHOOK_SECRET is blank — Connect webhooks rejected");
+      throw new IllegalStateException(
+          "stripe.enabled=true but STRIPE_CONNECT_WEBHOOK_SECRET is blank; set the Connect webhook signing secret");
     }
   }
 
@@ -82,7 +88,7 @@ public class StripeConnectWebhookController {
   @Transactional
   public ResponseEntity<Void> handle(@RequestBody String payload,
                                      @RequestHeader("Stripe-Signature") String sigHeader) {
-    if (!stripeEnabled || webhookSecret.isBlank()) {
+    if (!stripeEnabled) {
       return ResponseEntity.ok().build();
     }
     Event event;
