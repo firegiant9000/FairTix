@@ -9,6 +9,8 @@ import com.fairtix.inventory.domain.SeatStatus;
 import com.fairtix.inventory.infrastructure.SeatHoldRepository;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.inventory.scheduler.HoldExpirationScheduler;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,12 +34,23 @@ class SeatHoldServiceTest {
   @Autowired private SeatHoldRepository seatHoldRepository;
   @Autowired private EventRepository eventRepository;
   @Autowired private HoldExpirationScheduler scheduler;
+  @PersistenceContext private EntityManager entityManager;
 
   private Event testEvent;
   private Seat testSeat;
 
   private static final UUID USER_1 = UUID.fromString("00000000-0000-0000-0000-000000000001");
   private static final UUID USER_2 = UUID.fromString("00000000-0000-0000-0000-000000000002");
+
+  /**
+   * The sweep ends holds by bulk update, which bypasses this test transaction's
+   * persistence context; flush the pending seat writes and drop the cached entities so
+   * the assertions read the database.
+   */
+  private void readFromDatabase() {
+    entityManager.flush();
+    entityManager.clear();
+  }
 
   @BeforeEach
   void setUp() {
@@ -85,6 +98,7 @@ class SeatHoldServiceTest {
     seatHoldRepository.save(expiredHold);
 
     scheduler.expireHolds();
+    readFromDatabase();
 
     SeatHold hold = seatHoldRepository.findById(expiredHold.getId()).orElseThrow();
     assertThat(hold.getStatus()).isEqualTo(HoldStatus.EXPIRED);
@@ -228,6 +242,7 @@ class SeatHoldServiceTest {
     }
 
     scheduler.expireHolds();
+    readFromDatabase();
 
     // All 3 holds must be EXPIRED, all seats back to AVAILABLE
     List<UUID> seatIds = List.of(testSeat.getId(), seat2.getId(), seat3.getId());
