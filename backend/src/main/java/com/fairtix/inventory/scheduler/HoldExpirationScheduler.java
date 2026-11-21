@@ -91,6 +91,14 @@ public class HoldExpirationScheduler {
    * loses on {@code Seat.@Version} and the page rolls back, as before. Holds are handled
    * in id order, so the sweep takes hold-row locks in a fixed order, like the
    * CONFIRMED sweep.
+   *
+   * <p>Lock order: the sweep holds its hold-row locks for the whole loop and takes
+   * seat-row locks at the commit flush (hold, then seat). {@code confirmHold} and
+   * {@code releaseHold} write seat and hold together at their own flush, so if one of
+   * them flushes the seat first while this sweep holds that hold, PostgreSQL detects a
+   * deadlock and aborts one side. Either way the end state is consistent: an aborted
+   * sweep rolls back its page and retries next tick; an aborted user request rolls back
+   * and is answered by the pessimistic-lock handler (#317).
    */
   @Scheduled(fixedDelayString = "${holds.cleanup.interval-ms:30000}")
   @Transactional
