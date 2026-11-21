@@ -468,9 +468,13 @@ public class GlobalExceptionHandler {
         "The resource was modified by another request; reload and try again", req);
   }
 
-  /** The first SQLState in the cause chain, or {@code null}. Codes only, never a message. */
+  /**
+   * The first SQLState in the cause chain, or {@code null}. Codes only, never a message.
+   * Bounded, so a cause cycle can't hang the request.
+   */
   private static String sqlState(Throwable ex) {
-    for (Throwable t = ex; t != null; t = t.getCause() == t ? null : t.getCause()) {
+    Throwable t = ex;
+    for (int depth = 0; t != null && depth < 10; depth++, t = t.getCause()) {
       if (t instanceof java.sql.SQLException sql && sql.getSQLState() != null) {
         return sql.getSQLState();
       }

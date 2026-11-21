@@ -73,20 +73,35 @@ class GlobalExceptionHandlerPessimisticLockTest {
 
   @Test
   void deadlock_logsTheSqlStateAtWarn() throws Exception {
+    assertThat(warnLineFor("/test/deadlock")).contains("sqlState=40P01");
+  }
+
+  /** Hibernate's usual shape: JPA exception, then a JDBC wrapper, then the SQLException. */
+  @Test
+  void sqlStateTwoCausesDown_isLogged() throws Exception {
+    assertThat(warnLineFor("/test/jpa-wrapped")).contains("sqlState=40P01");
+  }
+
+  @Test
+  void noSqlException_logsNullSqlState() throws Exception {
+    assertThat(warnLineFor("/test/pessimistic")).contains("sqlState=null");
+  }
+
+  private String warnLineFor(String path) throws Exception {
     Logger handlerLogger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
     ListAppender<ILoggingEvent> logs = new ListAppender<>();
     logs.start();
     handlerLogger.addAppender(logs);
     try {
-      mockMvc.perform(post("/test/deadlock"));
+      mockMvc.perform(post(path)).andExpect(status().isConflict());
     } finally {
       handlerLogger.detachAppender(logs);
     }
     assertThat(logs.list).singleElement().satisfies(event -> {
       assertThat(event.getLevel()).isEqualTo(Level.WARN);
-      assertThat(event.getFormattedMessage()).contains("sqlState=40P01");
       assertThat(event.getThrowableProxy()).isNull();
     });
+    return logs.list.get(0).getFormattedMessage();
   }
 
   @RestController
@@ -95,6 +110,13 @@ class GlobalExceptionHandlerPessimisticLockTest {
     void jpaPessimistic() {
       throw new jakarta.persistence.PessimisticLockException("could not obtain lock",
           new SQLException("ERROR: deadlock detected", "40P01"));
+    }
+
+    @PostMapping("/test/jpa-wrapped")
+    void jpaWrapped() {
+      throw new jakarta.persistence.PessimisticLockException("could not obtain lock",
+          new RuntimeException("JDBC wrapper",
+              new SQLException("ERROR: deadlock detected", "40P01")));
     }
 
     @PostMapping("/test/jpa-lock-timeout")
