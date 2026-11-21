@@ -29,6 +29,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.stripe.Stripe;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -46,9 +48,14 @@ public class StripeConnectWebhookController {
 
   private static final Logger log = LoggerFactory.getLogger(StripeConnectWebhookController.class);
   private static final UUID SYSTEM_ACTOR = new UUID(0L, 0L);
-  private static final Set<String> HANDLED_TYPES = Set.of(
-      "account.updated", "account.application.deauthorized", "payout.paid", "payout.failed",
-      "charge.dispute.created");
+  /** Handled event types and the object each carries. */
+  private static final Map<String, Class<? extends StripeObject>> OBJECT_TYPES = Map.of(
+      "account.updated", Account.class,
+      "payout.paid", Payout.class,
+      "payout.failed", Payout.class,
+      "charge.dispute.created", Dispute.class);
+  /** Handled types that need only the event's account id, not its object. */
+  private static final Set<String> ACCOUNT_ONLY_TYPES = Set.of("account.application.deauthorized");
 
   @Value("${stripe.enabled:false}")
   private boolean stripeEnabled;
@@ -107,8 +114,15 @@ public class StripeConnectWebhookController {
       return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
     }
 
-    if (!HANDLED_TYPES.contains(event.getType())) {
+    Class<? extends StripeObject> objectType = OBJECT_TYPES.get(event.getType());
+    if (objectType == null && !ACCOUNT_ONLY_TYPES.contains(event.getType())) {
       log.debug("Unhandled Stripe Connect webhook type: {}", event.getType());
+      return ResponseEntity.ok().build();
+    }
+
+    // As on the platform webhook: an event whose object can't be read (logged at ERROR) is
+    // not recorded, so resending it once the endpoint's API version is fixed still processes it.
+    if (objectType != null && getObject(event, objectType).isEmpty()) {
       return ResponseEntity.ok().build();
     }
 
@@ -214,9 +228,25 @@ public class StripeConnectWebhookController {
     return organizationRepository.findByStripeConnectAccountId(accountId).orElse(null);
   }
 
+  /**
+   * The event's object, if it is a {@code type}. Empty when the payload's API version doesn't
+   * match the library's (the endpoint's version was changed in the Stripe Dashboard): every
+   * handler would then go silent while answering 200, so that is logged at ERROR, as on the
+   * platform webhook.
+   */
   @SuppressWarnings("unchecked")
   private <T extends StripeObject> Optional<T> getObject(Event event, Class<T> type) {
-    return event.getDataObjectDeserializer().getObject()
+    Optional<StripeObject> object = event.getDataObjectDeserializer().getObject();
+    if (object.isEmpty()) {
+      log.error("Stripe Connect webhook {} ({}) could not be deserialized: event API version {},"
+          + " library API version {}; the event was not processed",
+          event.getId(), event.getType(), event.getApiVersion(), Stripe.API_VERSION);
+    } else if (!type.isInstance(object.get())) {
+      log.error("Stripe Connect webhook {} ({}) carries a {}, expected a {}; the event was not processed",
+          event.getId(), event.getType(), object.get().getClass().getSimpleName(),
+          type.getSimpleName());
+    }
+    return object
         .filter(type::isInstance)
         .map(obj -> (T) obj);
   }

@@ -110,6 +110,49 @@ class StripeConnectWebhookLedgerIT extends PostgresIT {
         .isEqualTo(1);
   }
 
+  /**
+   * A handled event whose object can't be read is answered 200 but not recorded, so
+   * resending it once the endpoint's API version is fixed still processes it. Review
+   * finding: the first version recorded it and the resend was skipped.
+   */
+  @Test
+  void unreadableEvent_isNotRecorded_soAResendIsProcessed() throws Exception {
+    String unreadable = """
+        { "id": "evt_connect_unreadable", "object": "event", "type": "charge.dispute.created",
+          "account": "%s", "api_version": "%s",
+          "data": { "object": { "id": "ch_wrong", "object": "charge" } } }
+        """.formatted(ACCOUNT, Stripe.API_VERSION);
+
+    deliver(unreadable).andExpect(status().isOk());
+    assertThat(count("SELECT COUNT(*) FROM stripe_webhook_events")).isZero();
+
+    deliver(disputeEvent("evt_connect_unreadable", "dp_resent", 1_000)).andExpect(status().isOk());
+    assertThat(count("SELECT COUNT(*) FROM stripe_webhook_events")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_DISPUTE_CREATED'"))
+        .isEqualTo(1);
+  }
+
+  /** A redelivered payout changes nothing: same payout row, no further audit rows. */
+  @Test
+  void redeliveredPayout_isProcessedOnce() throws Exception {
+    String payload = """
+        { "id": "evt_connect_payout", "object": "event", "type": "payout.paid",
+          "account": "%s", "api_version": "%s",
+          "data": { "object": { "id": "po_ledger", "object": "payout", "amount": 2500,
+            "currency": "usd", "status": "paid" } } }
+        """.formatted(ACCOUNT, Stripe.API_VERSION);
+
+    deliver(payload).andExpect(status().isOk());
+    int auditRows = count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_PAYOUT_PAID'");
+    deliver(payload).andExpect(status().isOk());
+
+    assertThat(auditRows).isPositive();
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_PAYOUT_PAID'"))
+        .isEqualTo(auditRows);
+    assertThat(count("SELECT COUNT(*) FROM stripe_webhook_events"
+        + " WHERE event_id = 'evt_connect_payout'")).isEqualTo(1);
+  }
+
   /** Event types the controller does not handle are not recorded. */
   @Test
   void unhandledEventType_isNotRecorded() throws Exception {

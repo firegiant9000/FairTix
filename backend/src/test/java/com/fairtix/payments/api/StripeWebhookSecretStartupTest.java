@@ -52,6 +52,11 @@ class StripeWebhookSecretStartupTest {
   }
 
   @Test
+  void connectWebhook_stripeOnWithSecret_starts() {
+    assertThatCode(connect(true, "whsec_c")::requireSecretWhenEnabled).doesNotThrowAnyException();
+  }
+
+  @Test
   void connectWebhook_stripeOffWithoutSecret_starts() {
     assertThatCode(connect(false, "")::requireSecretWhenEnabled).doesNotThrowAnyException();
   }
