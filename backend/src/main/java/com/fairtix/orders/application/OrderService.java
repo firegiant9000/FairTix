@@ -283,8 +283,9 @@ public class OrderService {
         }
       });
     } catch (Exception ex) {
-      log.warn("Failed to prepare order confirmation email for order {}: {}", order.getId(),
-          ex.getClass().getSimpleName());
+      // Full stack trace: this block only reads entities and builds strings; it sends no
+      // mail, so its exceptions can't quote an address, and nothing else logs them.
+      log.warn("Failed to prepare order confirmation email for order {}", order.getId(), ex);
     }
   }
 
