@@ -38,6 +38,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -443,6 +444,20 @@ public class GlobalExceptionHandler {
   public ResponseEntity<Map<String, Object>> handleOptimisticLock(
       OptimisticLockingFailureException ex, HttpServletRequest req) {
     log.warn("Optimistic lock conflict on {}: {}", req.getRequestURI(), ex.getMessage());
+    return error(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
+        "The resource was modified by another request; reload and try again", req);
+  }
+
+  /**
+   * A deadlock ({@code 40P01}) or other row-lock failure. PostgreSQL has already rolled
+   * the transaction back, so nothing was changed and a retry is safe (#317). Warn, no
+   * stack trace: two transactions meeting is expected, not a server fault.
+   */
+  @ExceptionHandler(PessimisticLockingFailureException.class)
+  public ResponseEntity<Map<String, Object>> handlePessimisticLock(
+      PessimisticLockingFailureException ex, HttpServletRequest req) {
+    log.warn("Pessimistic lock failure on {}: {}", req.getRequestURI(),
+        ex.getClass().getSimpleName());
     return error(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
         "The resource was modified by another request; reload and try again", req);
   }
