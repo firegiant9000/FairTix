@@ -1,9 +1,9 @@
 # FairTix
 
-Concert tickets without the fluff. A ticketing platform built to survive an
-on-sale: a waiting room that admits fans in batches, seat holds that cannot be
-double-sold, fraud scoring on risky orders, and Stripe payments with verified
-webhooks.
+Concert tickets without the fluff. A ticketing platform designed around the
+failure modes of an on-sale: a waiting room that admits fans in batches, seat
+holds that cannot be double-sold, per-account risk scoring with step-up checks,
+and Stripe payments with verified webhooks.
 
 [![CI Pipeline](https://github.com/firegiant9000/FairTix/actions/workflows/ci.yml/badge.svg)](https://github.com/firegiant9000/FairTix/actions/workflows/ci.yml)
 
@@ -19,7 +19,11 @@ webhooks.
 > drills). See the 2026-09 revision at the top of
 > [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md) and the audit in
 > [docs/roadmap-review-2026-09.md](docs/roadmap-review-2026-09.md).
-> No number below is a measured result until it appears under `docs/experiments/`.
+> Only two figures below are measurements: the seat-hold contention test
+> ([docs/experiments/l1-contention-correctness.md](docs/experiments/l1-contention-correctness.md))
+> and one queue-join run on a laptop (the
+> [rollout runbook](docs/runbooks/cap-queue-rollout.md)). Neither is a
+> production performance figure.
 
 <!-- Screenshots: docs/screenshots/ does not exist yet. Capture the event page,
      the waiting room, the seat map with a live hold, and the organizer
@@ -37,17 +41,22 @@ webhooks.
   sweeps expired holds back to available every 30 seconds.
 - **Waiting room over Server-Sent Events.**
   [`QueueService`](backend/src/main/java/com/fairtix/queue/application/QueueService.java)
-  keeps position counters and the admitted set in Redis (Redisson), admits fans
-  in configurable batches, and
+  keeps queue entries and admission in PostgreSQL, with position counters and a
+  copy of the admitted set in Redis (Redisson). It admits fans in configurable
+  batches, and
   [`QueueSseService`](backend/src/main/java/com/fairtix/queue/application/QueueSseService.java)
-  pushes position updates to each connected browser. Creating a hold checks
-  admission first, so skipping the queue is not possible from the client.
-- **Fraud scoring with step-up authentication.** The
-  [`fraud`](backend/src/main/java/com/fairtix/fraud) package scores orders from
-  suspicious-activity flags, payment failures and account age
-  (`RiskScoringService`), runs a scheduled behaviour sweep, and gates high-risk
-  actions behind a step-up challenge (`StepUpGateService`, `StepUpFilter`).
-  Admins can review flags through `FraudAdminController`.
+  pushes position updates to each connected browser. On an event that requires
+  the queue, creating a hold and checking out both check admission on the
+  server, so the client cannot skip it.
+- **Account risk scoring with step-up checks.** The
+  [`fraud`](backend/src/main/java/com/fairtix/fraud) package scores each account
+  (not each order) from suspicious-activity flags, payment failures and account
+  age (`RiskScoringService`), and runs a scheduled behaviour sweep. The
+  resulting tier is used in four places: a step-up challenge before checkout
+  and hold creation (`StepUpGateService`, `StepUpFilter`), a refusal to join a
+  queue or start a transfer at the highest tier, and manual review for refund
+  requests from high-risk accounts. Admins can review flags through
+  `FraudAdminController`.
 - **Purchase caps and the waiting room are serialised in PostgreSQL.**
   [`TransactionLock`](backend/src/main/java/com/fairtix/common/TransactionLock.java)
   wraps a transaction-level advisory lock (`pg_advisory_xact_lock`) with a
@@ -55,15 +64,20 @@ webhooks.
   a retryable 409). The per-(event, user) cap lock in
   [`PurchaseCapGuard`](backend/src/main/java/com/fairtix/tickets/application/PurchaseCapGuard.java)
   covers holds, checkout, comps and transfer accepts, and counts held, bought
-  and comped tickets. A per-user lock serialises the five-active-holds limit, a
-  per-event lock the comp limit. Locks are taken in one order (hold limit or
-  comp limit, then the cap, then row locks) so they cannot deadlock. Queue
+  and comped tickets. A per-user lock serialises the active-holds limit
+  (`holds.max-active-per-holder`, 5 by default), a per-event lock the comp
+  limit. Locks are taken in one order (hold limit or comp limit, then the cap,
+  then the per-event sale lock, then row locks) so these paths cannot deadlock
+  with each other; the one known exception is listed under
+  [Known limitations](#known-limitations). Queue
   admission is read from the database; the Redis admitted set is a copy written
   after commit, so a Redis failure cannot grant or revoke checkout.
 - **Stripe payments are idempotent and bound to what they pay for.** Every
-  Stripe write carries a deterministic idempotency key
+  call that creates a PaymentIntent, a refund or a connected account carries a
+  deterministic idempotency key
   ([`StripeIdempotencyKeys`](backend/src/main/java/com/fairtix/payments/application/StripeIdempotencyKeys.java)),
-  and Stripe is called outside database transactions. One PaymentIntent is kept
+  and checkout and refunds call Stripe outside database transactions. One
+  PaymentIntent is kept
   per user and hold set (`online_payment_intents`), carries its owner in its
   metadata, and at checkout must match the stored user, hold set and payout
   routing. A resubmit after a lost response gets the existing order back; a
@@ -81,10 +95,12 @@ webhooks.
   rolled-back change sends no mail.
 - **Rate limiting and abuse controls.** Per-route limits keyed by user or IP
   through Redisson rate limiters (`RateLimitService`), login-attempt tracking,
-  reCAPTCHA on login, and velocity limits on ticket transfers.
-- **Security gates in CI.** Every pull request runs the backend tests, the
-  frontend tests with coverage, OWASP Dependency-Check, and a Trivy scan of the
-  backend image that fails on CRITICAL or HIGH findings.
+  reCAPTCHA on login after repeated failures (when enabled), and velocity
+  limits on ticket transfers.
+- **Security gates in CI.** Every pull request to `main` runs the backend
+  tests, the frontend tests with coverage, OWASP Dependency-Check, and a Trivy
+  scan of the backend image that fails on CRITICAL or HIGH findings not listed
+  in [.trivyignore](.trivyignore).
 
 ## Architecture
 
@@ -107,7 +123,8 @@ The backend is organised by domain, one package per module under
 `organizations`, `fraud`, `auth`, `users` and `audit`), each split into `api`,
 `application`, `domain` and `infrastructure` layers. Schema changes are
 forward-only Flyway migrations under `backend/src/main/resources/db/migration`
-(`ls backend/src/main/resources/db/migration | wc -l` for the current count).
+(54 at V54; `ls backend/src/main/resources/db/migration | wc -l` for the
+current count).
 
 ## Tech stack
 
@@ -137,10 +154,13 @@ docker compose up --build
 Set `POSTGRES_PASSWORD` and `JWT_SECRET` in `.env` before the first start
 (`JWT_SECRET` must be at least 32 bytes and not the `.env.example`
 placeholder; the backend refuses to start otherwise). Nothing else is required to
-see the app: Stripe and reCAPTCHA stay off until you set their keys.
+see the app: Stripe and reCAPTCHA stay off unless `STRIPE_ENABLED` or
+`RECAPTCHA_ENABLED` is set to `true`.
 
-Compose runs the backend, PostgreSQL, Redis and MailHog; the frontend is not
-in Compose. Start it separately (Node 20); it proxies API calls to :8080:
+Compose runs the backend (Spring `dev` profile, where checkout uses a simulated
+payment), PostgreSQL 16, Redis 7 and MailHog, which captures all outgoing
+mail; the frontend is not in Compose. Start it separately (Node 20); it
+proxies API calls to :8080:
 
 ```bash
 cd frontend/webpages && npm install && npm start
@@ -154,10 +174,12 @@ cd frontend/webpages && npm install && npm start
 | MailHog | http://localhost:8025 |
 
 **Demo data and the first admin.** No migration or startup code creates a
-user. For a local demo, run `./scripts/demo-seed.sh` from the repo root: it
-registers `admin@fairtix.demo` (ADMIN), `userA@fairtix.demo` and
-`userB@fairtix.demo` with a fixed, published password, and refuses any API
-other than localhost. The demo events come from Flyway migrations. For any
+user. For a local demo, run `./scripts/demo-seed.sh` from the repo root once
+the backend is up: it registers three synthetic accounts,
+`admin@fairtix.demo` (ADMIN), `userA@fairtix.demo` and `userB@fairtix.demo`,
+with a fixed, published password, and refuses any API other than localhost
+unless `DEMO_SEED_ALLOW_REMOTE=1` is set (don't). The demo events come from
+Flyway migrations. For any
 other environment, register an account and promote it with one SQL update, as
 described in [DEPLOY.md](DEPLOY.md); later admins are promoted from the admin
 UI. The walkthrough is in [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md).
@@ -190,10 +212,11 @@ the lock until PostgreSQL reports a waiter) rather than relying on timing:
 purchase cap, hold limit, comp limit, transfer versus refund, box-office
 confirm, and the webhook ledger.
 The CI workflow
-([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull
-request and on push to `main`: `./mvnw clean verify` with a Redis service
-container, the frontend suite with coverage, OWASP Dependency-Check, and a
-Trivy image scan.
+([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on pull requests
+to, and pushes to, `main` and `develop`: `./mvnw clean verify` with a Redis
+service container, the frontend suite with coverage, OWASP Dependency-Check,
+and a Trivy image scan. On `main` at `db6176f1` (2026-11-21) that was 796
+surefire, 249 failsafe and 202 frontend tests, with no failures.
 
 ## Security notes
 
@@ -202,9 +225,10 @@ Trivy image scan.
   (see [docs/adr/0001-cookie-auth.md](docs/adr/0001-cookie-auth.md)).
 - Every secret comes from `.env` (gitignored). `.env.example` holds names and
   placeholders only.
-- Stripe webhooks are rejected unless the signature verifies against
-  `STRIPE_WEBHOOK_SECRET`; with Stripe enabled but no secret set, the endpoint
-  rejects everything.
+- Stripe webhooks are rejected (400) unless the signature verifies against
+  `STRIPE_WEBHOOK_SECRET`. With Stripe off, or enabled with no secret set, the
+  endpoint answers 200 and processes nothing, so events sent to it are lost
+  rather than retried; the backend warns about the missing secret at startup.
 - Rate limits, login-attempt tracking, reCAPTCHA and step-up challenges are
   the abuse controls. None of this has been penetration tested.
 - Step-up verification is a reCAPTCHA check. With reCAPTCHA off (the
@@ -221,8 +245,9 @@ Trivy image scan.
   proxy: loopback and the private ranges by default, or the regex in
   `fairtix.proxy.internal-proxies` (set it to the load balancer's subnets in a
   deployment). Anything a client prepends to the header is ignored.
-- CSRF: the auth cookies are `SameSite=None` so the SPA can call the API
-  cross-site, and token CSRF can't work there. Instead, a POST, PUT, PATCH or
+- CSRF: the auth cookies are `SameSite=None` (`Lax` in the dev profile, where
+  they are not `Secure`) so the SPA can call the API cross-site, and token CSRF
+  can't work there. Instead, a POST, PUT, PATCH or
   DELETE that carries an auth cookie must come from an origin in
   `app.cors.allowed-origins` (or the API's own), per `Origin` or else `Referer`;
   with neither header it gets 403 `CSRF_ORIGIN_REJECTED`. Bearer and webhook
@@ -239,32 +264,56 @@ Trivy image scan.
 - **Single instance only.** The waiting room's SSE registry is a per-JVM map
   (`QueueSseService`), and the `@Scheduled` jobs
   (`grep -rn "@Scheduled(" backend/src/main/java` lists them) run on every
-  replica with no leader lock. The PostgreSQL test suites run one application
-  instance with the jobs off, so multi-instance behaviour is untested.
-- **No automatic refund when an order fails after the charge.** The charge is
-  audited and refunded by hand following
-  [docs/runbooks/cap-queue-rollout.md](docs/runbooks/cap-queue-rollout.md)
-  (check `stripe_charges_without_order`).
+  replica with no leader lock.
+- **Multi-instance behaviour is mostly untested.** The test suites run one
+  application instance with the scheduled jobs off. The advisory locks are
+  exercised from a second raw database connection (`TransactionLockIT`), not
+  from a second instance.
+- **Refunds for a charge without an order are manual.** When an order fails
+  after the card was charged, online or at the box office, the charge is
+  audited and nothing refunds it automatically. An operator finds it with
+  `stripe_charges_without_order` or `box_office_charges_without_sale` and
+  refunds it in Stripe, following
+  [docs/runbooks/cap-queue-rollout.md](docs/runbooks/cap-queue-rollout.md).
+  Stripe's failed-refund notifications are not handled either.
 - **Box office is uncapped.** Door sales by staff do not count against the
   per-user purchase cap.
-- **Dispute webhooks are not handled.** Disputes are worked in the Stripe
-  Dashboard; checkout refuses an intent that is refunded or disputed.
-- **The load figure is one laptop run.** `QueueJoinLoadIT` (opt-in:
+- **Disputes do not reach orders.** The Connect webhook audits
+  `charge.dispute.created` and can freeze an organisation's payouts; nothing
+  cancels tickets or changes a refund, and the platform webhook ignores dispute
+  events. Disputes are worked in the Stripe Dashboard; checkout refuses an
+  intent that is refunded or disputed.
+- **The only load figure is one laptop run.** `QueueJoinLoadIT` (opt-in:
   `./mvnw verify -Dit.test=QueueJoinLoadIT`) measured about 100 queue joins per
-  second per capped event, on one laptop with PostgreSQL and Redis in Docker and
-  one app instance; see the runbook. No other load test, no end-to-end browser
+  second per capped event, once, on one laptop with PostgreSQL and Redis in
+  Docker, one app instance and no network in between; see the runbook. It says
+  nothing about production capacity. No other load test, no end-to-end browser
   tests, no metrics or tracing.
 - The AWS lab is not built: `infra/` holds the bootstrap, canary and teardown
-  code only (see [docs/infra/README.md](docs/infra/README.md)).
+  code and a few helper files, but no lab stack (see
+  [docs/infra/README.md](docs/infra/README.md)).
 - With Redis down, the rate limiter fails closed (503) on the credential
   endpoints (login, registration, verification, password reset, step-up) and
   open everywhere else.
-- Found and not yet fixed: a refund approved while a transfer of the same
-  ticket is being accepted can void the recipient's ticket; event cancellation
-  updates tickets without row locks; comp recipient lookup is case-sensitive;
-  after-commit mail still holds the request's database connection while SMTP
-  runs; a box-office card sale refused after Stripe verified the card leaves
-  the customer charged with no ticket and no audit row.
+- **Open defects.** The first two were found by reading the code; neither has
+  been reproduced or seen in a test.
+  - A payment's hold extension and the sweep of expired confirmed holds lock
+    hold rows in no fixed order, so they can deadlock when they share two or
+    more holds. PostgreSQL aborts one; if it is the extension, the customer
+    gets a 500 where a retryable 409 belongs. Nothing is changed or charged
+    ([#317](https://github.com/firegiant9000/FairTix/issues/317)).
+  - That sweep writes back the whole hold row it read. If a hold already past
+    its grace period is extended in the short gap between the sweep reading
+    the hold and reading its seat, the sweep can still expire it and free the
+    seat while the customer is paying; the charge would then go to the manual
+    refund path
+    ([#318](https://github.com/firegiant9000/FairTix/issues/318)).
+  - After-commit mail still holds the request's database connection while
+    SMTP runs.
+  - Cancelling a large event is slow (minutes for a few thousand tickets in a
+    local test), and purchases on that event answer 409 until it finishes.
+  - `users.email` is unique only case-sensitively, so accounts that differ
+    only by case can exist; lookups rank them, nothing merges them.
 
 ## Team and contributions
 
