@@ -163,7 +163,7 @@ cd frontend/webpages && npm start
 
 ## Known Limitations for Demo
 
-- Payment simulation is only available in the `dev` Spring profile. In `prod`, simulated outcomes return `400 Bad Request`.
+- Payment is simulated whenever Stripe is off, in any profile except `prod`, which refuses it. Choosing the outcome (`SUCCESS`, `FAILURE`, `CANCELLED`) works only in the `dev` profile, the one Compose uses; elsewhere a chosen outcome returns `400 Bad Request`.
 - Queue admission is triggered by a scheduler; during a live demo, lower the queue capacity or manually advance the queue via the database to speed it up.
 - ICS calendar export requires a ticket in `VALID` status — cancelled or transferred tickets will not have an active export link.
 - MailHog captures all outbound email in dev. No real emails are sent.

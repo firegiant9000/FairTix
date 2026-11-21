@@ -123,7 +123,7 @@ Then re-run `docker compose up --build` to re-apply the fixed migration.
   ```
 - **Stripe keys**: `sk_live_` keys must never be committed. `.env` is in `.gitignore` — verify this before pushing. Only `.env.example` (with placeholders) is tracked.
 - **reCAPTCHA keys**: Site keys are domain-scoped. A key registered for `localhost` will not work on your production domain and vice versa. Register separate keys per environment.
-- **`STRIPE_WEBHOOK_SECRET` and `STRIPE_CONNECT_WEBHOOK_SECRET`**: with `STRIPE_ENABLED=true`, the backend refuses to start if either is blank. Without a secret, a webhook endpoint could only acknowledge events and drop them. The `prod` profile always has Stripe on, and `staging` defaults it on, so both secrets must be set there.
+- **`STRIPE_WEBHOOK_SECRET`**: Leaving this blank with `STRIPE_ENABLED=true` makes the webhook endpoints answer 200 and process nothing, so Stripe does not retry and the events are lost. The backend logs a warning at startup if this is the case.
 
 ---
 
@@ -305,7 +305,7 @@ The backend depends on redis being healthy before starting, but Docker Compose `
 Browsers only send `HttpOnly; Secure` cookies over HTTPS. In local dev, the `Secure` flag is omitted, but if you are testing over a non-localhost hostname you need HTTPS. For local dev, always use `http://localhost:3000`.
 
 **Stripe webhook returning 400 (`No signatures found matching the expected signature`)**
-`STRIPE_WEBHOOK_SECRET` is incorrect (a blank one stops the backend starting). If running locally, regenerate it from the `stripe listen` output:
+`STRIPE_WEBHOOK_SECRET` is incorrect (a blank one answers 200 and ignores the event). If running locally, regenerate it from the `stripe listen` output:
 ```bash
 stripe listen --forward-to localhost:8080/api/webhooks/stripe
 # Copy the "webhook signing secret" printed to the terminal into STRIPE_WEBHOOK_SECRET in .env

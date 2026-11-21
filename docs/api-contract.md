@@ -1,19 +1,27 @@
 # FairTix API Contract
 
-> **Version:** 1.0.0
 > **Base URL:** `http://localhost:8080`
 > **Interactive docs:** `http://localhost:8080/swagger-ui.html`
 > **OpenAPI spec:** `http://localhost:8080/v3/api-docs`
 
+> **This is a partial, hand-written overview** of the core buyer flow (auth, events,
+> seats, holds, payments, orders, tickets, transfers, refunds, the queue and the
+> Stripe webhooks). The full and current contract is the OpenAPI spec above, which
+> is generated from the controllers. Organizer, box-office, reporting, branding,
+> venue, performer and support endpoints are documented there only. Where this page
+> and the spec disagree, the spec is right.
+
 ## Authentication
 
-All protected endpoints require a JWT bearer token in the `Authorization` header:
+Authentication uses HttpOnly cookies. `POST /auth/login` and `POST /auth/register`
+set `fairtix_token` (the access JWT, 15 minutes) and `fairtix_refresh` (7 days);
+`POST /auth/refresh` rotates both. The browser sends them automatically; the
+frontend reads the current user from `GET /auth/me` and never sees the token.
 
-```
-Authorization: Bearer <token>
-```
-
-Tokens are obtained from the Auth endpoints and expire after 15 minutes.
+A state-changing request that carries an auth cookie must come from an allowed
+origin (`Origin`, or else `Referer`), or it gets 403 `CSRF_ORIGIN_REJECTED`. The
+backend also accepts `Authorization: Bearer <token>` as a fallback for non-browser
+clients.
 
 ---
 
@@ -23,10 +31,18 @@ Tokens are obtained from the Auth endpoints and expire after 15 minutes.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/auth/register` | Public | Register a new user |
-| POST | `/auth/login` | Public | Log in and receive a JWT |
+| POST | `/auth/register` | Public | Register; sets the auth cookies |
+| POST | `/auth/login` | Public | Log in; sets the auth cookies |
+| GET | `/auth/me` | Cookie | The current user |
+| POST | `/auth/refresh` | Refresh cookie | Rotate the auth cookies |
+| POST | `/auth/logout` | Public | Revoke the refresh token and clear the cookies |
+| GET | `/auth/verify` | Public | Verify an email address (`?token=`) |
+| POST | `/auth/resend-verification` | Public | Resend the verification email |
+| POST | `/auth/forgot-password` | Public | Request a password-reset email |
+| POST | `/auth/reset-password` | Public | Set a new password with a reset token |
+| POST | `/auth/step-up/verify` | Authenticated | Pass a step-up challenge (reCAPTCHA; 503 when reCAPTCHA is off) |
 
-**Request body (both):**
+**Request body (register and login):**
 ```json
 {
   "email": "user@example.com",
@@ -34,10 +50,16 @@ Tokens are obtained from the Auth endpoints and expire after 15 minutes.
 }
 ```
 
-**Response:**
+Email at most 254 characters, password at most 72. Login also takes an optional
+`recaptchaToken`, required after repeated failed attempts when reCAPTCHA is enabled.
+
+**Response (register and login; no token in the body):**
 ```json
 {
-  "token": "eyJhbGciOiJIUzI1NiJ9..."
+  "userId": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+  "email": "user@example.com",
+  "role": "USER",
+  "emailVerified": false
 }
 ```
 
@@ -56,21 +78,22 @@ Tokens are obtained from the Auth endpoints and expire after 15 minutes.
 {
   "title": "Summer Music Festival",
   "startTime": "2026-07-15T19:00:00Z",
-  "venue": "Madison Square Garden"
+  "venueId": "f1e2d3c4-b5a6-7890-abcd-ef1234567890",
+  "queueRequired": false,
+  "queueCapacity": null,
+  "maxTicketsPerUser": 6
 }
 ```
 
-**Event response:**
-```json
-{
-  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "title": "Summer Music Festival",
-  "startTime": "2026-07-15T19:00:00Z",
-  "venue": "Madison Square Garden"
-}
-```
+`title`, `startTime` and `venueId` are required.
 
-**Search query parameters:** `venueName`, `title`, `upcoming` (boolean), `page` (default 0), `size` (default 20, max 100)
+**Event response** (main fields; the spec has the rest): `id`, `title`, `startTime`,
+`venue` (an object), `status` (`DRAFT`, `PUBLISHED`, `ACTIVE`, `COMPLETED`,
+`CANCELLED`, `ARCHIVED`), `queueRequired`, `queueCapacity`, `maxTicketsPerUser`.
+Cancelled, completed and archived events refuse purchases with 409
+`EVENT_NOT_ON_SALE`.
+
+**Search query parameters:** `venueName`, `performerName`, `title`, `upcoming` (boolean), `page` (default 0), `size` (default 20, max 100)
 
 ### Seats
 
@@ -84,11 +107,12 @@ Tokens are obtained from the Auth endpoints and expire after 15 minutes.
 {
   "section": "Floor",
   "rowLabel": "A",
-  "seatNumber": "101"
+  "seatNumber": "101",
+  "price": 50.00
 }
 ```
 
-**Seat response:**
+**Seat response** (also carries `price`):
 ```json
 {
   "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
@@ -102,12 +126,15 @@ Tokens are obtained from the Auth endpoints and expire after 15 minutes.
 
 **List query parameters:** `availableOnly` (boolean, default false)
 
+**Seat statuses:** `AVAILABLE`, `HELD` (an active hold), `BOOKED` (a confirmed hold),
+`SOLD`
+
 ### Holds
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/api/events/{eventId}/holds` | Authenticated | Create a hold on 1-10 seats |
-| GET | `/api/holds` | Authenticated | List holds for a holder |
+| GET | `/api/holds` | Authenticated | List the caller's holds (`?status=`, default `ACTIVE`) |
 | GET | `/api/holds/{holdId}` | Authenticated | Get a single hold |
 | POST | `/api/holds/{holdId}/release` | Authenticated | Release a hold (idempotent) |
 | POST | `/api/holds/{holdId}/confirm` | Authenticated | Confirm a hold (idempotent) |
@@ -116,10 +143,12 @@ Tokens are obtained from the Auth endpoints and expire after 15 minutes.
 ```json
 {
   "seatIds": ["b2c3d4e5-f6a7-8901-bcde-f12345678901"],
-  "holderId": "d290f1ee-6c54-4b01-90e6-d701748f0851",
   "durationMinutes": 10
 }
 ```
+
+The owner is always the signed-in user; it is never taken from the request.
+Returns 201.
 
 **Hold response (array — one hold per seat):**
 ```json
@@ -128,7 +157,7 @@ Tokens are obtained from the Auth endpoints and expire after 15 minutes.
     "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
     "seatId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
     "eventId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "holderId": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+    "ownerId": "d290f1ee-6c54-4b01-90e6-d701748f0851",
     "expiresAt": "2026-07-15T19:10:00Z",
     "createdAt": "2026-07-15T19:00:00Z",
     "status": "ACTIVE"
@@ -139,10 +168,14 @@ Tokens are obtained from the Auth endpoints and expire after 15 minutes.
 **Hold statuses:** `ACTIVE`, `CONFIRMED`, `EXPIRED`, `RELEASED`
 
 **Constraints:**
-- Max 10 seats per hold request
-- Max 5 active holds per holder
+- Max 10 seats per hold request (`holds.max-seats-per-hold`)
+- Max 5 active holds per user (`holds.max-active-per-holder`)
 - Duration: 1-60 minutes (default 10)
-- Holds expire automatically after the specified duration
+- On an event that requires the queue, the caller must have been admitted
+- The event's per-user purchase cap counts held, bought and comped tickets
+- ACTIVE holds expire after their duration; CONFIRMED holds are swept
+  `holds.confirmed-grace-minutes` (15) after their expiry, which
+  `POST /api/payments/intent` pushes out while the customer pays
 
 ### Analytics
 
@@ -175,9 +208,43 @@ All errors follow a consistent shape:
 }
 ```
 
-**Error codes:** `HOLD_NOT_FOUND`, `HOLD_CONFLICT`, `BAD_REQUEST`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `RESOURCE_NOT_FOUND`
+**Common error codes** (partial; the full set is in
+[`GlobalExceptionHandler`](../backend/src/main/java/com/fairtix/config/GlobalExceptionHandler.java)):
+`HOLD_NOT_FOUND`, `HOLD_CONFLICT`, `BAD_REQUEST`, `VALIDATION_ERROR`, `UNAUTHORIZED`,
+`FORBIDDEN`, `RESOURCE_NOT_FOUND`, `PURCHASE_CAP_EXCEEDED`, `EVENT_NOT_ON_SALE`,
+`PAYMENT_FAILED`, `CARD_DECLINED`, `PAYMENT_REFUNDED`, `PAYMENT_NOT_USABLE`,
+`PAYMENT_NOT_BOUND`, `REFUND_NOT_ELIGIBLE`, `TRANSFER_VELOCITY_EXCEEDED`,
+`STEP_UP_REQUIRED`.
+
+Two 409 codes mean "retry": `REQUEST_IN_PROGRESS` (a lock wait timed out) and
+`CONCURRENT_MODIFICATION` (another request changed the same rows first).
 
 ---
+
+## Payments
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/payments/intent` | Authenticated | Create or reuse a Stripe PaymentIntent for the caller's CONFIRMED holds, and extend those holds while the customer pays. 501 when Stripe is off |
+| POST | `/api/payments/checkout` | Authenticated | Create the order and tickets for the caller's holds. Returns 201 |
+
+**Checkout request:**
+```json
+{
+  "holdIds": ["c3d4e5f6-a7b8-9012-cdef-123456789012"],
+  "paymentIntentId": "pi_...",
+  "simulatedOutcome": "SUCCESS"
+}
+```
+
+With Stripe on, `paymentIntentId` is required and must be the caller's intent for
+exactly these holds; `simulatedOutcome` is ignored. With Stripe off (the local
+default), payment is simulated. `simulatedOutcome` picks the result only where
+`fairtix.payment.allow-simulated-outcome` is on (the `dev` profile); elsewhere
+sending it is a 400, and the `prod` profile refuses simulated payment altogether.
+A resubmit with the same intent returns the
+existing order. Checkout and hold creation can answer 428 `STEP_UP_REQUIRED` for
+an account the risk check flags; see `/auth/step-up/verify`.
 
 ## Orders
 
@@ -198,7 +265,12 @@ Endpoints for reading orders. An order is created only by
   "status": "COMPLETED",
   "totalAmount": 0.00,
   "currency": "USD",
-  "createdAt": "2026-07-15T19:05:00Z"
+  "createdAt": "2026-07-15T19:05:00Z",
+  "eventTitle": "Summer Music Festival",
+  "eventId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "eventStartTime": "2026-07-15T19:00:00Z",
+  "ticketCount": 1,
+  "tickets": ["…one summary per ticket; see the spec"]
 }
 ```
 
@@ -212,6 +284,7 @@ Endpoints for accessing purchased tickets.
 |--------|------|------|-------------|
 | GET | `/api/tickets` | Authenticated | List the current user's tickets |
 | GET | `/api/tickets/{ticketId}` | Authenticated | Get ticket details |
+| GET | `/api/tickets/{ticketId}/calendar.ics` | Authenticated | Calendar file for the ticket's event |
 
 **Ticket response:**
 ```json
@@ -226,34 +299,72 @@ Endpoints for accessing purchased tickets.
   "seatSection": "Floor",
   "seatRow": "A",
   "seatNumber": "101",
+  "price": 50.00,
   "holderEmail": "user@example.com",
   "status": "VALID",
   "issuedAt": "2026-07-15T19:05:00Z"
 }
 ```
 
-**Ticket statuses:** `VALID`, `USED`, `TRANSFERRED`, `CANCELLED`
+**Ticket statuses:** `VALID`, `USED`, `TRANSFERRED`, `CANCELLED`, `REFUNDED`
 
----
-
-## Planned Endpoints (Not Yet Implemented)
+### Transfers
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/orders/{orderId}/cancel` | Authenticated | Cancel an order (if refundable) |
-| GET | `/api/admin/orders` | ADMIN | List all orders (admin) |
-| POST | `/api/tickets/{ticketId}/transfer` | Authenticated | Transfer a ticket to another user |
-| POST | `/api/admin/tickets/{ticketId}/validate` | ADMIN | Validate a ticket at the door |
+| POST | `/api/tickets/{ticketId}/transfer` | Authenticated | Offer a ticket to another registered user, by email |
+| GET | `/api/transfers/incoming` | Authenticated | Transfers offered to the caller |
+| GET | `/api/transfers/outgoing` | Authenticated | Transfers the caller has offered |
+| POST | `/api/transfers/{requestId}/accept` | Authenticated | Accept (the recipient's purchase cap applies) |
+| POST | `/api/transfers/{requestId}/reject` | Authenticated | Reject |
+| POST | `/api/transfers/{requestId}/cancel` | Authenticated | Withdraw an offer |
+
+The recipient must have an account ([RESALE_POLICY.md](RESALE_POLICY.md)). Too many
+offers in a day answer 429 `TRANSFER_VELOCITY_EXCEEDED`.
+
+### Refunds
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/orders/{orderId}/refunds` | Authenticated | Request a refund for one of the caller's orders |
+| GET | `/api/refunds` | Authenticated | The caller's refund requests |
+| GET | `/api/refunds/{refundId}` | Authenticated | One refund request |
+| GET | `/api/admin/refunds` | ADMIN | All refund requests |
+| POST | `/api/admin/refunds/{refundId}/review` | ADMIN | Approve or reject |
+| POST | `/api/admin/refunds/{refundId}/retry` | ADMIN | Retry an approved refund whose Stripe call failed |
+
+Small requests are approved automatically unless the account's risk tier is HIGH
+or CRITICAL. An approved refund of a Stripe order is sent to Stripe; cash, comp and
+simulated orders are refunded in FairTix only.
+
+### Waiting room
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/events/{eventId}/queue/stream` | Authenticated | Server-Sent Events: position updates and admission |
+| POST | `/api/events/{eventId}/queue/join` | Authenticated | Join the queue |
+| GET | `/api/events/{eventId}/queue/status` | Authenticated | The caller's position and state |
+| DELETE | `/api/events/{eventId}/queue/leave` | Authenticated | Leave the queue |
+| GET | `/api/events/{eventId}/queue/admin` | ADMIN | Queue overview |
+| POST | `/api/events/{eventId}/queue/admin/admit` | ADMIN | Admit the next batch now |
+
+### Stripe webhooks
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/webhooks/stripe` | Stripe signature | `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.refunded`; each event id is processed once |
+| POST | `/api/webhooks/stripe-connect` | Stripe signature | Connected-account events: account updates, payouts, `charge.dispute.created` |
+
+A bad signature answers 400. With Stripe off, or no webhook secret set, both
+endpoints answer 200 and process nothing.
 
 ---
 
-## Frontend Alignment Notes
+## Not Implemented
 
-The frontend currently integrates with:
-- Auth endpoints (login/register)
-- Events listing (`GET /api/events`)
-- Analytics dashboard (`GET /api/analytics/dashboard`)
-- Admin user management (`GET /api/admin/users`, `PATCH .../promote`)
-- Tickets listing (`GET /api/tickets`) — My Tickets page
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/orders` | ADMIN | List all orders (admin) |
+| POST | `/api/admin/tickets/{ticketId}/validate` | ADMIN | Validate a ticket at the door |
 
-**Not yet wired in the frontend:** Seats, holds, release, confirm, order creation. These are backend-ready and awaiting the seat selection / checkout UI.
+There is no order-cancel endpoint; a buyer asks for a refund instead (above).

@@ -38,6 +38,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -445,6 +446,40 @@ public class GlobalExceptionHandler {
     log.warn("Optimistic lock conflict on {}: {}", req.getRequestURI(), ex.getMessage());
     return error(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
         "The resource was modified by another request; reload and try again", req);
+  }
+
+  /**
+   * A deadlock ({@code 40P01}) or other row-lock failure. PostgreSQL has already rolled
+   * the transaction back, so nothing was changed and a retry is safe (#317). Warn, no
+   * stack trace: two transactions meeting is expected, not a server fault. The SQLState
+   * tells a deadlock from a serialization failure ({@code 40001}).
+   *
+   * <p>The JPA types arrive untranslated when a service locks through the
+   * {@code EntityManager} directly (Spring translates only repository calls).
+   */
+  @ExceptionHandler({PessimisticLockingFailureException.class,
+      jakarta.persistence.PessimisticLockException.class,
+      jakarta.persistence.LockTimeoutException.class})
+  public ResponseEntity<Map<String, Object>> handlePessimisticLock(
+      RuntimeException ex, HttpServletRequest req) {
+    log.warn("Pessimistic lock failure on {}: {} sqlState={}", req.getRequestURI(),
+        ex.getClass().getSimpleName(), sqlState(ex));
+    return error(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
+        "The resource was modified by another request; reload and try again", req);
+  }
+
+  /**
+   * The first SQLState in the cause chain, or {@code null}. Codes only, never a message.
+   * Bounded, so a cause cycle can't hang the request.
+   */
+  private static String sqlState(Throwable ex) {
+    Throwable t = ex;
+    for (int depth = 0; t != null && depth < 10; depth++, t = t.getCause()) {
+      if (t instanceof java.sql.SQLException sql && sql.getSQLState() != null) {
+        return sql.getSQLState();
+      }
+    }
+    return null;
   }
 
   @ExceptionHandler(LockBusyException.class)
