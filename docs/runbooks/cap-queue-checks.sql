@@ -148,11 +148,19 @@ GROUP BY granted;
 -- order on a later attempt have a payment_records row (transaction_id is the
 -- intent id) and are left out here. Expect no rows.
 --
--- Every row, before any refund: a charge already refunded without an order stays
--- listed (until its attempts leave the 14-day window, or for unbound rows until
--- the owner's review is on record), and Stripe keeps a refunded intent "succeeded".
--- So open the charge in Stripe and refund only if amount_refunded is 0 and
--- refunded is false. A second refund after a partial one pays out twice.
+-- Every row, before any refund: a charge already refunded without an order can
+-- still be listed, and Stripe keeps a refunded intent "succeeded". A row that is
+-- not unbound drops out once the charge.refunded webhook records a full refund
+-- (a STRIPE_REFUND_UNMATCHED row ending refunded=true); a partially refunded one
+-- stays until its attempts leave the 14-day window, and so does one whose webhook
+-- was missed or was recorded before that flag existed. A dropped row does not
+-- come back if that refund later fails (Stripe reverses it and sends a failed-
+-- refund notification, which FairTix does not handle). For a failed-refund
+-- notice on a charge without an order, treat the charge as unrefunded and work
+-- it like a listed row. Unbound rows stay until
+-- the owner's review is on record. So open the charge in Stripe and refund only
+-- if amount_refunded is 0 and refunded is false. A second refund after a partial
+-- one pays out twice.
 --
 -- unbound = true rows: none of the hold rules below or above apply; only this
 -- paragraph and the refund check above do. They come from STRIPE_ORDER_FAILED with
@@ -190,8 +198,9 @@ GROUP BY granted;
 -- submitter shows up as a second row for the same intent.
 -- Unbound rows don't age out of this check: their attempts stay listed past
 -- 14 days until the owner records the outcome, after a full refund or a
--- decision not to refund. A refund webhook alone doesn't clear the row, because
--- a partial refund leaves part of the charge without an order. The checks
+-- decision not to refund. A refund webhook alone doesn't clear the row, not even
+-- a full refund: the owner's review is the record that the charge was looked
+-- at. The checks
 -- session is read-only, so run this in a separate, writable session (don't turn
 -- off default_transaction_read_only here), with the owner's own user id and no
 -- customer details in reason:
@@ -280,6 +289,13 @@ HAVING NOT (bool_or(f.unbound) AND EXISTS (
   SELECT 1 FROM audit_logs r
   WHERE r.action = 'STRIPE_CHARGE_REVIEWED'
     AND position('stripe_intent=' || f.payment_intent || ',' IN r.details) > 0
+))
+-- A bound charge is done once Stripe reports it fully refunded (see the comment above).
+   AND NOT (NOT bool_or(f.unbound) AND EXISTS (
+  SELECT 1 FROM audit_logs r
+  WHERE r.action = 'STRIPE_REFUND_UNMATCHED'
+    AND position('stripe_intent=' || f.payment_intent || ',' IN r.details) > 0
+    AND r.details LIKE '%, refunded=true'
 ))
 ORDER BY first_failed_at DESC;
 
