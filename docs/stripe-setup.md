@@ -26,7 +26,10 @@ Find your keys in **Stripe Dashboard → Developers → API keys**.
 STRIPE_ENABLED=true
 STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_CONNECT_WEBHOOK_SECRET=whsec_...
 ```
+
+With `STRIPE_ENABLED=true` the backend refuses to start if either webhook secret is blank.
 
 ### Frontend (`frontend/webpages/.env`)
 
@@ -50,6 +53,13 @@ The CLI prints a webhook signing secret on startup:
 
 Set `STRIPE_WEBHOOK_SECRET=whsec_abc123...` in your `.env` and restart the backend.
 
+To forward connected-account events to the Connect endpoint as well, add `--forward-connect-to`. The CLI signs both kinds of event with the secret it prints, so set `STRIPE_CONNECT_WEBHOOK_SECRET` to the same value:
+
+```bash
+stripe listen --forward-to localhost:8080/api/webhooks/stripe \
+  --forward-connect-to localhost:8080/api/webhooks/stripe-connect
+```
+
 ## Generating a Webhook Secret for Production
 
 In **Stripe Dashboard → Developers → Webhooks**, add an endpoint pointing to your deployed URL:
@@ -59,6 +69,8 @@ https://your-domain.com/api/webhooks/stripe
 ```
 
 Select the events to listen for (at minimum: `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.refunded`). After saving, reveal the signing secret and set it as `STRIPE_WEBHOOK_SECRET`.
+
+Add a second endpoint that listens to events on **connected accounts**, pointing to `https://your-domain.com/api/webhooks/stripe-connect`, with `account.updated`, `account.application.deauthorized`, `payout.paid`, `payout.failed` and `charge.dispute.created`. Set its signing secret as `STRIPE_CONNECT_WEBHOOK_SECRET`.
 
 ## Switching to Live Keys
 

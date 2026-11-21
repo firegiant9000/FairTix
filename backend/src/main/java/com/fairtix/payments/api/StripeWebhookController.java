@@ -66,10 +66,16 @@ public class StripeWebhookController {
     this.webhookEventRepository = webhookEventRepository;
   }
 
+  /**
+   * Fails startup when Stripe is on without a signing secret. Without one, the endpoint
+   * could only answer 200 and drop every event (Stripe does not retry a 200), so refunds,
+   * failed payments and unmatched charges would go unrecorded without anyone noticing.
+   */
   @PostConstruct
-  void warnIfMisconfigured() {
+  void requireSecretWhenEnabled() {
     if (stripeEnabled && webhookSecret.isBlank()) {
-      log.warn("Stripe is enabled but STRIPE_WEBHOOK_SECRET is blank — all incoming webhooks will be rejected");
+      throw new IllegalStateException(
+          "stripe.enabled=true but STRIPE_WEBHOOK_SECRET is blank; set the webhook signing secret");
     }
   }
 
@@ -81,7 +87,7 @@ public class StripeWebhookController {
       @RequestBody String payload,
       @RequestHeader("Stripe-Signature") String sigHeader) {
 
-    if (!stripeEnabled || webhookSecret.isBlank()) {
+    if (!stripeEnabled) {
       return ResponseEntity.ok().build();
     }
 

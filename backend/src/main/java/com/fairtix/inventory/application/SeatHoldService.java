@@ -337,10 +337,10 @@ public class SeatHoldService {
    * no fixed order, so the two can still deadlock when they share two or more holds. None has been reported;
    * it needs a hold past the sweep's grace cutoff to be extended during a sweep.
    * PostgreSQL then aborts one transaction. An aborted sweep rolls back its page and
-   * retries on the next tick. An aborted extension answers 500 ({@code INTERNAL_ERROR},
-   * since no handler maps {@code PessimisticLockingFailureException}) before this
-   * request creates or reuses a payment intent; nothing has changed, so a retry is
-   * safe.
+   * retries on the next tick. An aborted extension answers a retryable 409
+   * ({@code CONCURRENT_MODIFICATION}, from {@code GlobalExceptionHandler}'s
+   * {@code PessimisticLockingFailureException} handler, #317) before this request
+   * creates or reuses a payment intent; nothing has changed, so a retry is safe.
    *
    * @throws SeatHoldNotFoundException if a hold is missing or not the caller's
    * @throws SeatHoldConflictException if a hold is not CONFIRMED or its seat is

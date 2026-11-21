@@ -57,6 +57,12 @@ Not proven by anything in the repository: that the locking works on PostgreSQL (
 
 Known defects found by inspection, each of which becomes a red-before / green-after test: no unique ticket per seat; `CONFIRMED` holds never expire if payment fails; no Stripe idempotency keys; Stripe calls inside DB transactions; no webhook event ledger; ten `@Scheduled` jobs on every replica; per-JVM SSE registry; fail-open, spoofable rate limiter.
 
+**Status on 2026-11-21** (`main` at `db6176f1`; the two paragraphs above are the 2026-09 baseline):
+
+- Now proven: every Spring-context test runs on PostgreSQL 16 via Testcontainers with all 54 Flyway migrations (V1–V54) and Hibernate `validate`; there is no H2. Concurrency tests force the overlap (latches, or a connection holding the lock): seat-hold contention, purchase cap, hold limit, comp limit, transfer vs refund, cancel vs checkout. CI ran 796 unit and 249 integration tests.
+- Fixed: one active ticket per seat (V46); expired `CONFIRMED` holds are swept; Stripe intent, refund and connected-account creation carry idempotency keys; checkout and refunds call Stripe outside DB transactions (Connect onboarding still calls it inside one); the platform webhook has an event ledger (`stripe_webhook_events`); the rate limiter fails closed on credential endpoints and trusts `X-Forwarded-For` only from configured proxies.
+- Still open: `@Scheduled` jobs run on every replica; the SSE registry is per JVM; nothing has run at more than one replica; the only throughput figure is one laptop run of queue joins (about 100 a second per capped event, in `docs/runbooks/cap-queue-rollout.md`); no traces, metrics or failure-injection results; the AWS lab stack is not built.
+
 ### R3. Status of the 2026-05 roadmap items
 
 | Item | Status | Previous goal | New decision and reason | Effect on usefulness | Effect on evidence |
@@ -439,7 +445,7 @@ Marketing site, customer acquisition, wallet passes, QR ticket expansion, promot
 9. **Auth migration is partial.** Some old code still references the bearer-token / sessionStorage path; new code uses cookies. Worth a single cleanup pass.
 10. **No accessibility audit.** WCAG 2.1 AA is legally required in some markets (US ADA, EU EAA going live 2025–2026) and effectively required for any government, nonprofit, or university client.
 11. **Test coverage gaps:** analytics, rate limiting, notifications, venue sections, performers.
-12. **No staging environment.** Prod fixes (Railway, Netlify, Redis NOAUTH) happened directly against prod recently — fine for a school project, not fine for paying customers.
+12. **No staging environment.** Prod fixes (Railway, Netlify, Redis NOAUTH) happened directly against prod recently — fine for a school project, not fine for paying customers. _(2026-11: "prod" here was the April 2026 course-demo deployment on free Railway and Netlify tiers, with no real customers; those paths are now unmaintained.)_
 
 ### What's not present and probably shouldn't be
 
@@ -1241,7 +1247,12 @@ Every Flyway migration this plan implies, ordered:
 
 ---
 
-## Appendix C: "What does FairTix do that Eventbrite doesn't?" — the elevator answer
+## Appendix C: "What does FairTix do that Eventbrite doesn't?" — the elevator answer — HISTORICAL
+
+> **HISTORICAL (2026-05-12); the business direction was dropped on 2026-09-29.** Not a
+> current claim: FairTix is a technical showcase with no customers and no pricing.
+> Apple Wallet passes and the scanner app were never built (Phase 3 was cancelled),
+> and the fee comparison was never measured.
 
 Use this whenever a venue asks. Practice saying it out loud.
 
@@ -1249,4 +1260,4 @@ Use this whenever a venue asks. Practice saying it out loud.
 
 ---
 
-_Last updated 2026-05-12. Revisit at the end of every phase and rewrite freely — this file is a working document, not a contract._
+_Original analysis 2026-05-12; revised from 2026-09-29 (see the revisions at the top), status note in R2 updated 2026-11-21. This file is a working document, not a contract._
