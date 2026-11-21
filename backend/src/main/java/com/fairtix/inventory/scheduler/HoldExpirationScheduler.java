@@ -19,6 +19,7 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -131,6 +132,14 @@ public class HoldExpirationScheduler {
    * left alone and the hold becomes RELEASED. A checkout racing this sweep on the
    * same seat loses or wins on {@code Seat.@Version}; if the sweep loses, the
    * whole page rolls back and is retried on the next tick.
+   *
+   * <p>Each hold is ended by a conditional update that re-checks, in the database, that
+   * it is still CONFIRMED and still expired before the cutoff; the loaded entities are
+   * never written back. A payment extension that commits after the page was read
+   * therefore keeps its hold and seat (#318): before, the sweep wrote back the expiry it
+   * had read, and when it read the seat after the extension committed, the seat-version
+   * check did not catch it. Holds are handled in id order, so the sweep takes hold-row
+   * locks in a fixed order (#317).
    */
   @Scheduled(fixedDelayString = "${holds.cleanup.interval-ms:30000}")
   @Transactional
@@ -139,7 +148,7 @@ public class HoldExpirationScheduler {
     try {
       Instant cutoff = Instant.now().minusSeconds(confirmedGraceMinutes * 60L);
       Page<SeatHold> batch = seatHoldRepository.findAllByStatusAndExpiresAtBefore(
-          HoldStatus.CONFIRMED, cutoff, PageRequest.of(0, PAGE_SIZE));
+          HoldStatus.CONFIRMED, cutoff, PageRequest.of(0, PAGE_SIZE, Sort.by("id")));
 
       if (batch.isEmpty()) {
         return;
@@ -152,13 +161,18 @@ public class HoldExpirationScheduler {
       List<SeatHold> toEmail = new ArrayList<>();
       for (SeatHold hold : batch.getContent()) {
         Seat seat = hold.getSeat();
-        if (seat.getStatus() == SeatStatus.SOLD) {
-          hold.setStatus(HoldStatus.RELEASED);
+        HoldStatus newStatus = seat.getStatus() == SeatStatus.SOLD
+            ? HoldStatus.RELEASED : HoldStatus.EXPIRED;
+        if (seatHoldRepository.endConfirmedHoldIfStillExpired(hold.getId(), newStatus, cutoff) == 0) {
+          log.info("CONFIRMED hold {} changed after the sweep read it (extended or ended); left as is",
+              hold.getId());
+          continue;
+        }
+        if (newStatus == HoldStatus.RELEASED) {
           auditService.logInCurrentTransaction(hold.getOwnerId(), "EXPIRE", "HOLD", hold.getId(),
               "Expired CONFIRMED hold released; seat " + seat.getId() + " already SOLD");
           continue;
         }
-        hold.setStatus(HoldStatus.EXPIRED);
         String seatOutcome = " left " + seat.getStatus();
         if (seat.getStatus() == SeatStatus.BOOKED
             && seatHoldRepository.existsBySeat_IdAndStatusInAndIdNot(
@@ -178,7 +192,8 @@ public class HoldExpirationScheduler {
             "Expired CONFIRMED hold; seat " + seat.getId() + seatOutcome);
       }
 
-      seatHoldRepository.saveAll(batch.getContent());
+      // Holds were written above by conditional update; the loaded copies are stale and
+      // must not be saved (that would write back the expiry the sweep read).
       seatRepository.saveAll(seatsToRelease);
 
       TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {

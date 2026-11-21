@@ -323,22 +323,18 @@ public class SeatHoldService {
    *       expiry is not one the sweep selects from a fresh read.</li>
    *   <li>The seats are locked in sorted order, and the hold and seat states are
    *       re-read from the database (the values read in step 1 may be stale).</li>
-   *   <li>The seat versions are bumped, so a sweep that read a seat before this
-   *       commits fails on its seat update and rolls back its hold changes.</li>
+   *   <li>The seat versions are bumped, so a checkout or release that read a seat
+   *       before this commits fails on its seat update.</li>
    * </ol>
    *
-   * <p>What step 4 assumes: the sweep writes whole hold rows ({@code SeatHold} has no
-   * {@code @Version} or {@code @DynamicUpdate}), so a sweep that read a hold's old
-   * expiry puts back that expiry as well as its {@code status}, undoing this or an
-   * earlier extension. Only the seat-version bump stops it, and only if the sweep
-   * read the seat before that extension committed. The sweep loads each seat eagerly,
-   * right after its page query, so the gap is the time between those two reads;
-   * nothing else closes it.
+   * <p>The CONFIRMED-hold sweep ends each hold with a conditional update that re-checks
+   * status and expiry in the database, so it never puts back an expiry it read before
+   * this extension committed (#318). If the sweep ends the hold first, step 2 skips it
+   * and step 3 refuses.
    *
-   * <p>Lock order does not rule out a deadlock with the CONFIRMED-hold sweep. The
-   * update in step 2 locks its hold rows in no fixed order, and the sweep writes hold
-   * and seat rows in no fixed order either (an unsorted page, flushed as it goes), so
-   * the two can deadlock when they share two or more holds. None has been reported;
+   * <p>Lock order does not rule out a deadlock with the CONFIRMED-hold sweep. The sweep
+   * takes hold-row locks in id order, but the update in step 2 locks its hold rows in
+   * no fixed order, so the two can still deadlock when they share two or more holds. None has been reported;
    * it needs a hold past the sweep's grace cutoff to be extended during a sweep.
    * PostgreSQL then aborts one transaction. An aborted sweep rolls back its page and
    * retries on the next tick. An aborted extension answers 500 ({@code INTERNAL_ERROR},

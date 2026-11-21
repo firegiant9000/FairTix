@@ -249,9 +249,11 @@ class ConfirmedHoldExpiryIT extends PostgresIT {
 
   /**
    * The extension reaches the hold row first: it holds that row lock while it
-   * waits for the seat, the sweep (which read the seat's old version) queues
-   * behind it, and after the extension commits the sweep fails on the bumped seat
-   * version and rolls back. The hold stays CONFIRMED with its new expiry.
+   * waits for the seat, and the sweep's conditional update queues behind it. After
+   * the extension commits, the update re-checks the row, finds the hold no longer
+   * expired and skips it, so neither side fails. (Before #318 the sweep wrote the
+   * whole row and only the bumped seat version rolled it back.) The hold stays
+   * CONFIRMED with its new expiry.
    */
   @Test
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
@@ -266,7 +268,10 @@ class ConfirmedHoldExpiryIT extends PostgresIT {
     assertThat(jdbcTemplate.queryForObject(
         "SELECT expires_at > now() + interval '9 minutes' FROM seat_holds WHERE id = ?",
         Boolean.class, hold.getId())).isTrue();
-    assertThat(failures).singleElement().isInstanceOf(ObjectOptimisticLockingFailureException.class);
+    assertThat(failures).isEmpty();
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'EXPIRE' AND resource_id = ?",
+        Integer.class, hold.getId())).isZero();
   }
 
   /**
