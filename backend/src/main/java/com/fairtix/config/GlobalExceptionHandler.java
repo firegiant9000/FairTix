@@ -451,15 +451,31 @@ public class GlobalExceptionHandler {
   /**
    * A deadlock ({@code 40P01}) or other row-lock failure. PostgreSQL has already rolled
    * the transaction back, so nothing was changed and a retry is safe (#317). Warn, no
-   * stack trace: two transactions meeting is expected, not a server fault.
+   * stack trace: two transactions meeting is expected, not a server fault. The SQLState
+   * tells a deadlock from a serialization failure ({@code 40001}).
+   *
+   * <p>The JPA types arrive untranslated when a service locks through the
+   * {@code EntityManager} directly (Spring translates only repository calls).
    */
-  @ExceptionHandler(PessimisticLockingFailureException.class)
+  @ExceptionHandler({PessimisticLockingFailureException.class,
+      jakarta.persistence.PessimisticLockException.class,
+      jakarta.persistence.LockTimeoutException.class})
   public ResponseEntity<Map<String, Object>> handlePessimisticLock(
-      PessimisticLockingFailureException ex, HttpServletRequest req) {
-    log.warn("Pessimistic lock failure on {}: {}", req.getRequestURI(),
-        ex.getClass().getSimpleName());
+      RuntimeException ex, HttpServletRequest req) {
+    log.warn("Pessimistic lock failure on {}: {} sqlState={}", req.getRequestURI(),
+        ex.getClass().getSimpleName(), sqlState(ex));
     return error(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION",
         "The resource was modified by another request; reload and try again", req);
+  }
+
+  /** The first SQLState in the cause chain, or {@code null}. Codes only, never a message. */
+  private static String sqlState(Throwable ex) {
+    for (Throwable t = ex; t != null; t = t.getCause() == t ? null : t.getCause()) {
+      if (t instanceof java.sql.SQLException sql && sql.getSQLState() != null) {
+        return sql.getSQLState();
+      }
+    }
+    return null;
   }
 
   @ExceptionHandler(LockBusyException.class)
