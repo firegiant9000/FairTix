@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 
+import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
@@ -96,6 +97,24 @@ class MailFailureLogsNoAddressTest {
     passwordResetService.requestReset(user.getEmail());
 
     assertLoggedFailureWithoutAddress(user);
+  }
+
+  /** The unknown-account branch logs at debug; staging runs with debug on. Review finding. */
+  @Test
+  void passwordResetForUnknownAddress_logsNoAddress() {
+    String unknown = UUID.randomUUID() + "@maillog.test";
+    capture(PasswordResetService.class);
+    Level before = capturedLogger.getLevel();
+    capturedLogger.setLevel(Level.DEBUG);
+    try {
+      passwordResetService.requestReset(unknown);
+    } finally {
+      capturedLogger.setLevel(before);
+    }
+
+    List<String> lines = logs.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+    assertThat(lines).anySatisfy(line -> assertThat(line).contains("unknown or deleted"));
+    assertThat(lines).noneSatisfy(line -> assertThat(line).containsIgnoringCase(unknown));
   }
 
   private void failMailTo(User user) {

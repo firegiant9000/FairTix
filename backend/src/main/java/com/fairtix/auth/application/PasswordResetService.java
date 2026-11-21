@@ -91,7 +91,8 @@ public class PasswordResetService {
 
         // Return silently if user doesn't exist or is deleted — don't leak email existence
         if (user == null || user.isDeleted()) {
-            log.debug("Password reset requested for unknown or deleted email={}", email);
+            // No address: staging logs at debug, and this one may belong to a deleted account.
+            log.debug("Password reset requested for an unknown or deleted account");
             return;
         }
 
