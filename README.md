@@ -113,7 +113,7 @@ forward-only Flyway migrations under `backend/src/main/resources/db/migration`
 
 | Layer | Choice |
 | --- | --- |
-| Backend | Java 21, Spring Boot 4.0, Spring Security, Spring Data JPA |
+| Backend | Java 21, Spring Boot 4.1, Spring Security, Spring Data JPA |
 | Database | PostgreSQL 16, Flyway migrations |
 | Cache and coordination | Redis 7 via Redisson |
 | Payments | Stripe (checkout and signed webhooks), disabled by default |

@@ -8,7 +8,7 @@ Team: group
 # Stack
 
 Languages: Java 21 (backend), JavaScript (frontend)
-Frameworks: Spring Boot 4.0.8, React 18.2 (Create React App)
+Frameworks: Spring Boot 4.1.3, React 18.2 (Create React App)
 Data layer: PostgreSQL 16 via JPA/Hibernate + Flyway migrations (seat holds live here, as rows under pessimistic row locks); Redis 7 via Redisson for the waiting-room queue, rate limiting and login throttling
 Auth: JWT (JJWT 0.13.0) via HttpOnly cookies; /auth/me for user hydration
 Deployment: Docker Compose (local/dev); GitHub Actions CI with Trivy + OWASP checks
