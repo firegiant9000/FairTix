@@ -364,7 +364,9 @@ public class EventService {
       notificationGate.sendEmail(user.getId(), NotificationCategory.EVENT_CANCELLED,
           user.getEmail(), "Event Cancelled: " + eventTitle, body);
     } catch (Exception ex) {
-      log.warn("Failed to send cancellation email to {}: {}", user.getEmail(), ex.getMessage());
+      // User id and exception type only: a mail failure's message can quote the address.
+      log.warn("Failed to send cancellation email to user {}: {}", user.getId(),
+          ex.getClass().getSimpleName());
     }
   }
 

@@ -107,7 +107,9 @@ public class AuthService {
       }
     } catch (Exception e) {
       // Don't fail registration if email delivery fails; the user can resend.
-      log.error("Failed to send verification email userId={} error={}", user.getId(), e.getMessage());
+      // Exception type only: a mail failure's message can quote the address.
+      log.error("Failed to send verification email userId={} error={}", user.getId(),
+          e.getClass().getSimpleName());
     }
 
     return jwtService.generateToken(
