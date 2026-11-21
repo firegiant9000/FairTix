@@ -5,6 +5,7 @@ import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.organizations.application.PublicEndpoint;
 import com.fairtix.payments.application.StripeConnectService;
+import com.fairtix.payments.infrastructure.StripeWebhookEventRepository;
 import com.fairtix.reports.application.PayoutReportService;
 import com.stripe.exception.SignatureVerificationException;
 import com.stripe.model.Account;
@@ -29,6 +30,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -44,6 +46,9 @@ public class StripeConnectWebhookController {
 
   private static final Logger log = LoggerFactory.getLogger(StripeConnectWebhookController.class);
   private static final UUID SYSTEM_ACTOR = new UUID(0L, 0L);
+  private static final Set<String> HANDLED_TYPES = Set.of(
+      "account.updated", "account.application.deauthorized", "payout.paid", "payout.failed",
+      "charge.dispute.created");
 
   @Value("${stripe.enabled:false}")
   private boolean stripeEnabled;
@@ -58,15 +63,18 @@ public class StripeConnectWebhookController {
   private final StripeConnectService connectService;
   private final AuditService auditService;
   private final PayoutReportService payoutReportService;
+  private final StripeWebhookEventRepository webhookEventRepository;
 
   public StripeConnectWebhookController(OrganizationRepository organizationRepository,
                                         StripeConnectService connectService,
                                         AuditService auditService,
-                                        PayoutReportService payoutReportService) {
+                                        PayoutReportService payoutReportService,
+                                        StripeWebhookEventRepository webhookEventRepository) {
     this.organizationRepository = organizationRepository;
     this.connectService = connectService;
     this.auditService = auditService;
     this.payoutReportService = payoutReportService;
+    this.webhookEventRepository = webhookEventRepository;
   }
 
   /**
@@ -99,13 +107,28 @@ public class StripeConnectWebhookController {
       return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
     }
 
+    if (!HANDLED_TYPES.contains(event.getType())) {
+      log.debug("Unhandled Stripe Connect webhook type: {}", event.getType());
+      return ResponseEntity.ok().build();
+    }
+
+    // Same ledger as the platform webhook (Stripe event ids are unique across both), in
+    // this transaction and before the handling: a redelivered event finds its row and is
+    // not processed again; if the handling fails, the row rolls back with it and Stripe's
+    // retry is processed. The handlers audit with logInCurrentTransaction for the same reason.
+    if (webhookEventRepository.insertIfAbsent(event.getId(), event.getType()) == 0) {
+      log.info("Stripe Connect webhook {} ({}) was already processed; redelivery ignored",
+          event.getId(), event.getType());
+      return ResponseEntity.ok().build();
+    }
+
     switch (event.getType()) {
       case "account.updated" -> handleAccountUpdated(event);
       case "account.application.deauthorized" -> handleAccountDeauthorized(event);
       case "payout.paid" -> handlePayout(event, "STRIPE_PAYOUT_PAID");
       case "payout.failed" -> handlePayoutFailed(event);
       case "charge.dispute.created" -> handleDisputeCreated(event);
-      default -> log.debug("Unhandled Stripe Connect webhook type: {}", event.getType());
+      default -> throw new IllegalStateException("Unreachable: " + event.getType());
     }
     return ResponseEntity.ok().build();
   }
@@ -115,7 +138,7 @@ public class StripeConnectWebhookController {
         organizationRepository.findByStripeConnectAccountId(account.getId()).ifPresent(org -> {
           connectService.applyAccountState(org, account);
           organizationRepository.save(org);
-          auditService.log(SYSTEM_ACTOR, "STRIPE_ACCOUNT_UPDATED", "ORGANIZATION", org.getId(),
+          auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_ACCOUNT_UPDATED", "ORGANIZATION", org.getId(),
               "charges=" + org.isStripeChargesEnabled()
                   + " payouts=" + org.isStripePayoutsEnabled()
                   + " disabledReason=" + org.getStripeDisabledReason());
@@ -132,7 +155,7 @@ public class StripeConnectWebhookController {
       org.setStripePayoutsEnabled(false);
       org.setStripeDisabledReason("account_deauthorized");
       organizationRepository.save(org);
-      auditService.log(SYSTEM_ACTOR, "STRIPE_ACCOUNT_DEAUTHORIZED", "ORGANIZATION", org.getId(),
+      auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_ACCOUNT_DEAUTHORIZED", "ORGANIZATION", org.getId(),
           "stripe_account=" + accountId);
     });
   }
@@ -142,7 +165,7 @@ public class StripeConnectWebhookController {
       Organization org = orgForEvent(event);
       if (org == null) return;
       payoutReportService.syncPayout(org.getId(), payout);
-      auditService.log(SYSTEM_ACTOR, auditAction, "ORGANIZATION", org.getId(),
+      auditService.logInCurrentTransaction(SYSTEM_ACTOR, auditAction, "ORGANIZATION", org.getId(),
           "payout=" + payout.getId() + " amount=" + payout.getAmount()
               + " currency=" + payout.getCurrency()
               + " status=" + payout.getStatus());
@@ -154,7 +177,7 @@ public class StripeConnectWebhookController {
       Organization org = orgForEvent(event);
       if (org == null) return;
       payoutReportService.syncPayout(org.getId(), payout);
-      auditService.log(SYSTEM_ACTOR, "STRIPE_PAYOUT_FAILED", "ORGANIZATION", org.getId(),
+      auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_PAYOUT_FAILED", "ORGANIZATION", org.getId(),
           "payout=" + payout.getId()
               + " failureCode=" + payout.getFailureCode()
               + " failureMessage=" + payout.getFailureMessage());
@@ -175,12 +198,12 @@ public class StripeConnectWebhookController {
       if (amount >= disputeFreezeThresholdCents) {
         org.setStripePayoutsFrozen(true);
         organizationRepository.save(org);
-        auditService.log(SYSTEM_ACTOR, "STRIPE_DISPUTE_FROZE_PAYOUTS", "ORGANIZATION", org.getId(),
+        auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_DISPUTE_FROZE_PAYOUTS", "ORGANIZATION", org.getId(),
             detail + " threshold=" + disputeFreezeThresholdCents);
         log.warn("Froze payouts for org {} after dispute {} ({} cents)",
             org.getId(), dispute.getId(), amount);
       } else {
-        auditService.log(SYSTEM_ACTOR, "STRIPE_DISPUTE_CREATED", "ORGANIZATION", org.getId(), detail);
+        auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_DISPUTE_CREATED", "ORGANIZATION", org.getId(), detail);
       }
     });
   }

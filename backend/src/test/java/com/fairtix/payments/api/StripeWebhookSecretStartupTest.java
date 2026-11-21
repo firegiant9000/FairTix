@@ -68,7 +68,8 @@ class StripeWebhookSecretStartupTest {
   private StripeConnectWebhookController connect(boolean enabled, String secret) {
     StripeConnectWebhookController controller = new StripeConnectWebhookController(
         mock(OrganizationRepository.class), mock(StripeConnectService.class),
-        mock(AuditService.class), mock(PayoutReportService.class));
+        mock(AuditService.class), mock(PayoutReportService.class),
+        mock(StripeWebhookEventRepository.class));
     ReflectionTestUtils.setField(controller, "stripeEnabled", enabled);
     ReflectionTestUtils.setField(controller, "webhookSecret", secret);
     return controller;
