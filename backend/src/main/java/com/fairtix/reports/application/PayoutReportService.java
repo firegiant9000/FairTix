@@ -130,11 +130,13 @@ public class PayoutReportService {
           arrival, paidAt, failureCode, failureMessage, raw));
     });
 
+    // In the caller's transaction (both callers have one): from the Connect webhook, the audit
+    // row then commits or rolls back with the payout row and the event-ledger row.
     if ("paid".equals(status)) {
-      audit.log(null, "STRIPE_PAYOUT_PAID", "ORGANIZATION", orgId,
+      audit.logInCurrentTransaction(null, "STRIPE_PAYOUT_PAID", "ORGANIZATION", orgId,
           "payout=" + stripeId + " amount=" + amount);
     } else if ("failed".equals(status)) {
-      audit.log(null, "STRIPE_PAYOUT_FAILED", "ORGANIZATION", orgId,
+      audit.logInCurrentTransaction(null, "STRIPE_PAYOUT_FAILED", "ORGANIZATION", orgId,
           "payout=" + stripeId + " code=" + failureCode);
     }
   }

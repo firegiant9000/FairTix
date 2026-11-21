@@ -61,6 +61,7 @@ All backend variables are loaded from `.env` at the project root. Frontend varia
 | `STRIPE_ENABLED` | No | `false` | Enable Stripe payments | See `docs/stripe-setup.md` |
 | `STRIPE_SECRET_KEY` | If enabled | `` | Stripe secret key (`sk_test_…` or `sk_live_…`) | Stripe Dashboard → Developers → API keys |
 | `STRIPE_WEBHOOK_SECRET` | If enabled | `` | Stripe webhook signing secret (`whsec_…`) | `stripe listen` output or Stripe Dashboard |
+| `STRIPE_CONNECT_WEBHOOK_SECRET` | If enabled | `` | Signing secret of the Connect webhook endpoint (`/api/webhooks/stripe-connect`), separate from the one above | Stripe Dashboard → Developers → Webhooks, endpoint listening to connected accounts |
 | `CORS_ALLOWED_ORIGINS` | Prod only | `http://localhost:3000,http://localhost:5173` | Comma-separated list of allowed CORS origins | Set to your Netlify URL, e.g. `https://fairtix.netlify.app` |
 | `SPRING_PROFILES_ACTIVE` | Prod only | `` | Active Spring profile | Set to `prod` in production to disable payment simulation and enforce secure cookies |
 
