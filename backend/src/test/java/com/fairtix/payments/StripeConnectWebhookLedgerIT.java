@@ -146,7 +146,9 @@ class StripeConnectWebhookLedgerIT extends PostgresIT {
     int auditRows = count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_PAYOUT_PAID'");
     deliver(payload).andExpect(status().isOk());
 
-    assertThat(auditRows).isPositive();
+    // Two rows per processed delivery: the controller and PayoutReportService.syncPayout each
+    // audit STRIPE_PAYOUT_PAID (pre-existing duplication, left as is).
+    assertThat(auditRows).isEqualTo(2);
     assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_PAYOUT_PAID'"))
         .isEqualTo(auditRows);
     assertThat(count("SELECT COUNT(*) FROM stripe_webhook_events"
