@@ -77,7 +77,9 @@ public class QueueAdmissionScheduler {
                             user.getEmail(), "You're admitted — " + eventTitle, body);
                 });
             } catch (Exception ex) {
-                log.warn("Failed to send queue admission email for user {}: {}", entry.getUserId(), ex.getMessage());
+                // Exception type only: a mail failure's message can quote the address.
+                log.warn("Failed to send queue admission email for user {}: {}", entry.getUserId(),
+                        ex.getClass().getSimpleName());
             }
         }
     }

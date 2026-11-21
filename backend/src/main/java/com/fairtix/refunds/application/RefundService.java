@@ -486,7 +486,9 @@ public class RefundService {
       notificationGate.sendEmail(user.getId(), NotificationCategory.REFUND,
           user.getEmail(), "Your FairTix refund has been initiated", body);
     } catch (Exception ex) {
-      log.warn("Failed to send refund-initiated email for refund {}: {}", refund.getId(), ex.getMessage());
+      // Exception type only: a mail failure's message can quote the address.
+      log.warn("Failed to send refund-initiated email for refund {}: {}", refund.getId(),
+          ex.getClass().getSimpleName());
     }
   }
 
@@ -499,7 +501,9 @@ public class RefundService {
       notificationGate.sendEmail(user.getId(), NotificationCategory.REFUND,
           user.getEmail(), "Your FairTix refund has been processed", body);
     } catch (Exception ex) {
-      log.warn("Failed to send refund-completed email for refund {}: {}", refund.getId(), ex.getMessage());
+      // Exception type only: a mail failure's message can quote the address.
+      log.warn("Failed to send refund-completed email for refund {}: {}", refund.getId(),
+          ex.getClass().getSimpleName());
     }
   }
 
