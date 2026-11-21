@@ -9,7 +9,9 @@ and Stripe payments with verified webhooks.
 
 > **Status:** University team project (Spring 2026) that I continued through
 > milestones M1 to M8 after the course. It runs end to end locally with Docker
-> Compose. It has never been deployed to production and has no live users.
+> Compose. Apart from a course-demo deployment on free Railway and Netlify tiers
+> in April 2026, now unmaintained, it has never been deployed and has no live
+> users.
 > Stripe and reCAPTCHA are integrated but disabled by default.
 >
 > **Direction (2026-09):** FairTix is a technical showcase, not a business. It
@@ -259,8 +261,9 @@ surefire, 249 failsafe and 202 frontend tests, with no failures.
 
 ## Known limitations
 
-- **Never deployed.** No real traffic, no production hardening beyond the
-  above, and no penetration test.
+- **Not in production.** Beyond the spring 2026 course demo, no deployment,
+  no real traffic, no production hardening beyond the above, and no
+  penetration test.
 - **Single instance only.** The waiting room's SSE registry is a per-JVM map
   (`QueueSseService`), and the `@Scheduled` jobs
   (`grep -rn "@Scheduled(" backend/src/main/java` lists them) run on every
