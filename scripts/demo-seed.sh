@@ -10,22 +10,35 @@
 #   ./scripts/demo-seed.sh           # seed users + print IDs
 #   ./scripts/demo-seed.sh reset     # release seats + delete demo holds/tickets/orders
 #   ./scripts/demo-seed.sh ids       # just print IDs
+#
+# Env: API (default http://localhost:8080), PG_CONTAINER (default fairtix-postgres).
+# A non-localhost API needs DEMO_SEED_ALLOW_REMOTE=1 and an explicit PG_CONTAINER; only for
+# a private, throwaway stack whose database runs in a container on this machine.
 
 set -euo pipefail
 
 API="${API:-http://localhost:8080}"
 API="${API%/}"
-PG_CONTAINER="${PG_CONTAINER:-fairtix-postgres}"
 
 # The demo accounts have a fixed, published password (one of them is ADMIN), so never
 # create them on anything reachable from outside this machine.
 # Anchored, so http://localhost:8080@evil.com and http://localhost.evil.com don't match.
-if [[ ! "${API}" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]+)?$ ]] \
-    && [[ "${DEMO_SEED_ALLOW_REMOTE:-}" != "1" ]]; then
-  echo "Refusing to seed ${API}: demo accounts use a fixed password." >&2
-  echo "Set DEMO_SEED_ALLOW_REMOTE=1 only for a private, throwaway environment." >&2
-  exit 1
+if [[ ! "${API}" =~ ^http://(localhost|127\.0\.0\.1)(:[0-9]+)?$ ]]; then
+  if [[ "${DEMO_SEED_ALLOW_REMOTE:-}" != "1" ]]; then
+    echo "Refusing to seed ${API}: demo accounts use a fixed password." >&2
+    echo "Set DEMO_SEED_ALLOW_REMOTE=1 only for a private, throwaway environment." >&2
+    exit 1
+  fi
+  # Every SQL step runs through `docker exec` on this machine, so it can only reach a
+  # Postgres container here. Defaulting to this machine's own stack would register the
+  # users at ${API} but verify, promote and seed them in a different database, and still
+  # report success. A hosted database (Railway, Neon) has no container here: not supported.
+  if [[ -z "${PG_CONTAINER:-}" ]]; then
+    echo "Refusing to seed ${API} without PG_CONTAINER: name the container on this machine that holds that API's database." >&2
+    exit 1
+  fi
 fi
+PG_CONTAINER="${PG_CONTAINER:-fairtix-postgres}"
 
 # Load DB creds from .env
 set -a; source .env; set +a

@@ -73,7 +73,12 @@ curl -H "Cookie: fairtix_token=..." https://api.staging.fairtix.io/_health/deep
 # expect: per-component status with stripe livemode=false
 ```
 
-Run `scripts/demo-seed.sh` against the staging API to seed demo users + events.
+Don't run `scripts/demo-seed.sh` against staging. Its demo accounts have a fixed, published
+password (one is ADMIN), and its SQL steps only reach a Postgres container on your own machine,
+not staging's hosted database; the script refuses a remote API without `PG_CONTAINER` for that
+reason. Create staging's first admin as described in
+[DEPLOY.md, "Accounts and the first admin"](../DEPLOY.md#accounts-and-the-first-admin). Flyway
+still adds V27's demo events; V29's need a user to exist when it runs, so staging won't have them.
 
 ## Recurring operations
 
@@ -89,7 +94,7 @@ export STAGING_DB_URL='postgresql://user:pw@host:port/fairtix_staging'
 
 The script refuses unless `STAGING_DB_URL` contains the literal substring `staging` — last-ditch guard against pointing it at prod by accident.
 
-After the schema is dropped, restart the Railway backend service so Flyway re-applies migrations against the fresh schema, then re-run `scripts/demo-seed.sh`.
+After the schema is dropped, restart the Railway backend service so Flyway re-applies migrations against the fresh schema, then create the first admin again as in the smoke-test step above.
 
 ### Cookie domain decision (open)
 
