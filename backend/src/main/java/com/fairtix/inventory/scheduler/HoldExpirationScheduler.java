@@ -125,10 +125,16 @@ public class HoldExpirationScheduler {
         }
         expiredHolds.add(hold);
         Seat seat = hold.getSeat();
+        String seatOutcome;
         if (seat.getStatus() == SeatStatus.HELD) {
           seat.setStatus(SeatStatus.AVAILABLE);
           seatsToRelease.add(seat);
+          seatOutcome = " returned to AVAILABLE";
+        } else {
+          seatOutcome = " left " + seat.getStatus();
         }
+        auditService.logInCurrentTransaction(hold.getOwnerId(), "EXPIRE", "HOLD", hold.getId(),
+            "Expired ACTIVE hold; seat " + seat.getId() + seatOutcome);
       }
 
       // Holds were written above by conditional update; the loaded copies are stale and
