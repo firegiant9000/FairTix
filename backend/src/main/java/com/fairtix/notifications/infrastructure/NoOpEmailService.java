@@ -10,6 +10,7 @@ public class NoOpEmailService implements EmailService {
 
     @Override
     public void sendEmail(String to, String subject, String htmlBody) {
-        log.debug("Email suppressed (fairtix.mail.enabled is off): subject=\"{}\"", subject);
+        // No subject: a support-ticket subject is the user's own text (see SmtpEmailService).
+        log.debug("Email suppressed (fairtix.mail.enabled is off)");
     }
 }
