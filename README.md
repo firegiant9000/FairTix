@@ -178,6 +178,10 @@ proxies API calls to :8080:
 cd frontend/webpages && npm install && npm start
 ```
 
+Open it at `http://localhost:3000`. The backend checks the browser's origin,
+and `127.0.0.1` or a LAN address is rejected unless it is added to
+`APP_CORS_ALLOWED_ORIGINS`.
+
 | Service | URL |
 | --- | --- |
 | Frontend (`npm start`) | http://localhost:3000 |
@@ -191,7 +195,10 @@ the backend is up: it registers three synthetic accounts,
 `admin@fairtix.demo` (ADMIN), `userA@fairtix.demo` and `userB@fairtix.demo`,
 with a fixed, published password, and refuses any API other than localhost
 unless `DEMO_SEED_ALLOW_REMOTE=1` is set (don't). The demo events come from
-Flyway migrations. For any
+Flyway migrations, but V29 seeds nothing on a database that has no users yet,
+which is every fresh stack. The script re-runs it once the accounts exist. If
+the demo data can only be repaired by rebuilding the database, it prints
+warnings and exits non-zero. For any
 other environment, register an account and promote it with one SQL update, as
 described in [DEPLOY.md](DEPLOY.md); later admins are promoted from the admin
 UI. The walkthrough is in [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md).
