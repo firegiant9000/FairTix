@@ -37,6 +37,13 @@ USER_A_EMAIL="userA@fairtix.demo"
 USER_B_EMAIL="userB@fairtix.demo"
 PASSWORD="Demo#2026!"
 
+# Every WARN bumps this; a seed run that warned still prints the IDs, then exits 1.
+WARNINGS=0
+warn() {
+  echo "  WARN: $*" >&2
+  WARNINGS=$((WARNINGS + 1))
+}
+
 register() {
   local email="$1"
   local code
@@ -48,7 +55,7 @@ register() {
   elif [[ "$code" == "409" || "$code" == "400" ]]; then
     echo "  ${email} already exists (${code}) — skipping"
   else
-    echo "  WARN: register ${email} returned ${code}"
+    warn "register ${email} returned ${code}"
   fi
 }
 
@@ -126,33 +133,32 @@ SQL
 # by their real names, so any other re-run would duplicate events or bring back real venue
 # names that V55 can no longer rename. Those cases need a fresh database.
 REBUILD_HINT="rebuild the demo database (docker compose down -v, then up; this deletes ALL local database data) and run this again"
-echo "3/3  Ensuring demo events exist (re-run V27/V29, then V55, inline if missing) …"
-RESEEDED=0
+echo "3/3  Ensuring demo events exist (re-run V27/V29 inline if missing, then V55) …"
 V27_COUNT=$(${PSQL} -c "SELECT COUNT(*) FROM events WHERE title IN ('Jazz Fest 2026','Houston Rodeo Night','Saints vs Panthers','Crescent Jazz Weekend','Gulf Coast Rodeo Night','Bayou Pelicans vs Harbor Foxes');")
 V27_RENAMED=$(${PSQL} -c "SELECT COUNT(*) FROM venues WHERE name IN ('Crescent Demo Arena','Bayou Demo Center','Riverfront Demo Dome');")
 if [[ "${V27_COUNT}" -eq 0 && "${V27_RENAMED}" -eq 0 ]]; then
   echo "  V27 events missing. Re-running V27 inline…"
   ${PSQL} < backend/src/main/resources/db/migration/V27__seed_demo_events.sql
-  RESEEDED=1
 elif [[ "${V27_COUNT}" -lt 3 ]]; then
-  echo "  WARN: ${V27_COUNT} of 3 V27 demo events exist and re-seeding would duplicate events or restore real names; ${REBUILD_HINT}." >&2
+  warn "${V27_COUNT} of 3 V27 demo events exist and re-seeding would duplicate events or restore real names; ${REBUILD_HINT}."
 fi
 V29_COUNT=$(${PSQL} -c "SELECT COUNT(*) FROM events WHERE title IN ('Taylor Swift — Eras Tour Finale','Beyoncé Renaissance Tour','Coachella Day 1 — Headliner Stage','Comedy Cellar — Late Show','Nova Lane - Arena Tour Finale','The Velvet Static - Live','Sunfield Festival - Day 1','Basement Comedy - Late Show');")
 V29_RENAMED=$(${PSQL} -c "SELECT COUNT(*) FROM venues WHERE name IN ('Midtown Demo Garden','Harbor Demo Stadium','Sunfield Demo Grounds','The Demo Basement');")
 if [[ "${V29_COUNT}" -eq 0 && "${V29_RENAMED}" -eq 0 ]]; then
   echo "  V29 events missing. Re-running V29 inline…"
   ${PSQL} < backend/src/main/resources/db/migration/V29__seed_extra_demo_events.sql
-  RESEEDED=1
 elif [[ "${V29_COUNT}" -lt 4 ]]; then
-  echo "  WARN: ${V29_COUNT} of 4 V29 demo events exist and re-seeding would duplicate events or restore real names; ${REBUILD_HINT}." >&2
+  warn "${V29_COUNT} of 4 V29 demo events exist and re-seeding would duplicate events or restore real names; ${REBUILD_HINT}."
 fi
-if [[ "${RESEEDED}" -eq 1 ]]; then
-  echo "  Renaming the re-seeded events and venues (V55 inline)…"
-  ${PSQL} < backend/src/main/resources/db/migration/V55__fictional_demo_seed_names.sql
-fi
-REAL_VENUES=$(${PSQL} -c "SELECT COUNT(*) FROM venues WHERE name IN ('Smoothie King Center','Toyota Center','Caesars Superdome','Madison Square Garden','SoFi Stadium','Empire Polo Club','Comedy Cellar');")
+# Every run, not only after a re-seed: V55 is idempotent, and this retries a rename that
+# failed on an earlier run after its re-seed had already committed.
+echo "  Renaming seed events and venues (V55 inline)…"
+${PSQL} < backend/src/main/resources/db/migration/V55__fictional_demo_seed_names.sql
+# Matched by name and address like V55, so an organizer's own venue that shares a name with
+# a seed venue doesn't count.
+REAL_VENUES=$(${PSQL} -c "SELECT COUNT(*) FROM venues v JOIN (VALUES ('Smoothie King Center','1501 Dave Dixon Dr'),('Toyota Center','1510 Polk St'),('Caesars Superdome','1500 Sugar Bowl Dr'),('Madison Square Garden','4 Pennsylvania Plaza'),('SoFi Stadium','1001 S Stadium Dr'),('Empire Polo Club','81-800 Avenue 51'),('Comedy Cellar','117 MacDougal St')) AS seed(name, address) ON v.name = seed.name AND v.address = seed.address;")
 if [[ "${REAL_VENUES}" -gt 0 ]]; then
-  echo "  WARN: ${REAL_VENUES} venue(s) still use a real seeded name. V55 leaves a seed venue alone while a non-seed event uses it, so check which events use them; otherwise ${REBUILD_HINT}." >&2
+  warn "${REAL_VENUES} seed venue(s) still have their real name and address. V55 leaves a seed venue alone while a non-seed event uses it, so check which events use them; otherwise ${REBUILD_HINT}."
 fi
 
 print_ids
@@ -166,3 +172,9 @@ Done. Login with any of these in the UI (no MailHog click needed):
 
 Between rehearsals, run:  ./scripts/demo-seed.sh reset
 EOF
+
+if [[ "${WARNINGS}" -gt 0 ]]; then
+  echo >&2
+  echo "Finished with ${WARNINGS} warning(s); see WARN lines above." >&2
+  exit 1
+fi
