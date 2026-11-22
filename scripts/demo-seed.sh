@@ -152,7 +152,7 @@ if [[ "${RESEEDED}" -eq 1 ]]; then
 fi
 REAL_VENUES=$(${PSQL} -c "SELECT COUNT(*) FROM venues WHERE name IN ('Smoothie King Center','Toyota Center','Caesars Superdome','Madison Square Garden','SoFi Stadium','Empire Polo Club','Comedy Cellar');")
 if [[ "${REAL_VENUES}" -gt 0 ]]; then
-  echo "  WARN: ${REAL_VENUES} venue(s) still use a real seeded name; ${REBUILD_HINT}." >&2
+  echo "  WARN: ${REAL_VENUES} venue(s) still use a real seeded name. V55 leaves a seed venue alone while a non-seed event uses it, so check which events use them; otherwise ${REBUILD_HINT}." >&2
 fi
 
 print_ids

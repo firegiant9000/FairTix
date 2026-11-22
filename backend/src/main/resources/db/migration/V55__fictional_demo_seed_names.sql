@@ -2,11 +2,14 @@
 -- venues, to fictional names, so nothing suggests they endorse or use FairTix. Seats,
 -- prices, caps, queue flags, cities and map coordinates are unchanged.
 --
--- Only seed rows change: an event must still have its seeded title at its seeded venue, and
--- a venue its seeded name and address. An organizer's own event or venue that happens to
--- share a name is left alone. A venue is skipped if its new name is already taken (names
--- are unique). On a database already renamed by hand, or one without the seed rows, nothing
--- matches and nothing changes.
+-- Only seed-shaped rows change: an event must still have its seeded title at a venue with its
+-- seeded name and address, and a venue its seeded name and address. An organizer's event or
+-- venue that merely shares a name is left alone. A seed venue is also skipped while any
+-- event that is not a seed event uses it, since venues are global. The one case this cannot
+-- tell apart: an organizer's event with exactly a seed title at exactly a seed venue and
+-- address is renamed with the seed. A venue is skipped if its new name is already taken
+-- (names are unique). On a database already renamed by hand, or one without the seed rows,
+-- nothing matches and nothing changes.
 --
 -- scripts/demo-seed.sh re-runs V27/V29 when their events are missing (V29 seeds nothing on
 -- a database with no users yet) and then re-runs this file, so it must stay idempotent.
@@ -46,4 +49,16 @@ UPDATE venues v
   FROM renames r
  WHERE v.name = r.old_name
    AND v.address = r.old_address
-   AND NOT EXISTS (SELECT 1 FROM venues taken WHERE taken.name = r.new_name);
+   AND NOT EXISTS (SELECT 1 FROM venues taken WHERE taken.name = r.new_name)
+   -- Venues are global, so skip a seed venue that any non-seed event uses. The events above
+   -- are renamed first, so the seed events carry their new titles here; both sets are listed.
+   AND NOT EXISTS (
+       SELECT 1 FROM events e
+        WHERE e.venue_id = v.id
+          AND e.title NOT IN (
+              'Jazz Fest 2026', 'Houston Rodeo Night', 'Saints vs Panthers',
+              'Taylor Swift — Eras Tour Finale', 'Beyoncé Renaissance Tour',
+              'Coachella Day 1 — Headliner Stage', 'Comedy Cellar — Late Show',
+              'Crescent Jazz Weekend', 'Gulf Coast Rodeo Night', 'Bayou Pelicans vs Harbor Foxes',
+              'Nova Lane - Arena Tour Finale', 'The Velvet Static - Live',
+              'Sunfield Festival - Day 1', 'Basement Comedy - Late Show'));

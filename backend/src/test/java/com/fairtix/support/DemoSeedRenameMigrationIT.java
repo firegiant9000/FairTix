@@ -92,6 +92,40 @@ class DemoSeedRenameMigrationIT extends PostgresIT {
     assertThat(eventTitles()).containsExactlyInAnyOrderElementsOf(NEW_TITLES);
   }
 
+  /** Names alone are not enough: a seed name at a different address is somebody else's venue. */
+  @Test
+  void aSeedNamedVenueAtAnotherAddressAndItsSeedTitledEventKeepTheirNames() {
+    seedWithAnOrganizer();
+    scratchJdbc.update("UPDATE venues SET address = '9 Elsewhere Rd' WHERE name = 'Toyota Center'");
+
+    migrateTo("55");
+
+    assertThat(scratchJdbc.queryForObject("SELECT address FROM venues WHERE name = 'Toyota Center'",
+        String.class)).isEqualTo("9 Elsewhere Rd");
+    assertThat(eventTitles()).contains("Houston Rodeo Night").doesNotContain("Gulf Coast Rodeo Night");
+    assertThat(venueNames()).doesNotContain("Bayou Demo Center");
+  }
+
+  /** Venues are global: a seed venue that a non-seed event uses must not be renamed under it. */
+  @Test
+  void aSeedVenueUsedByANonSeedEventKeepsItsNameAndAddress() {
+    seedWithAnOrganizer();
+    UUID garden = scratchJdbc.queryForObject("SELECT id FROM venues WHERE name = 'Madison Square Garden'",
+        UUID.class);
+    UUID organizerEvent = copyEventTo("Jazz Fest 2026", garden, "Organizer Gig");
+
+    migrateTo("55");
+
+    assertThat(scratchJdbc.queryForObject("SELECT address FROM venues WHERE id = ?", String.class, garden))
+        .isEqualTo("4 Pennsylvania Plaza");
+    assertThat(scratchJdbc.queryForObject("SELECT name FROM venues WHERE id = ?", String.class, garden))
+        .isEqualTo("Madison Square Garden");
+    assertThat(scratchJdbc.queryForObject("SELECT title FROM events WHERE id = ?", String.class, organizerEvent))
+        .isEqualTo("Organizer Gig");
+    assertThat(venueNames()).contains("Crescent Demo Arena", "Bayou Demo Center")
+        .doesNotContain("Midtown Demo Garden");
+  }
+
   /** The demo-seed.sh path: V29 seeds nothing before any user exists, so the script re-runs it. */
   @Test
   void reseedingV29AfterV55AndRerunningV55LeavesNoRealNames() throws IOException {
@@ -128,10 +162,15 @@ class DemoSeedRenameMigrationIT extends PostgresIT {
 
   /** A non-seed event: a copy of a seed event, with a new id, at another venue. */
   private UUID copyEventTo(String title, UUID venueId) {
+    return copyEventTo(title, venueId, title);
+  }
+
+  private UUID copyEventTo(String title, UUID venueId, String newTitle) {
     UUID id = UUID.randomUUID();
     scratchJdbc.update("INSERT INTO events SELECT (jsonb_populate_record(e,"
-            + " jsonb_build_object('id', ?::text, 'venue_id', ?::text))).* FROM events e WHERE e.title = ?",
-        id.toString(), venueId.toString(), title);
+            + " jsonb_build_object('id', ?::text, 'venue_id', ?::text, 'title', ?::text))).*"
+            + " FROM events e WHERE e.title = ?",
+        id.toString(), venueId.toString(), newTitle, title);
     return id;
   }
 
