@@ -56,6 +56,7 @@ class SecurityHeadersTest {
   @Test
   void apiDocs_haveNoCsp_butKeepReferrerPolicy() throws Exception {
     mockMvc.perform(get("/v3/api-docs"))
+        .andExpect(status().isOk())
         .andExpect(header().doesNotExist("Content-Security-Policy"))
         .andExpect(header().string("Referrer-Policy", "strict-origin-when-cross-origin"));
   }

@@ -254,6 +254,10 @@ docker push your-registry/fairtix-backend:latest
 
 ---
 
+## API Docs in Production
+
+Swagger UI (`/swagger-ui.html`) and the OpenAPI spec (`/v3/api-docs`) are disabled under the `prod` profile and return 404. Dev and staging still serve them.
+
 ## Health Checks
 
 The backend exposes readiness via the `/auth/me` endpoint:

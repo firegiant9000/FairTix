@@ -3,6 +3,8 @@
 > **Base URL:** `http://localhost:8080`
 > **Interactive docs:** `http://localhost:8080/swagger-ui.html`
 > **OpenAPI spec:** `http://localhost:8080/v3/api-docs`
+> Swagger UI and the OpenAPI spec are disabled under the `prod` profile (404); dev and
+> staging still serve them.
 
 > **This is a partial, hand-written overview** of the core buyer flow (auth, events,
 > seats, holds, payments, orders, tickets, transfers, refunds, the queue and the
