@@ -1,5 +1,7 @@
 # -------- Build Stage --------
-FROM maven:3.9.9-eclipse-temurin-21 AS build
+# The Maven wrapper (.mvn/wrapper/maven-wrapper.properties) is on 3.10.1. Docker Hub has
+# no maven:3.10.1 image yet, so this uses 3.10.0; move to 3.10.1 when the tag ships.
+FROM maven:3.10.0-eclipse-temurin-21 AS build
 WORKDIR /app
 
 # Copy only the pom first (dependency layer)
