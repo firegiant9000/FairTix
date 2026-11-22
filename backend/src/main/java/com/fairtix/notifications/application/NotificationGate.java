@@ -43,6 +43,7 @@ public class NotificationGate {
             return;
         }
         emailService.sendEmail(to, subject, body);
+        log.info("Notification sent requestId={} userId={} category={}", MDC.get("requestId"), userId, category);
     }
 
     private void logSuppressed(UUID userId, NotificationCategory category, String reason) {
