@@ -75,6 +75,18 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, UUID> {
   int endConfirmedHoldIfStillExpired(@Param("id") UUID id, @Param("newStatus") HoldStatus newStatus,
       @Param("cutoff") Instant cutoff);
 
+  /**
+   * ACTIVE-hold sweep: marks one hold EXPIRED, only if it is still ACTIVE and still
+   * expired before {@code now} in the database. Returns 0 when a confirm, release or
+   * checkout committed after the sweep read the hold; the sweep then leaves the hold and
+   * its seat alone. Writes {@code status} only.
+   */
+  @Modifying
+  @Query("UPDATE SeatHold h SET h.status = com.fairtix.inventory.domain.HoldStatus.EXPIRED"
+      + " WHERE h.id = :id AND h.status = com.fairtix.inventory.domain.HoldStatus.ACTIVE"
+      + " AND h.expiresAt < :now")
+  int expireActiveHoldIfStillExpired(@Param("id") UUID id, @Param("now") Instant now);
+
   /** Payment-intent extension: re-reads the database after the seat locks are taken. */
   @Query("SELECT COUNT(h) FROM SeatHold h WHERE h.id IN :ids AND h.status = :status"
       + " AND h.seat.status = :seatStatus")

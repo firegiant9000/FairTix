@@ -77,6 +77,29 @@ public class HoldExpirationScheduler {
     this.auditService = auditService;
   }
 
+  /**
+   * Expires ACTIVE holds past their expiry and returns their HELD seats to AVAILABLE.
+   *
+   * <p>Each hold is ended by a conditional update that re-checks, in the database, that
+   * it is still ACTIVE and still expired; the loaded entities are never written back. A
+   * {@code confirmHold} at the expiry boundary keeps the hold's original expiry, so the
+   * page can still list the hold as ACTIVE after the confirm commits. Before, the sweep
+   * then wrote back the stale row as EXPIRED, and when it read the seat after the
+   * confirm (BOOKED, new version) the seat-version check did not catch it, leaving a
+   * BOOKED seat with no live hold. Now the update finds no ACTIVE row and the sweep
+   * leaves hold and seat alone. If the sweep read the seat before the confirm, it still
+   * loses on {@code Seat.@Version} and the page rolls back, as before. Holds are handled
+   * in id order, so the sweep takes hold-row locks in a fixed order, like the
+   * CONFIRMED sweep.
+   *
+   * <p>Lock order: the sweep holds its hold-row locks for the whole loop and takes
+   * seat-row locks at the commit flush (hold, then seat). {@code confirmHold} and
+   * {@code releaseHold} write seat and hold together at their own flush, so if one of
+   * them flushes the seat first while this sweep holds that hold, PostgreSQL detects a
+   * deadlock and aborts one side. Either way the end state is consistent: an aborted
+   * sweep rolls back its page and retries next tick; an aborted user request rolls back
+   * and is answered by the pessimistic-lock handler (#317).
+   */
   @Scheduled(fixedDelayString = "${holds.cleanup.interval-ms:30000}")
   @Transactional
   public void expireHolds() {
@@ -84,8 +107,9 @@ public class HoldExpirationScheduler {
     try {
       // Always query page 0: after mutation the ACTIVE items disappear from the
       // result set, so a subsequent run naturally picks up the next batch.
+      Instant now = Instant.now();
       Page<SeatHold> batch = seatHoldRepository.findAllByStatusAndExpiresAtBefore(
-          HoldStatus.ACTIVE, Instant.now(), PageRequest.of(0, PAGE_SIZE));
+          HoldStatus.ACTIVE, now, PageRequest.of(0, PAGE_SIZE, Sort.by("id")));
 
       if (batch.isEmpty()) {
         return;
@@ -94,7 +118,11 @@ public class HoldExpirationScheduler {
       List<Seat> seatsToRelease = new ArrayList<>();
       List<SeatHold> expiredHolds = new ArrayList<>();
       for (SeatHold hold : batch.getContent()) {
-        hold.setStatus(HoldStatus.EXPIRED);
+        if (seatHoldRepository.expireActiveHoldIfStillExpired(hold.getId(), now) == 0) {
+          log.info("ACTIVE hold {} changed after the sweep read it (confirmed or ended); left as is",
+              hold.getId());
+          continue;
+        }
         expiredHolds.add(hold);
         Seat seat = hold.getSeat();
         if (seat.getStatus() == SeatStatus.HELD) {
@@ -103,7 +131,8 @@ public class HoldExpirationScheduler {
         }
       }
 
-      seatHoldRepository.saveAll(expiredHolds);
+      // Holds were written above by conditional update; the loaded copies are stale and
+      // must not be saved (that would write back the status the sweep read).
       seatRepository.saveAll(seatsToRelease);
 
       List<SeatHold> toEmail = List.copyOf(expiredHolds);
