@@ -263,7 +263,9 @@ public class HoldExpirationScheduler {
       notificationGate.sendEmail(user.getId(), NotificationCategory.HOLD_EXPIRING,
           user.getEmail(), "Your held seat has been released — " + eventTitle, body);
     } catch (Exception ex) {
-      log.warn("Failed to send hold expiry email for hold {}: {}", hold.getId(), ex.getMessage());
+      // Exception type only: a mail failure's message can quote the address.
+      log.warn("Failed to send hold expiry email for hold {}: {}", hold.getId(),
+          ex.getClass().getSimpleName());
     }
   }
 }

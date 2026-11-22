@@ -276,12 +276,16 @@ public class OrderService {
             notificationGate.sendEmail(userId, NotificationCategory.ORDER,
                 toEmail, "Your FairTix order is confirmed!", body);
           } catch (Exception ex) {
-            log.warn("Failed to send order confirmation email for order {}: {}", orderId, ex.getMessage());
+            // Exception type only: a mail failure's message can quote the address.
+            log.warn("Failed to send order confirmation email for order {}: {}", orderId,
+                ex.getClass().getSimpleName());
           }
         }
       });
     } catch (Exception ex) {
-      log.warn("Failed to prepare order confirmation email for order {}: {}", order.getId(), ex.getMessage());
+      // Full stack trace: this block only reads entities and builds strings; it sends no
+      // mail, so its exceptions can't quote an address, and nothing else logs them.
+      log.warn("Failed to prepare order confirmation email for order {}", order.getId(), ex);
     }
   }
 

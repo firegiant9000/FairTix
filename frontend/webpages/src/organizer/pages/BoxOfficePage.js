@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -137,14 +137,6 @@ function Floor({ orgId, session, onClose }) {
   }, [orgId, session.id]);
 
   useEffect(() => { reload(); }, [reload]);
-
-  const total = useMemo(() => {
-    if (!selectedEvent) return 0;
-    // Total is reflected on the server; this is a UI estimate. The Chip labels
-    // include the per-seat price, so we sum from the SeatPicker's view via the
-    // map data on the client.
-    return null;
-  }, [selectedEvent, selectedSeats]);
 
   const toggle = (seatId) => {
     setSelectedSeats((s) => (s.includes(seatId) ? s.filter((x) => x !== seatId) : [...s, seatId]));
