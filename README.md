@@ -228,9 +228,9 @@ surefire, 249 failsafe and 202 frontend tests, with no failures.
 - Every secret comes from `.env` (gitignored). `.env.example` holds names and
   placeholders only.
 - Stripe webhooks are rejected (400) unless the signature verifies against
-  `STRIPE_WEBHOOK_SECRET`. With Stripe off, or enabled with no secret set, the
-  endpoint answers 200 and processes nothing, so events sent to it are lost
-  rather than retried; the backend warns about the missing secret at startup.
+  `STRIPE_WEBHOOK_SECRET` (payments) or `STRIPE_CONNECT_WEBHOOK_SECRET` (Connect
+  accounts). With `stripe.enabled=true`, the backend refuses to start if either
+  secret is blank. With Stripe off, both endpoints answer 200 and process nothing.
 - Rate limits, login-attempt tracking, reCAPTCHA and step-up challenges are
   the abuse controls. None of this has been penetration tested.
 - Step-up verification is a reCAPTCHA check. With reCAPTCHA off (the
@@ -298,19 +298,7 @@ surefire, 249 failsafe and 202 frontend tests, with no failures.
 - With Redis down, the rate limiter fails closed (503) on the credential
   endpoints (login, registration, verification, password reset, step-up) and
   open everywhere else.
-- **Open defects.** The first two were found by reading the code; neither has
-  been reproduced or seen in a test.
-  - A payment's hold extension and the sweep of expired confirmed holds lock
-    hold rows in no fixed order, so they can deadlock when they share two or
-    more holds. PostgreSQL aborts one; if it is the extension, the customer
-    gets a 500 where a retryable 409 belongs. Nothing is changed or charged
-    ([#317](https://github.com/firegiant9000/FairTix/issues/317)).
-  - That sweep writes back the whole hold row it read. If a hold already past
-    its grace period is extended in the short gap between the sweep reading
-    the hold and reading its seat, the sweep can still expire it and free the
-    seat while the customer is paying; the charge would then go to the manual
-    refund path
-    ([#318](https://github.com/firegiant9000/FairTix/issues/318)).
+- **Open defects.**
   - After-commit mail still holds the request's database connection while
     SMTP runs.
   - Cancelling a large event is slow (minutes for a few thousand tickets in a
