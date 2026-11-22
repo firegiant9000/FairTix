@@ -24,7 +24,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -33,6 +36,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Client mistakes reach the client as 4xx with the usual JSON body, and are
@@ -141,6 +145,28 @@ class GlobalExceptionHandlerClientErrorTest {
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.code").value("INVALID_PARAMETER"))
         .andExpect(jsonPath("$.message").value(not(containsString("not-a-uuid"))));
+  }
+
+  /**
+   * An unmapped path is a 404 with the generic body, not the catch-all 500.
+   * Called directly: standalone MockMvc does not raise NoResourceFoundException
+   * for an unknown path.
+   */
+  @Test
+  void unmappedGetPath_is404NotFoundAndLoggedAtWarn() {
+    var req = new MockHttpServletRequest("GET", "/no-such-path-xyz");
+
+    var response = new GlobalExceptionHandler().handleNoResource(
+        new NoResourceFoundException(HttpMethod.GET, "/no-such-path-xyz", "No static resource"),
+        req);
+
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(response.getBody())
+        .containsEntry("code", "NOT_FOUND")
+        .containsEntry("message", "Not found");
+    assertThat(logs.list)
+        .as("an unmapped path is logged without a stack trace")
+        .allMatch(e -> e.getThrowableProxy() == null);
   }
 
   record Item(@NotNull String name) {}
