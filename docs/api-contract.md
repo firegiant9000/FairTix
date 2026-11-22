@@ -293,7 +293,7 @@ Endpoints for accessing purchased tickets.
   "orderId": "d4e5f6a7-b8c9-0123-defa-234567890123",
   "eventId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "eventTitle": "Summer Music Festival",
-  "eventVenue": "Madison Square Garden",
+  "eventVenue": "Midtown Demo Garden",
   "eventStartTime": "2026-07-15T19:00:00Z",
   "seatId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
   "seatSection": "Floor",

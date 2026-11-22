@@ -10,7 +10,7 @@ import java.util.UUID;
 public record VenueResponse(
         @Schema(description = "Venue ID")
         UUID id,
-        @Schema(description = "Venue name", example = "Madison Square Garden")
+        @Schema(description = "Venue name", example = "Midtown Demo Garden")
         String name,
         @Schema(description = "Street address")
         String address,

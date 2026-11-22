@@ -36,7 +36,7 @@ public record AnalyticsResponse(
 
     @Schema(description = "Event count grouped by venue")
     public record VenueCount(
-            @Schema(example = "Madison Square Garden") String venue,
+            @Schema(example = "Midtown Demo Garden") String venue,
             @Schema(example = "12") long count) {
     }
 
