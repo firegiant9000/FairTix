@@ -225,7 +225,8 @@ class SecurityAcceptanceTest {
 
       mockMvc.perform(get("/api/holds/{id}", hold.getId())
               .with(WithMockPrincipal.user(otherUser.getId(), otherUser.getEmail())))
-          .andExpect(status().isNotFound());
+          .andExpect(status().isNotFound())
+          .andExpect(jsonPath("$.code").value("HOLD_NOT_FOUND"));
     }
 
     @Test
@@ -242,7 +243,8 @@ class SecurityAcceptanceTest {
 
       mockMvc.perform(post("/api/holds/{id}/confirm", hold.getId())
               .with(WithMockPrincipal.user(otherUser.getId(), otherUser.getEmail())))
-          .andExpect(status().isNotFound());
+          .andExpect(status().isNotFound())
+          .andExpect(jsonPath("$.code").value("HOLD_NOT_FOUND"));
     }
 
     @Test
@@ -259,7 +261,8 @@ class SecurityAcceptanceTest {
 
       mockMvc.perform(post("/api/holds/{id}/release", hold.getId())
               .with(WithMockPrincipal.user(otherUser.getId(), otherUser.getEmail())))
-          .andExpect(status().isNotFound());
+          .andExpect(status().isNotFound())
+          .andExpect(jsonPath("$.code").value("HOLD_NOT_FOUND"));
     }
 
     @Test

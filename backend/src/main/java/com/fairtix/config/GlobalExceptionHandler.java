@@ -57,6 +57,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
@@ -497,6 +498,14 @@ public class GlobalExceptionHandler {
         ex.getMostSpecificCause().getClass().getSimpleName());
     return error(HttpStatus.CONFLICT, "DATA_CONFLICT",
         "The request conflicts with the current state of the data", req);
+  }
+
+  /** A path nothing serves (e.g. springdoc's, when disabled) is a 404, not the catch-all 500. */
+  @ExceptionHandler(NoResourceFoundException.class)
+  public ResponseEntity<Map<String, Object>> handleNoResource(
+      NoResourceFoundException ex, HttpServletRequest req) {
+    logClientError(ex, req);
+    return error(HttpStatus.NOT_FOUND, "NOT_FOUND", "Not found", req);
   }
 
   @ExceptionHandler(Exception.class)
