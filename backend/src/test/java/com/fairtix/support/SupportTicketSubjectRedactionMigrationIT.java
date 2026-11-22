@@ -39,26 +39,26 @@ class SupportTicketSubjectRedactionMigrationIT extends PostgresIT {
   @Test
   void rewritesMatchingRowsAndLeavesEverythingElseAlone() {
     UUID ticket = UUID.randomUUID();
-    jdbc.update("INSERT INTO support_tickets (id, user_id, subject, category) VALUES (?, ?, ?, 'BILLING')",
+    jdbc.update("INSERT INTO support_tickets (id, user_id, subject, category) VALUES (?, ?, ?, 'REFUND')",
         ticket, user, "my secret subject");
     UUID withTicket = audit("CREATE", "SUPPORT_TICKET", ticket, "subject=my secret subject");
     UUID noTicket = audit("CREATE", "SUPPORT_TICKET", UUID.randomUUID(), "subject=orphan subject");
     UUID nullResource = audit("CREATE", "SUPPORT_TICKET", null, "subject=null resource");
     UUID otherAction = audit("UPDATE", "SUPPORT_TICKET", ticket, "subject=other action");
     UUID otherType = audit("CREATE", "ORDER", ticket, "subject=other type");
-    UUID otherDetails = audit("CREATE", "SUPPORT_TICKET", ticket, "category=BILLING");
+    UUID otherDetails = audit("CREATE", "SUPPORT_TICKET", ticket, "category=REFUND");
     UUID nullDetails = audit("CREATE", "SUPPORT_TICKET", ticket, null);
     UUID midDetails = audit("CREATE", "SUPPORT_TICKET", ticket, "x subject=mid");
     Map<String, Object> before = row(withTicket);
 
     runMigration();
 
-    assertThat(details(withTicket)).isEqualTo("category=BILLING");
+    assertThat(details(withTicket)).isEqualTo("category=REFUND");
     assertThat(details(noTicket)).isEqualTo("subject=[redacted]");
     assertThat(details(nullResource)).isEqualTo("subject=[redacted]");
     assertThat(details(otherAction)).isEqualTo("subject=other action");
     assertThat(details(otherType)).isEqualTo("subject=other type");
-    assertThat(details(otherDetails)).isEqualTo("category=BILLING");
+    assertThat(details(otherDetails)).isEqualTo("category=REFUND");
     assertThat(details(nullDetails)).isNull();
     assertThat(details(midDetails)).isEqualTo("x subject=mid");
 
