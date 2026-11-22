@@ -27,9 +27,19 @@ and Stripe payments with verified webhooks.
 > [rollout runbook](docs/runbooks/cap-queue-rollout.md)). Neither is a
 > production performance figure.
 
-<!-- Screenshots: docs/screenshots/ does not exist yet. Capture the event page,
-     the waiting room, the seat map with a live hold, and the organizer
-     settlement view, then link them here. -->
+## Screenshots
+
+From a local Docker Compose run with synthetic demo accounts and data: Stripe
+off, payment simulated by the dev profile. Event and venue names are fictional.
+
+![Event listing with seeded demo events and per-person purchase limits](docs/screenshots/01-event-listing.png)
+
+| | |
+| --- | --- |
+| ![Waiting room showing queue position](docs/screenshots/02-waiting-room.png) | ![My Holds with a confirmed seat hold](docs/screenshots/03-seat-hold.png) |
+| **Waiting room.** A queue-gated event. Position updates arrive over Server-Sent Events; a scheduler admits fans in batches. | **Seat hold.** Holds are created under PostgreSQL row locks, so two buyers can't hold the same seat; an unpurchased hold expires. |
+| ![Checkout with simulated payment form](docs/screenshots/04-checkout.png) | ![Order confirmed page](docs/screenshots/05-order-confirmed.png) |
+| **Checkout.** The dev-profile payment simulation; no Stripe call is made. | **Order confirmed.** Tickets issued for the held seat. |
 
 ## Engineering highlights
 
