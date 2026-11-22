@@ -3,6 +3,8 @@ package com.fairtix.organizations.application;
 import java.util.Map;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
@@ -20,6 +22,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 @Component
 public class OrgScopeInterceptor implements HandlerInterceptor {
 
+  private static final Logger log = LoggerFactory.getLogger(OrgScopeInterceptor.class);
   private static final String HEADER = "X-Organization-Id";
 
   private final OrganizationService orgService;
@@ -70,8 +73,11 @@ public class OrgScopeInterceptor implements HandlerInterceptor {
         permission, reason, request.getMethod(), request.getRequestURI());
     try {
       auditService.log(userId, "ORG_ACCESS_DENIED", "ORGANIZATION", orgId, details);
-    } catch (RuntimeException ignored) {
-      // Audit failure must not mask the 403 the caller is about to see.
+    } catch (RuntimeException e) {
+      // Audit failure must not mask the 403 the caller is about to see. Log it: the
+      // AUDIT: line is written only after the row commits, so this is the only trace.
+      log.warn("ORG_ACCESS_DENIED audit write failed user={} org={} permission={} reason={} error={}",
+          userId, orgId, permission, reason, e.getClass().getSimpleName());
     }
   }
 

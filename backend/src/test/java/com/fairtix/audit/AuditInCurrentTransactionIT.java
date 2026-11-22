@@ -17,10 +17,15 @@ import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.IllegalTransactionStateException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * {@link AuditService#logInCurrentTransaction} writes on the caller's connection
@@ -30,8 +35,10 @@ import org.springframework.transaction.IllegalTransactionStateException;
  * <p>Not {@code @Transactional}: every write commits, and {@link PostgresIT}
  * truncates the tables after each test.
  */
+@ExtendWith(OutputCaptureExtension.class)
 class AuditInCurrentTransactionIT extends PostgresIT {
 
+  @Autowired private PlatformTransactionManager transactionManager;
   @Autowired private AuditService auditService;
   @Autowired private SeatHoldService seatHoldService;
   @Autowired private EventRepository eventRepository;
@@ -95,6 +102,62 @@ class AuditInCurrentTransactionIT extends PostgresIT {
     assertThat(count("SELECT COUNT(*) FROM seat_holds")).isZero();
     assertThat(jdbcTemplate.queryForObject(
         "SELECT status FROM seats WHERE id = ?", String.class, seat.getId())).isEqualTo("AVAILABLE");
+  }
+
+  @Test
+  void rolledBackTransaction_leavesNoAuditRowAndNoLogLine(CapturedOutput output) {
+    String action = "LOGLINE_ROLLBACK_PROBE";
+    new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+      auditService.logInCurrentTransaction(UUID.randomUUID(), action, "TEST", UUID.randomUUID(), null);
+      status.setRollbackOnly();
+    });
+
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = '" + action + "'")).isZero();
+    assertThat(output.getAll()).doesNotContain(action);
+  }
+
+  @Test
+  void committedTransaction_leavesAuditRowAndLogLine(CapturedOutput output) {
+    String action = "LOGLINE_COMMIT_PROBE";
+    new TransactionTemplate(transactionManager).executeWithoutResult(status ->
+        auditService.logInCurrentTransaction(UUID.randomUUID(), action, "TEST", UUID.randomUUID(), null));
+
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = '" + action + "'")).isEqualTo(1);
+    assertThat(output.getAll()).contains("AUDIT: user=").contains("action=" + action);
+  }
+
+  @Test
+  void requiresNewLog_survivesOuterRollback_andLogsLine(CapturedOutput output) {
+    String action = "LOGLINE_REQUIRES_NEW_PROBE";
+    new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+      auditService.log(UUID.randomUUID(), action, "TEST", UUID.randomUUID(), null);
+      // Logged at the inner (REQUIRES_NEW) commit, before the outer transaction ends.
+      assertThat(output.getAll()).contains("action=" + action);
+      status.setRollbackOnly();
+    });
+
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = '" + action + "'")).isEqualTo(1);
+  }
+
+  /**
+   * The REQUIRES_NEW insert itself fails: no row and no AUDIT: line. (The database
+   * error Hibernate logs can quote the row's values, so match the line's own
+   * {@code action=} field rather than the bare probe string.)
+   */
+  @Test
+  void requiresNewLog_failedInsert_leavesNoRowAndNoLogLine(CapturedOutput output) {
+    String action = "LOGLINE_FAILED_INSERT_PROBE";
+    jdbcTemplate.execute(
+        "ALTER TABLE audit_logs ADD CONSTRAINT it_reject_audit CHECK (false) NOT VALID");
+    try {
+      assertThatThrownBy(() -> auditService.log(UUID.randomUUID(), action, "TEST", UUID.randomUUID(), null))
+          .isInstanceOf(RuntimeException.class);
+    } finally {
+      jdbcTemplate.execute("ALTER TABLE audit_logs DROP CONSTRAINT it_reject_audit");
+    }
+
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = '" + action + "'")).isZero();
+    assertThat(output.getAll()).doesNotContain("action=" + action);
   }
 
   private int count(String sql) {

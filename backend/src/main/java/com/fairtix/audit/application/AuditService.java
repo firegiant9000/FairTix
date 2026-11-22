@@ -2,6 +2,7 @@ package com.fairtix.audit.application;
 
 import com.fairtix.audit.domain.AuditLog;
 import com.fairtix.audit.infrastructure.AuditLogRepository;
+import com.fairtix.common.AfterCommit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -26,7 +27,8 @@ public class AuditService {
    * Writes the audit row in its own transaction, so it commits even if the
    * caller rolls back. Called from inside a transaction, this needs a second
    * pooled connection while the caller's is still held; on hot paths prefer
-   * {@link #logInCurrentTransaction}.
+   * {@link #logInCurrentTransaction}. The {@code AUDIT:} log line is written
+   * only after the audit row commits.
    */
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void log(UUID userId, String action, String resourceType, UUID resourceId, String details) {
@@ -36,7 +38,8 @@ public class AuditService {
   /**
    * Writes the audit row in the caller's transaction, on the caller's
    * connection: it commits or rolls back with the audited change, and an audit
-   * failure rolls the change back. Throws if there is no transaction.
+   * failure rolls the change back. Throws if there is no transaction. The
+   * {@code AUDIT:} log line is written only after the audit row commits.
    */
   @Transactional(propagation = Propagation.MANDATORY)
   public void logInCurrentTransaction(UUID userId, String action, String resourceType,
@@ -46,8 +49,9 @@ public class AuditService {
 
   private void save(UUID userId, String action, String resourceType, UUID resourceId, String details) {
     String requestId = MDC.get("requestId");
-    log.info("AUDIT: user={} action={} type={} resource={} details={}",
-        userId, action, resourceType, resourceId, details);
     repository.save(new AuditLog(userId, action, resourceType, resourceId, details, requestId));
+    AfterCommit.run("audit log line " + action, () ->
+        log.info("AUDIT: user={} action={} type={} resource={} details={}",
+            userId, action, resourceType, resourceId, details));
   }
 }
