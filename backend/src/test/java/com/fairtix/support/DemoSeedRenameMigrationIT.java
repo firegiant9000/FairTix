@@ -124,6 +124,10 @@ class DemoSeedRenameMigrationIT extends PostgresIT {
         .isEqualTo("Organizer Gig");
     assertThat(venueNames()).contains("Crescent Demo Arena", "Bayou Demo Center")
         .doesNotContain("Midtown Demo Garden");
+    // The seed event at the skipped venue is still renamed.
+    assertThat(scratchJdbc.queryForList("SELECT title FROM events WHERE venue_id = ?", String.class, garden))
+        .contains("Nova Lane - Arena Tour Finale")
+        .doesNotContain("Taylor Swift — Eras Tour Finale");
   }
 
   /** The demo-seed.sh path: V29 seeds nothing before any user exists, so the script re-runs it. */

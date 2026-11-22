@@ -5,9 +5,12 @@
 -- Only seed-shaped rows change: an event must still have its seeded title at a venue with its
 -- seeded name and address, and a venue its seeded name and address. An organizer's event or
 -- venue that merely shares a name is left alone. A seed venue is also skipped while any
--- event that is not a seed event uses it, since venues are global. The one case this cannot
--- tell apart: an organizer's event with exactly a seed title at exactly a seed venue and
--- address is renamed with the seed. A venue is skipped if its new name is already taken
+-- event that is not a seed event uses it, since venues are global; the seed event there is
+-- still renamed, and the venue keeps its real name. "Seed event" here means any seed title
+-- (old or new), so the cases this cannot tell apart are: an organizer's event with exactly
+-- a seed title at that title's seed venue and address is renamed with the seed, and one
+-- with any seed title at any seed venue does not stop that venue's rename. A venue is
+-- skipped if its new name is already taken
 -- (names are unique). On a database already renamed by hand, or one without the seed rows,
 -- nothing matches and nothing changes.
 --

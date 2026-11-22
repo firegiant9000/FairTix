@@ -40,7 +40,8 @@ come from Flyway (`V27__seed_demo_events.sql`, `V29__seed_extra_demo_events.sql`
 `V55__fictional_demo_seed_names.sql` gives them and their venues fictional names. V29
 seeds nothing on a database that has no users yet, so on a fresh stack the script
 re-applies V29 and then V55. V55 leaves a seed venue unrenamed while an event that is not
-a seed event uses it. No other seed step is needed.
+a seed event uses it; the seed event at that venue is still renamed. No other seed step is
+needed.
 
 Seeded events used below:
 - **Bayou Pelicans vs Harbor Foxes**: no queue, cap 6
