@@ -131,11 +131,33 @@ class AuditInCurrentTransactionIT extends PostgresIT {
     String action = "LOGLINE_REQUIRES_NEW_PROBE";
     new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
       auditService.log(UUID.randomUUID(), action, "TEST", UUID.randomUUID(), null);
+      // Logged at the inner (REQUIRES_NEW) commit, before the outer transaction ends.
+      assertThat(output.getAll()).contains("action=" + action);
       status.setRollbackOnly();
     });
 
     assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = '" + action + "'")).isEqualTo(1);
-    assertThat(output.getAll()).contains("action=" + action);
+  }
+
+  /**
+   * The REQUIRES_NEW insert itself fails: no row and no AUDIT: line. (The database
+   * error Hibernate logs can quote the row's values, so match the line's own
+   * {@code action=} field rather than the bare probe string.)
+   */
+  @Test
+  void requiresNewLog_failedInsert_leavesNoRowAndNoLogLine(CapturedOutput output) {
+    String action = "LOGLINE_FAILED_INSERT_PROBE";
+    jdbcTemplate.execute(
+        "ALTER TABLE audit_logs ADD CONSTRAINT it_reject_audit CHECK (false) NOT VALID");
+    try {
+      assertThatThrownBy(() -> auditService.log(UUID.randomUUID(), action, "TEST", UUID.randomUUID(), null))
+          .isInstanceOf(RuntimeException.class);
+    } finally {
+      jdbcTemplate.execute("ALTER TABLE audit_logs DROP CONSTRAINT it_reject_audit");
+    }
+
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = '" + action + "'")).isZero();
+    assertThat(output.getAll()).doesNotContain("action=" + action);
   }
 
   private int count(String sql) {
