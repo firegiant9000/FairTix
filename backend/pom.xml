@@ -128,7 +128,8 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
-      <version>5.14.4</version>
+      <!-- Version from Boot's junit-bom (JUnit 6), so the aggregator matches the
+           jupiter-api/engine jars it pulls in. -->
       <scope>test</scope>
     </dependency>
     <dependency>
