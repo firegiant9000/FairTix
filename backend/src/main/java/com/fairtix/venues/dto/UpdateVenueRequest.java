@@ -7,7 +7,7 @@ import jakarta.validation.constraints.NotBlank;
 
 @Schema(description = "Payload for updating a venue")
 public record UpdateVenueRequest(
-        @Schema(description = "Venue name", example = "Madison Square Garden")
+        @Schema(description = "Venue name", example = "Midtown Demo Garden")
         @NotBlank String name,
         @Schema(description = "Street address")
         String address,
