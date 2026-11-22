@@ -3,10 +3,13 @@ package com.fairtix.config;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
+import org.redisson.config.ConstantDelay;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.time.Duration;
 
 @Configuration
 public class RedisConfig {
@@ -43,7 +46,7 @@ public class RedisConfig {
               .setAddress("redis://" + redisHost + ":" + redisPort)
               .setTimeout(timeoutMs)
               .setRetryAttempts(retryAttempts)
-              .setRetryInterval(retryIntervalMs)
+              .setRetryDelay(new ConstantDelay(Duration.ofMillis(retryIntervalMs)))
               .setConnectTimeout(connectTimeoutMs);
 
         if (redisPassword != null && !redisPassword.isBlank()) {

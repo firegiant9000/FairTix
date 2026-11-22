@@ -59,7 +59,7 @@ class RedisBackedFeaturesIT extends PostgresIT {
     var server = redissonClient.getConfig().useSingleServer();
     assertThat(server.getTimeout()).as("timeout ms").isEqualTo(1000);
     assertThat(server.getRetryAttempts()).as("retry attempts").isEqualTo(1);
-    assertThat(server.getRetryInterval()).as("retry interval ms").isEqualTo(500);
+    assertThat(server.getRetryDelay().calcDelay(1).toMillis()).as("retry interval ms").isEqualTo(500);
     assertThat(server.getConnectTimeout()).as("connect timeout ms").isEqualTo(2000);
   }
 

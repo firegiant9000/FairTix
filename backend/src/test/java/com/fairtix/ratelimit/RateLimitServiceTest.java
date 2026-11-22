@@ -7,10 +7,10 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.redisson.api.RRateLimiter;
 import org.redisson.api.RedissonClient;
 import org.redisson.api.RateType;
-import org.redisson.api.RateIntervalUnit;
 import org.redisson.client.RedisException;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.Duration;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -61,7 +61,7 @@ public class RateLimitServiceTest {
         Boolean[] rest = Arrays.copyOfRange(answers, 1, answers.length);
 
         when(rateLimiter.isExists()).thenReturn(false);
-        when(rateLimiter.trySetRate(eq(RateType.OVERALL), eq((long) limit), eq(1L), eq(RateIntervalUnit.MINUTES))).thenReturn(true);
+        when(rateLimiter.trySetRate(eq(RateType.OVERALL), eq((long) limit), eq(Duration.ofMinutes(1)))).thenReturn(true);
         when(rateLimiter.tryAcquire(1)).thenReturn(answers[0], rest);
 
         for (int i = 0; i < limit; i++) {
@@ -77,13 +77,13 @@ public class RateLimitServiceTest {
         String url = "/api/events";
 
         when(rateLimiter.isExists()).thenReturn(false);
-        when(rateLimiter.trySetRate(any(), anyLong(), anyLong(), any())).thenReturn(true);
+        when(rateLimiter.trySetRate(any(), anyLong(), any(Duration.class))).thenReturn(true);
         when(rateLimiter.tryAcquire(1)).thenReturn(true, false);
         assertTrue(rateLimitService.isAllowed(userKey, url));
         assertFalse(rateLimitService.isAllowed(userKey, url));
 
         when(rateLimiter.isExists()).thenReturn(false);
-        when(rateLimiter.trySetRate(any(), anyLong(), anyLong(), any())).thenReturn(true);
+        when(rateLimiter.trySetRate(any(), anyLong(), any(Duration.class))).thenReturn(true);
         when(rateLimiter.tryAcquire(1)).thenReturn(true, false);
         assertTrue(rateLimitService.isAllowed(ipKey, url));
         assertFalse(rateLimitService.isAllowed(ipKey, url));
@@ -102,7 +102,7 @@ public class RateLimitServiceTest {
 
         rateLimitService.isAllowed("ip:1.2.3.4", "/auth/login");
 
-        verify(rateLimiter).trySetRate(RateType.OVERALL, 10L, 1L, RateIntervalUnit.MINUTES);
+        verify(rateLimiter).trySetRate(RateType.OVERALL, 10L, Duration.ofMinutes(1));
     }
 
     /**
@@ -117,7 +117,7 @@ public class RateLimitServiceTest {
             .thenReturn(true);
 
         assertTrue(rateLimitService.isAllowed("ip:1.2.3.4", "/auth/login"));
-        verify(rateLimiter, times(2)).trySetRate(RateType.OVERALL, 10L, 1L, RateIntervalUnit.MINUTES);
+        verify(rateLimiter, times(2)).trySetRate(RateType.OVERALL, 10L, Duration.ofMinutes(1));
     }
 
     @Test
