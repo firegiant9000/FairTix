@@ -132,8 +132,9 @@ class ActiveHoldSweepStaleReadIT extends PostgresIT {
           long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
           while (clearStatSnapshot() && jdbcTemplate.queryForObject(
               "SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
-                  + " AND query ILIKE 'update seat_holds%'", Integer.class) == 0) {
-            if (System.nanoTime() > deadline) {
+                  + " AND datname = current_database() AND query ILIKE 'update seat_holds%'",
+              Integer.class) == 0) {
+            if (System.nanoTime() > deadline || Thread.currentThread().isInterrupted()) {
               throw new IllegalStateException("sweep update never blocked on the hold row");
             }
             Thread.onSpinWait();
@@ -147,7 +148,10 @@ class ActiveHoldSweepStaleReadIT extends PostgresIT {
       scheduler.expireHolds();
       confirm[0].get(30, TimeUnit.SECONDS);
     } finally {
+      // Join the confirm thread so a failure here can't leave its row locks open into the
+      // after-test cleanup.
       other.shutdownNow();
+      other.awaitTermination(35, TimeUnit.SECONDS);
     }
 
     assertThat(jdbcTemplate.queryForObject(
