@@ -28,11 +28,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 
 @Service
 public class QueueService {
@@ -354,7 +354,7 @@ public class QueueService {
                 admittedSet.addAll(userIds);
                 if (refreshTtl) {
                     // TTL on the admitted set slightly longer than the admission window
-                    admittedSet.expire(admissionWindowMinutes + 1, TimeUnit.MINUTES);
+                    admittedSet.expire(Duration.ofMinutes(admissionWindowMinutes + 1));
                 }
             } catch (RuntimeException ex) {
                 log.warn("Could not add {} user(s) to the admitted set of event {}: {}",

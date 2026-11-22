@@ -47,7 +47,7 @@ public class TestRedisConfig {
     when(mock.getRateLimiter(anyString())).thenReturn(limiter);
     when(limiter.tryAcquire(1)).thenReturn(true);
     when(limiter.isExists()).thenReturn(false);
-    when(limiter.trySetRate(Mockito.any(), Mockito.anyLong(), Mockito.anyLong(), Mockito.any()))
+    when(limiter.trySetRate(Mockito.any(), Mockito.anyLong(), Mockito.any(java.time.Duration.class)))
         .thenReturn(true);
 
     // Atomic long mock for login attempt tracking

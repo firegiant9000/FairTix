@@ -6,7 +6,6 @@ import org.redisson.api.RateType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import org.redisson.api.RateIntervalUnit;
 import org.redisson.client.RedisException;
 
 import java.time.Duration;
@@ -64,7 +63,7 @@ public class RateLimitService {
         // expire in the round trip before tryAcquire, which then throws "not
         // initialized": set the rate again and retry once.
         int limit = resolveLimit(url);
-        limiter.trySetRate(RateType.OVERALL, limit, 1, RateIntervalUnit.MINUTES);
+        limiter.trySetRate(RateType.OVERALL, limit, Duration.ofMinutes(1));
         boolean allowed;
         try {
             allowed = limiter.tryAcquire(1);
@@ -72,7 +71,7 @@ public class RateLimitService {
             if (e.getMessage() == null || !e.getMessage().contains(NOT_INITIALIZED)) {
                 throw e;
             }
-            limiter.trySetRate(RateType.OVERALL, limit, 1, RateIntervalUnit.MINUTES);
+            limiter.trySetRate(RateType.OVERALL, limit, Duration.ofMinutes(1));
             allowed = limiter.tryAcquire(1);
         }
         limiter.expire(KEY_TTL);
