@@ -1,17 +1,25 @@
 package com.fairtix.notifications.application;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.notifications.domain.NotificationPreference;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -30,6 +38,8 @@ class NotificationGateTest {
   private EmailService email;
   private NotificationGate gate;
   private UUID userId;
+  private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
+  private Logger gateLogger;
 
   @BeforeEach
   void setUp() {
@@ -37,6 +47,14 @@ class NotificationGateTest {
     email = mock(EmailService.class);
     gate = new NotificationGate(prefs, email);
     userId = UUID.randomUUID();
+    gateLogger = (Logger) LoggerFactory.getLogger(NotificationGate.class);
+    logs.start();
+    gateLogger.addAppender(logs);
+  }
+
+  @AfterEach
+  void detachLogCapture() {
+    gateLogger.detachAppender(logs);
   }
 
   // ---- Transactional categories always send, no pref lookup ----
@@ -198,6 +216,44 @@ class NotificationGateTest {
     assertThat(to.getValue()).isEqualTo("alice@example.com");
     assertThat(subj.getValue()).isEqualTo("Your order is confirmed");
     assertThat(body.getValue()).isEqualTo("<p>Thanks</p>");
+  }
+
+  // ---- Sent-mail logging ----
+
+  @Test
+  void sentMailLogsCategoryWithoutAddressOrSubject() {
+    NotificationPreference p = new NotificationPreference(userId);
+    p.setEmailOrder(true);
+    when(prefs.getPreferences(userId)).thenReturn(p);
+
+    gate.sendEmail(userId, NotificationCategory.ORDER, "alice@example.com",
+        "Your order is confirmed", "<p>Thanks</p>");
+
+    List<String> sentLines = logs.list.stream()
+        .map(ILoggingEvent::getFormattedMessage)
+        .filter(m -> m.contains("Notification sent"))
+        .toList();
+    assertThat(sentLines).hasSize(1);
+    assertThat(sentLines.get(0))
+        .contains("category=ORDER")
+        .doesNotContain("alice@example.com")
+        .doesNotContain("Your order is confirmed");
+  }
+
+  @Test
+  void failedSendLogsNoNotificationSentLine() {
+    NotificationPreference p = new NotificationPreference(userId);
+    p.setEmailOrder(true);
+    when(prefs.getPreferences(userId)).thenReturn(p);
+    doThrow(new RuntimeException("smtp down"))
+        .when(email).sendEmail(anyString(), anyString(), anyString());
+
+    assertThatThrownBy(() -> gate.sendEmail(userId, NotificationCategory.ORDER,
+        "alice@example.com", "Your order is confirmed", "<p>Thanks</p>"))
+        .isInstanceOf(RuntimeException.class);
+
+    assertThat(logs.list)
+        .noneMatch(e -> e.getFormattedMessage().contains("Notification sent"));
   }
 
   // ---- helpers ----
