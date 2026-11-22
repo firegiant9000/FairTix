@@ -84,22 +84,30 @@ class MailConfigTest {
         .isEqualTo("${MAIL_ENABLED:true}");
   }
 
+  /**
+   * Neither recipient nor subject: a support-ticket subject is the user's own text
+   * (SupportTicketService), so it can carry an address or other personal data.
+   */
   @Test
-  void sendLog_omitsRecipient(CapturedOutput output) {
+  void sendLog_omitsRecipientAndSubject(CapturedOutput output) {
     JavaMailSender sender = mock(JavaMailSender.class);
     when(sender.createMimeMessage()).thenAnswer(inv -> new MimeMessage((Session) null));
     SmtpEmailService service = new SmtpEmailService(sender, "noreply@test.com");
 
-    service.sendEmail("someone.private@example.com", "Hello", "<p>hi</p>");
+    service.sendEmail("someone.private@example.com", "Ticket: call me at subject.private@example.com",
+        "<p>hi</p>");
     doThrow(new MailSendException("refused")).when(sender).send(any(MimeMessage.class));
-    assertThatThrownBy(() -> service.sendEmail("other.private@example.com", "Hello", "<p>hi</p>"))
+    assertThatThrownBy(() -> service.sendEmail("other.private@example.com",
+        "Ticket: my card ends 4242", "<p>hi</p>"))
         .isInstanceOf(RuntimeException.class);
 
     assertThat(output.getAll())
         .contains("Email sent")
         .contains("Failed to send email")
         .doesNotContain("someone.private@example.com")
-        .doesNotContain("other.private@example.com");
+        .doesNotContain("other.private@example.com")
+        .doesNotContain("subject.private@example.com")
+        .doesNotContain("ends 4242");
   }
 
   private static Properties load(String file) throws IOException {

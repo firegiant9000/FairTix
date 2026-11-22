@@ -36,11 +36,12 @@ public class SmtpEmailService implements EmailService {
                 message.setHeader("X-Request-Id", requestId);
             }
             mailSender.send(message);
-            // No recipient in logs (PII); the requestId in the log pattern correlates.
-            log.info("Email sent subject=\"{}\"", subject);
+            // No recipient and no subject in logs: a support-ticket subject is the user's own
+            // text. The requestId in the log pattern ties the line to the request that sent it.
+            log.info("Email sent");
         } catch (MessagingException | MailException e) {
             // The exception message can quote the address, so log its type only.
-            log.error("Failed to send email subject=\"{}\" error={}", subject, e.getClass().getSimpleName());
+            log.error("Failed to send email error={}", e.getClass().getSimpleName());
             throw new RuntimeException("Email delivery failed", e);
         }
     }
