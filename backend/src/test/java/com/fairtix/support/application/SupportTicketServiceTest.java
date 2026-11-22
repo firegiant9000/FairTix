@@ -12,8 +12,11 @@ import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.data.domain.Page;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 @Transactional
+@ExtendWith(OutputCaptureExtension.class)
 class SupportTicketServiceTest {
 
     @Autowired private SupportTicketService supportTicketService;
@@ -62,6 +66,17 @@ class SupportTicketServiceTest {
         assertThat(response.userId()).isEqualTo(user.getId());
         assertThat(response.messages()).hasSize(1);
         assertThat(response.messages().get(0).message()).isEqualTo("I never received my ticket.");
+    }
+
+    /** The subject is the user's own text: it must not reach the log (audit details are logged). */
+    @Test
+    void createTicket_subjectNeverLogged(CapturedOutput output) {
+        supportTicketService.createTicket(user.getId(), "Call me at subject.private@example.com",
+                TicketCategory.ORDER_ISSUE, "body", null, null);
+
+        assertThat(output.getAll())
+                .contains("SUPPORT_TICKET")
+                .doesNotContain("subject.private@example.com");
     }
 
     @Test

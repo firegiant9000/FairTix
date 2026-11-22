@@ -66,7 +66,9 @@ public class SupportTicketService {
         TicketMessage initialMessage = new TicketMessage(ticket, user, message, false);
         messageRepository.save(initialMessage);
 
-        auditService.log(userId, "CREATE", "SUPPORT_TICKET", ticket.getId(), "subject=" + subject);
+        // Category, not subject: the subject is the user's own text, and AuditService logs
+        // details at INFO. The ticket row keeps the subject.
+        auditService.log(userId, "CREATE", "SUPPORT_TICKET", ticket.getId(), "category=" + category);
 
         try {
             String html = emailTemplateService.buildTicketCreatedEmail(
