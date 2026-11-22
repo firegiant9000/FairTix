@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # FairTix demo seed — creates admin + userA + userB, marks them email-verified,
-# promotes admin role, and prints the Saints vs Panthers event/seat IDs.
+# promotes admin role, and prints the Bayou Pelicans vs Harbor Foxes event/seat IDs.
 #
 # Prereqs: docker compose stack already running and healthy.
 #   docker compose up --build -d
@@ -29,7 +29,8 @@ fi
 
 # Load DB creds from .env
 set -a; source .env; set +a
-PSQL="docker exec -i ${PG_CONTAINER} psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -At"
+# ON_ERROR_STOP makes psql exit non-zero on the first failed statement, so set -e stops here.
+PSQL="docker exec -i ${PG_CONTAINER} psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -At -v ON_ERROR_STOP=1"
 
 ADMIN_EMAIL="admin@fairtix.demo"
 USER_A_EMAIL="userA@fairtix.demo"
@@ -55,15 +56,15 @@ print_ids() {
   echo
   echo "=== Demo IDs (paste into the script / curl backups) ==="
   ${PSQL} <<'SQL'
-\echo '-- Saints vs Panthers event:'
-SELECT 'EVENT_ID=' || id FROM events WHERE title = 'Saints vs Panthers';
+\echo '-- Bayou Pelicans vs Harbor Foxes event:'
+SELECT 'EVENT_ID=' || id FROM events WHERE title = 'Bayou Pelicans vs Harbor Foxes';
 
 \echo ''
 \echo '-- Two AVAILABLE Lower Bowl A seats (use these for the hold):'
 SELECT 'SEAT_' || seat_number || '_ID=' || s.id
 FROM seats s
 JOIN events e ON e.id = s.event_id
-WHERE e.title = 'Saints vs Panthers'
+WHERE e.title = 'Bayou Pelicans vs Harbor Foxes'
   AND s.section = 'Lower Bowl'
   AND s.row_label = 'A'
   AND s.status = 'AVAILABLE'
@@ -80,12 +81,12 @@ SQL
 }
 
 reset_demo_state() {
-  echo "Resetting demo seat/hold/ticket state for Saints vs Panthers…"
+  echo "Resetting demo seat/hold/ticket state for Bayou Pelicans vs Harbor Foxes…"
   ${PSQL} <<'SQL'
 DO $$
 DECLARE v_event UUID;
 BEGIN
-  SELECT id INTO v_event FROM events WHERE title = 'Saints vs Panthers';
+  SELECT id INTO v_event FROM events WHERE title = 'Bayou Pelicans vs Harbor Foxes';
   IF v_event IS NULL THEN RAISE NOTICE 'no event found'; RETURN; END IF;
 
   DELETE FROM seat_holds WHERE seat_id IN (SELECT id FROM seats WHERE event_id = v_event);
@@ -118,16 +119,40 @@ UPDATE users SET email_verified = true
 UPDATE users SET role = 'ADMIN' WHERE email = '${ADMIN_EMAIL}';
 SQL
 
-echo "3/3  Ensuring demo events exist (re-run V27/V29 inline if missing) …"
-V27_COUNT=$(${PSQL} -c "SELECT COUNT(*) FROM events WHERE title IN ('Jazz Fest 2026','Houston Rodeo Night','Saints vs Panthers');")
-if [[ "${V27_COUNT}" -lt 3 ]]; then
-  echo "  V27 events missing (count=${V27_COUNT}). Re-running V27 inline…"
+# V29 seeds nothing on a database that had no users when it ran, so on a fresh stack it is
+# re-run here and V55 then renames what it inserted. A group is re-run only when none of its
+# events exist (counted by seeded and V55 titles) and none of its venues has been renamed:
+# V27 inserts without checking, V29 checks only the seeded titles, and both look venues up
+# by their real names, so any other re-run would duplicate events or bring back real venue
+# names that V55 can no longer rename. Those cases need a fresh database.
+REBUILD_HINT="rebuild the demo database (docker compose down -v, then up; this deletes ALL local database data) and run this again"
+echo "3/3  Ensuring demo events exist (re-run V27/V29, then V55, inline if missing) …"
+RESEEDED=0
+V27_COUNT=$(${PSQL} -c "SELECT COUNT(*) FROM events WHERE title IN ('Jazz Fest 2026','Houston Rodeo Night','Saints vs Panthers','Crescent Jazz Weekend','Gulf Coast Rodeo Night','Bayou Pelicans vs Harbor Foxes');")
+V27_RENAMED=$(${PSQL} -c "SELECT COUNT(*) FROM venues WHERE name IN ('Crescent Demo Arena','Bayou Demo Center','Riverfront Demo Dome');")
+if [[ "${V27_COUNT}" -eq 0 && "${V27_RENAMED}" -eq 0 ]]; then
+  echo "  V27 events missing. Re-running V27 inline…"
   ${PSQL} < backend/src/main/resources/db/migration/V27__seed_demo_events.sql
+  RESEEDED=1
+elif [[ "${V27_COUNT}" -lt 3 ]]; then
+  echo "  WARN: ${V27_COUNT} of 3 V27 demo events exist and re-seeding would duplicate events or restore real names; ${REBUILD_HINT}." >&2
 fi
-V29_COUNT=$(${PSQL} -c "SELECT COUNT(*) FROM events WHERE title IN ('Taylor Swift — Eras Tour Finale','Beyoncé Renaissance Tour','Coachella Day 1 — Headliner Stage','Comedy Cellar — Late Show');")
-if [[ "${V29_COUNT}" -lt 4 ]]; then
-  echo "  V29 events missing (count=${V29_COUNT}). Re-running V29 inline…"
+V29_COUNT=$(${PSQL} -c "SELECT COUNT(*) FROM events WHERE title IN ('Taylor Swift — Eras Tour Finale','Beyoncé Renaissance Tour','Coachella Day 1 — Headliner Stage','Comedy Cellar — Late Show','Nova Lane - Arena Tour Finale','The Velvet Static - Live','Sunfield Festival - Day 1','Basement Comedy - Late Show');")
+V29_RENAMED=$(${PSQL} -c "SELECT COUNT(*) FROM venues WHERE name IN ('Midtown Demo Garden','Harbor Demo Stadium','Sunfield Demo Grounds','The Demo Basement');")
+if [[ "${V29_COUNT}" -eq 0 && "${V29_RENAMED}" -eq 0 ]]; then
+  echo "  V29 events missing. Re-running V29 inline…"
   ${PSQL} < backend/src/main/resources/db/migration/V29__seed_extra_demo_events.sql
+  RESEEDED=1
+elif [[ "${V29_COUNT}" -lt 4 ]]; then
+  echo "  WARN: ${V29_COUNT} of 4 V29 demo events exist and re-seeding would duplicate events or restore real names; ${REBUILD_HINT}." >&2
+fi
+if [[ "${RESEEDED}" -eq 1 ]]; then
+  echo "  Renaming the re-seeded events and venues (V55 inline)…"
+  ${PSQL} < backend/src/main/resources/db/migration/V55__fictional_demo_seed_names.sql
+fi
+REAL_VENUES=$(${PSQL} -c "SELECT COUNT(*) FROM venues WHERE name IN ('Smoothie King Center','Toyota Center','Caesars Superdome','Madison Square Garden','SoFi Stadium','Empire Polo Club','Comedy Cellar');")
+if [[ "${REAL_VENUES}" -gt 0 ]]; then
+  echo "  WARN: ${REAL_VENUES} venue(s) still use a real seeded name. V55 leaves a seed venue alone while a non-seed event uses it, so check which events use them; otherwise ${REBUILD_HINT}." >&2
 fi
 
 print_ids
