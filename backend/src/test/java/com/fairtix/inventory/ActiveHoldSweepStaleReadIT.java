@@ -23,8 +23,10 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -35,6 +37,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * The ACTIVE-hold sweep must not expire a hold that {@code confirmHold} confirmed after
@@ -62,7 +66,100 @@ class ActiveHoldSweepStaleReadIT extends PostgresIT {
   @Autowired private SeatRepository seatRepository;
   @Autowired private UserRepository userRepository;
   @Autowired private JdbcTemplate jdbcTemplate;
+  @Autowired private PlatformTransactionManager transactionManager;
   @PersistenceContext private EntityManager entityManager;
+
+  @Test
+  void expiredActiveHold_isExpiredAudited_andSeatFreed() {
+    Event event = eventRepository.save(
+        new Event("Audit Expiry Concert", null, Instant.now().plusSeconds(86400), (UUID) null));
+    Seat seat = seatRepository.save(new Seat(event, "A", "1", "1", new BigDecimal("50.00")));
+    User buyer = newUser("audit@test.com");
+    SeatHold hold = seatHoldService.createHold(event.getId(), List.of(seat.getId()), buyer.getId(), 10)
+        .get(0);
+    jdbcTemplate.update(
+        "UPDATE seat_holds SET expires_at = now() - interval '1 second' WHERE id = ?", hold.getId());
+
+    scheduler.expireHolds();
+
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT status FROM seat_holds WHERE id = ?", String.class, hold.getId()))
+        .isEqualTo("EXPIRED");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT status FROM seats WHERE id = ?", String.class, seat.getId()))
+        .isEqualTo("AVAILABLE");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT details FROM audit_logs WHERE action = 'EXPIRE' AND resource_id = ?",
+        String.class, hold.getId()))
+        .isEqualTo("Expired ACTIVE hold; seat " + seat.getId() + " returned to AVAILABLE");
+  }
+
+  /**
+   * The confirm has flushed (it holds the hold-row lock) but not committed when the
+   * sweep's conditional update runs. The update waits on the lock; once the confirm
+   * commits, PostgreSQL re-checks the WHERE against the committed row and matches
+   * nothing, so the sweep skips the hold without an error.
+   */
+  @Test
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void confirmInFlightWhenTheSweepUpdates_sweepWaitsThenSkips() throws Exception {
+    Event event = eventRepository.save(
+        new Event("In-flight Confirm Concert", null, Instant.now().plusSeconds(86400), (UUID) null));
+    Seat seat = seatRepository.save(new Seat(event, "A", "1", "1", new BigDecimal("50.00")));
+    User buyer = newUser("inflight@test.com");
+    SeatHold hold = seatHoldService.createHold(event.getId(), List.of(seat.getId()), buyer.getId(), 10)
+        .get(0);
+    jdbcTemplate.update(
+        "UPDATE seat_holds SET expires_at = now() - interval '1 second' WHERE id = ?", hold.getId());
+
+    ExecutorService other = Executors.newSingleThreadExecutor();
+    CountDownLatch confirmHoldsLock = new CountDownLatch(1);
+    Future<?>[] confirm = new Future<?>[1];
+    try {
+      doAnswer(inv -> {
+        Page<SeatHold> page = pageQuery(inv.getArgument(0), inv.getArgument(1), inv.getArgument(2));
+        confirm[0] = other.submit(() -> new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+          // As at the boundary: confirm saw a future expiry, the hold keeps its original one.
+          jdbcTemplate.update(
+              "UPDATE seat_holds SET expires_at = now() + interval '1 minute' WHERE id = ?", hold.getId());
+          seatHoldService.confirmHold(hold.getId(), buyer.getId());
+          entityManager.flush();
+          jdbcTemplate.update(
+              "UPDATE seat_holds SET expires_at = now() - interval '1 second' WHERE id = ?", hold.getId());
+          confirmHoldsLock.countDown();
+          // Commit only once the sweep's update is blocked on this transaction's row lock.
+          // pg_stat_activity is snapshotted once per transaction; clear it before each poll.
+          long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+          while (clearStatSnapshot() && jdbcTemplate.queryForObject(
+              "SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
+                  + " AND query ILIKE 'update seat_holds%'", Integer.class) == 0) {
+            if (System.nanoTime() > deadline) {
+              throw new IllegalStateException("sweep update never blocked on the hold row");
+            }
+            Thread.onSpinWait();
+          }
+        }));
+        assertThat(confirmHoldsLock.await(30, TimeUnit.SECONDS)).isTrue();
+        return page;
+      }).when(seatHoldRepository).findAllByStatusAndExpiresAtBefore(
+          eq(HoldStatus.ACTIVE), any(Instant.class), any());
+
+      scheduler.expireHolds();
+      confirm[0].get(30, TimeUnit.SECONDS);
+    } finally {
+      other.shutdownNow();
+    }
+
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT status FROM seat_holds WHERE id = ?", String.class, hold.getId()))
+        .isEqualTo("CONFIRMED");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT status FROM seats WHERE id = ?", String.class, seat.getId()))
+        .isEqualTo("BOOKED");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'EXPIRE' AND resource_id = ?",
+        Integer.class, hold.getId())).isZero();
+  }
 
   @Test
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
@@ -122,6 +219,26 @@ class ActiveHoldSweepStaleReadIT extends PostgresIT {
     assertThat(jdbcTemplate.queryForObject(
         "SELECT status FROM seats WHERE id = ?", String.class, seat.getId()))
         .isEqualTo("BOOKED");
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'EXPIRE' AND resource_id = ?",
+        Integer.class, hold.getId())).isZero();
+  }
+
+  private boolean clearStatSnapshot() {
+    jdbcTemplate.execute("SELECT pg_stat_clear_snapshot()");
+    return true;
+  }
+
+  /** The query the derived method runs; a repository spy has no real method to call. */
+  private Page<SeatHold> pageQuery(HoldStatus status, Instant before, Pageable pageable) {
+    List<SeatHold> holds = entityManager.createQuery(
+            "SELECT h FROM SeatHold h WHERE h.status = :status AND h.expiresAt < :before"
+                + " ORDER BY h.id", SeatHold.class)
+        .setParameter("status", status)
+        .setParameter("before", before)
+        .setMaxResults(pageable.getPageSize())
+        .getResultList();
+    return new PageImpl<>(holds, pageable, holds.size());
   }
 
   private User newUser(String email) {
