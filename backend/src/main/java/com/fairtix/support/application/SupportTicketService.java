@@ -74,7 +74,9 @@ public class SupportTicketService {
             notificationGate.sendEmail(userId, NotificationCategory.SUPPORT,
                     user.getEmail(), "Support Ticket Received: " + subject, html);
         } catch (Exception e) {
-            log.warn("Failed to send ticket creation email for ticket {}: {}", ticket.getId(), e.getMessage());
+            // Exception type only: a mail failure's message can quote the address.
+            log.warn("Failed to send ticket creation email for ticket {}: {}", ticket.getId(),
+                    e.getClass().getSimpleName());
         }
 
         List<TicketMessageResponse> messages = List.of(TicketMessageResponse.from(initialMessage));
@@ -124,7 +126,9 @@ public class SupportTicketService {
             }
             // User replied — admin notification is handled via queue/dashboard; skip email to avoid spam
         } catch (Exception e) {
-            log.warn("Failed to send reply notification for ticket {}: {}", ticketId, e.getMessage());
+            // Exception type only: a mail failure's message can quote the address.
+            log.warn("Failed to send reply notification for ticket {}: {}", ticketId,
+                    e.getClass().getSimpleName());
         }
 
         return TicketMessageResponse.from(msg);
@@ -178,7 +182,9 @@ public class SupportTicketService {
             notificationGate.sendEmail(owner.getId(), NotificationCategory.SUPPORT,
                     owner.getEmail(), "Support Ticket Closed", html);
         } catch (Exception e) {
-            log.warn("Failed to send close notification for ticket {}: {}", ticketId, e.getMessage());
+            // Exception type only: a mail failure's message can quote the address.
+            log.warn("Failed to send close notification for ticket {}: {}", ticketId,
+                    e.getClass().getSimpleName());
         }
 
         return SupportTicketResponse.summary(ticket);
