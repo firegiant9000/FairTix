@@ -200,6 +200,24 @@ class RedisBackedFeaturesIT extends PostgresIT {
         .isBetween(1L, 16 * 60_000L);
   }
 
+  /** A reinstate into a set that still exists keeps the set's TTL; it doesn't extend it. */
+  @Test
+  void queueAdmission_reinstateDoesNotExtendALiveSet() {
+    Event event = queueEvent();
+    UUID reinstated = newUser("keep-ttl@test.com");
+    UUID other = newUser("keeps-set-alive@test.com");
+    queueService.joinQueue(event.getId(), reinstated);
+    queueService.joinQueue(event.getId(), other);
+    assertThat(queueService.admitNextBatch(event.getId())).hasSize(2);
+    queueService.completeQueueEntry(event.getId(), reinstated);
+    redissonClient.getSet("queue:admitted:" + event.getId()).expire(java.time.Duration.ofSeconds(60));
+
+    queueService.reinstateAfterHoldRelease(event.getId(), reinstated);
+
+    assertThat(admittedInRedis(event, reinstated)).isTrue();
+    assertThat(admittedSetTtlMillis(event)).isBetween(1L, 60_000L);
+  }
+
   private long admittedSetTtlMillis(Event event) {
     return redissonClient.getSet("queue:admitted:" + event.getId()).remainTimeToLive();
   }
