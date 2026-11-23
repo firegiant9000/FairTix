@@ -5,6 +5,7 @@ import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.payments.application.StripePaymentService.ConnectRouting;
 import com.stripe.model.Dispute;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -13,7 +14,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
- * Applies the organizer payout freeze for a new Stripe dispute.
+ * Records a new Stripe dispute against the organizer and, at or above the threshold, sets
+ * the org's {@code stripe_payouts_frozen} flag. The flag is advisory: it is shown in the
+ * Connect status, but nothing holds the connected account's payouts in Stripe.
  *
  * <p>FairTix creates destination charges ({@code on_behalf_of} +
  * {@code transfer_data.destination}). Stripe raises disputes on those against the platform
@@ -64,13 +67,12 @@ public class StripeDisputeService {
     recordDispute(org.get(), dispute);
   }
 
-  /** Freezes the org's payouts at or above the threshold; audits the dispute either way. */
+  /** Sets the advisory freeze flag at or above the threshold; audits the dispute either way. */
   public void recordDispute(Organization org, Dispute dispute) {
     long amount = amountCents(dispute);
     String detail = detail(dispute);
     if (amount >= disputeFreezeThresholdCents) {
-      org.setStripePayoutsFrozen(true);
-      organizationRepository.save(org);
+      organizationRepository.freezePayouts(org.getId(), Instant.now());
       auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_DISPUTE_FROZE_PAYOUTS", "ORGANIZATION", org.getId(),
           detail + " threshold=" + disputeFreezeThresholdCents);
       log.warn("Froze payouts for org {} after dispute {} ({} cents)", org.getId(), dispute.getId(), amount);

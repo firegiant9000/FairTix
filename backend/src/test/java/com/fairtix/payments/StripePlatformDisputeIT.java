@@ -116,6 +116,35 @@ class StripePlatformDisputeIT extends PostgresIT {
   }
 
   @Test
+  void disputeWithoutAPaymentIntent_isAuditedAsUnmatched() throws Exception {
+    String payload = """
+        { "id": "evt_no_pi", "object": "event", "type": "charge.dispute.created",
+          "api_version": "%s",
+          "data": { "object": { "id": "dp_no_pi", "object": "dispute", "amount": 10000,
+            "currency": "usd", "reason": "fraudulent", "charge": "ch_no_pi",
+            "payment_intent": null } } }
+        """.formatted(Stripe.API_VERSION);
+
+    deliver(payload).andExpect(status().isOk());
+
+    assertThat(frozen()).isFalse();
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_DISPUTE_UNMATCHED'"
+        + " AND details LIKE '%dp_no_pi%'")).isEqualTo(1);
+  }
+
+  @Test
+  void unknownDestinationAndNonUuidMetadata_isAuditedAsUnmatched() throws Exception {
+    when(stripePaymentService.connectRoutingOf("pi_junk"))
+        .thenReturn(new ConnectRouting("acct_unknown", "not-a-uuid"));
+
+    deliver(disputeEvent("evt_junk", "dp_junk", "pi_junk", 10_000)).andExpect(status().isOk());
+
+    assertThat(frozen()).isFalse();
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_DISPUTE_UNMATCHED'"
+        + " AND details LIKE '%pi_junk%'")).isEqualTo(1);
+  }
+
+  @Test
   void redeliveredDispute_isProcessedOnce() throws Exception {
     when(stripePaymentService.connectRoutingOf("pi_again"))
         .thenReturn(new ConnectRouting(ACCOUNT, org.getId().toString()));

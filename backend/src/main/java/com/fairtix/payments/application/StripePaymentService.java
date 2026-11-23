@@ -8,6 +8,7 @@ import com.stripe.Stripe;
 import com.stripe.exception.CardException;
 import com.stripe.exception.IdempotencyException;
 import com.stripe.exception.InvalidRequestException;
+import com.stripe.exception.PermissionException;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Charge;
 import com.stripe.model.PaymentIntent;
@@ -44,7 +45,13 @@ public class StripePaymentService {
   /** Online PaymentIntent metadata key carrying the user it was created for. */
   static final String USER_ID_METADATA = "fairtix_user_id";
 
-  /** {@link #isPaidBy}'s request options: fail fast rather than hold the caller's connection. */
+  /** Connect PaymentIntent metadata key carrying the organizer's org id. */
+  static final String ORG_ID_METADATA = "fairtix_org_id";
+
+  /**
+   * Request options for Stripe reads made while the caller holds a pooled DB connection
+   * ({@link #isPaidBy}, {@link #connectRoutingOf}): fail fast rather than hold it.
+   */
   static final RequestOptions PAID_CHECK_OPTIONS = RequestOptions.builder()
       .setConnectTimeout(2_000)
       .setReadTimeout(5_000)
@@ -106,7 +113,7 @@ public class StripePaymentService {
         if (suffix != null) {
           builder.setStatementDescriptorSuffix(suffix);
         }
-        builder.putMetadata("fairtix_org_id", connect.organizationId());
+        builder.putMetadata(ORG_ID_METADATA, connect.organizationId());
       }
       builder.putMetadata(CHANNEL_METADATA, "box_office");
       return PaymentIntent.create(builder.build(), keyed(idempotencyKey));
@@ -154,20 +161,38 @@ public class StripePaymentService {
 
   /**
    * Looks the intent up in Stripe and returns its Connect routing. A dispute event carries
-   * only the intent's id, so this is how the platform webhook finds the organizer. Throws if
-   * Stripe can't be reached, so the webhook fails and Stripe retries the event.
+   * only the intent's id, so this is how the platform webhook finds the organizer.
+   *
+   * <p>The webhook holds a pooled DB connection and its event-ledger row while this runs, so
+   * it uses {@link #PAID_CHECK_OPTIONS} (short timeouts, no retries). A network or API error
+   * throws, so the webhook fails and Stripe's redelivery is the retry. An intent Stripe will
+   * never return (missing, or the key can't read it) is logged and gets an empty routing, so
+   * the dispute is recorded as unmatched instead of failing on every redelivery.
    */
   public ConnectRouting connectRoutingOf(String paymentIntentId) {
     try {
-      PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId);
-      String destination = intent.getTransferData() == null
-          ? null : intent.getTransferData().getDestination();
-      String orgId = intent.getMetadata() == null ? null : intent.getMetadata().get("fairtix_org_id");
-      return new ConnectRouting(destination, orgId);
+      return routingOf(PaymentIntent.retrieve(paymentIntentId, PAID_CHECK_OPTIONS));
+    } catch (InvalidRequestException e) {
+      if (!"resource_missing".equals(e.getCode())) {
+        throw new RuntimeException("Failed to retrieve PaymentIntent " + paymentIntentId
+            + " for its Connect routing: " + e.getMessage(), e);
+      }
+      log.error("PaymentIntent {} does not exist in Stripe; its dispute has no organizer", paymentIntentId);
+      return new ConnectRouting(null, null);
+    } catch (PermissionException e) {
+      log.error("The Stripe key can't read PaymentIntent {}; its dispute has no organizer", paymentIntentId);
+      return new ConnectRouting(null, null);
     } catch (StripeException e) {
       throw new RuntimeException("Failed to retrieve PaymentIntent " + paymentIntentId
           + " for its Connect routing: " + e.getMessage(), e);
     }
+  }
+
+  static ConnectRouting routingOf(PaymentIntent intent) {
+    String destination = intent.getTransferData() == null
+        ? null : intent.getTransferData().getDestination();
+    String orgId = intent.getMetadata() == null ? null : intent.getMetadata().get(ORG_ID_METADATA);
+    return new ConnectRouting(destination, orgId);
   }
 
   /**
@@ -204,7 +229,7 @@ public class StripePaymentService {
         if (suffix != null) {
           builder.setStatementDescriptorSuffix(suffix);
         }
-        builder.putMetadata("fairtix_org_id", connect.organizationId());
+        builder.putMetadata(ORG_ID_METADATA, connect.organizationId());
       }
       PaymentIntent intent = PaymentIntent.create(builder.build(), keyed(idempotencyKey));
       return toStripeIntent(intent);

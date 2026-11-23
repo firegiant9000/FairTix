@@ -727,4 +727,51 @@ class StripePaymentServiceTest {
     return new CardException("Your card was declined.", "req_test", "card_declined", null,
         "generic_decline", null, 402, null);
   }
+
+  // ---- connectRoutingOf (dispute → organizer, issue #343) ----
+
+  /** Parsed from JSON, not mocked, so the real transfer_data and metadata accessors run. */
+  @Test
+  void routingOf_readsDestinationAndOrgMetadata() {
+    PaymentIntent intent = com.stripe.net.ApiResource.GSON.fromJson("""
+        { "id": "pi_1", "object": "payment_intent",
+          "transfer_data": { "destination": "acct_dest" },
+          "metadata": { "fairtix_org_id": "org-1" } }
+        """, PaymentIntent.class);
+
+    assertThat(StripePaymentService.routingOf(intent))
+        .isEqualTo(new StripePaymentService.ConnectRouting("acct_dest", "org-1"));
+  }
+
+  @Test
+  void routingOf_nonConnectIntent_isEmpty() {
+    PaymentIntent intent = com.stripe.net.ApiResource.GSON.fromJson(
+        "{ \"id\": \"pi_2\", \"object\": \"payment_intent\", \"metadata\": {} }", PaymentIntent.class);
+
+    assertThat(StripePaymentService.routingOf(intent))
+        .isEqualTo(new StripePaymentService.ConnectRouting(null, null));
+  }
+
+  @Test
+  void connectRoutingOf_usesTheFailFastOptions_andMissingIntentIsEmpty() {
+    InvalidRequestException missing = new InvalidRequestException("no such intent", null,
+        "req_1", "resource_missing", 404, null);
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      mocked.when(() -> PaymentIntent.retrieve("pi_gone", StripePaymentService.PAID_CHECK_OPTIONS))
+          .thenThrow(missing);
+
+      assertThat(service.connectRoutingOf("pi_gone"))
+          .isEqualTo(new StripePaymentService.ConnectRouting(null, null));
+    }
+  }
+
+  @Test
+  void connectRoutingOf_networkError_throws_soStripeRetries() {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      mocked.when(() -> PaymentIntent.retrieve("pi_down", StripePaymentService.PAID_CHECK_OPTIONS))
+          .thenThrow(new ApiConnectionException("down"));
+
+      assertThatThrownBy(() -> service.connectRoutingOf("pi_down")).isInstanceOf(RuntimeException.class);
+    }
+  }
 }
