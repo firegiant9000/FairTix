@@ -8,7 +8,6 @@ import com.stripe.Stripe;
 import com.stripe.exception.CardException;
 import com.stripe.exception.IdempotencyException;
 import com.stripe.exception.InvalidRequestException;
-import com.stripe.exception.PermissionException;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Charge;
 import com.stripe.model.PaymentIntent;
@@ -165,9 +164,10 @@ public class StripePaymentService {
    *
    * <p>The webhook holds a pooled DB connection and its event-ledger row while this runs, so
    * it uses {@link #PAID_CHECK_OPTIONS} (short timeouts, no retries). A network or API error
-   * throws, so the webhook fails and Stripe's redelivery is the retry. An intent Stripe will
-   * never return (missing, or the key can't read it) is logged and gets an empty routing, so
-   * the dispute is recorded as unmatched instead of failing on every redelivery.
+   * throws, so the webhook fails and Stripe's redelivery is the retry; that includes a key
+   * without permission to read the intent, which is a config error to fix and then replay.
+   * An intent Stripe says doesn't exist is logged and gets an empty routing, so the dispute
+   * is recorded as unmatched instead of failing on every redelivery.
    */
   public ConnectRouting connectRoutingOf(String paymentIntentId) {
     try {
@@ -178,9 +178,6 @@ public class StripePaymentService {
             + " for its Connect routing: " + e.getMessage(), e);
       }
       log.error("PaymentIntent {} does not exist in Stripe; its dispute has no organizer", paymentIntentId);
-      return new ConnectRouting(null, null);
-    } catch (PermissionException e) {
-      log.error("The Stripe key can't read PaymentIntent {}; its dispute has no organizer", paymentIntentId);
       return new ConnectRouting(null, null);
     } catch (StripeException e) {
       throw new RuntimeException("Failed to retrieve PaymentIntent " + paymentIntentId

@@ -774,4 +774,16 @@ class StripePaymentServiceTest {
       assertThatThrownBy(() -> service.connectRoutingOf("pi_down")).isInstanceOf(RuntimeException.class);
     }
   }
+
+  /** A key that can't read intents is a config error: fail, so Stripe retries once it's fixed. */
+  @Test
+  void connectRoutingOf_permissionError_throws() {
+    try (MockedStatic<PaymentIntent> mocked = Mockito.mockStatic(PaymentIntent.class)) {
+      mocked.when(() -> PaymentIntent.retrieve("pi_locked", StripePaymentService.PAID_CHECK_OPTIONS))
+          .thenThrow(new com.stripe.exception.PermissionException(
+              "restricted key", "req_2", "secret_key_required", 403));
+
+      assertThatThrownBy(() -> service.connectRoutingOf("pi_locked")).isInstanceOf(RuntimeException.class);
+    }
+  }
 }

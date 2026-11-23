@@ -29,6 +29,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.context.WebApplicationContext;
 
 /**
@@ -54,6 +57,7 @@ class StripePlatformDisputeIT extends PostgresIT {
   @Autowired private WebApplicationContext context;
   @Autowired private JdbcTemplate jdbcTemplate;
   @Autowired private OrganizationRepository organizationRepository;
+  @Autowired private PlatformTransactionManager transactionManager;
 
   @MockitoBean private StripePaymentService stripePaymentService;
 
@@ -173,6 +177,27 @@ class StripePlatformDisputeIT extends PostgresIT {
     assertThat(frozen()).isFalse();
 
     deliver(payload).andExpect(status().isOk());
+    assertThat(frozen()).isTrue();
+  }
+
+  /**
+   * Another writer (e.g. account.updated) loaded the org before the dispute froze it and
+   * saves after: its update must not put the flag back. Red before @DynamicUpdate, when a
+   * save wrote every column from the stale copy.
+   */
+  @Test
+  void freezeSurvivesAConcurrentSaveOfAnOlderCopy() {
+    TransactionTemplate outer = new TransactionTemplate(transactionManager);
+    TransactionTemplate inner = new TransactionTemplate(transactionManager);
+    inner.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+    outer.executeWithoutResult(status -> {
+      Organization stale = organizationRepository.findById(org.getId()).orElseThrow();
+      inner.executeWithoutResult(s -> organizationRepository.freezePayouts(org.getId(), Instant.now()));
+      stale.setStripeChargesEnabled(true);
+      organizationRepository.save(stale);
+    });
+
     assertThat(frozen()).isTrue();
   }
 

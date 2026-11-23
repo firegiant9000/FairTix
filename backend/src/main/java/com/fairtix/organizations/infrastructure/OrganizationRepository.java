@@ -19,8 +19,9 @@ public interface OrganizationRepository extends JpaRepository<Organization, UUID
   Optional<Organization> findByStripeConnectAccountId(String accountId);
 
   /**
-   * Sets the payout-frozen flag by itself. A full-entity save() would write every column, so
-   * a concurrent account.updated save of an older copy could put the flag back to false.
+   * Sets the payout-frozen flag by itself. With {@code @DynamicUpdate} on Organization, other
+   * writers' saves leave this column alone unless they changed it, so a concurrent save of an
+   * older copy can't put the flag back to false.
    */
   @Modifying
   @Query("UPDATE Organization o SET o.stripePayoutsFrozen = true, o.updatedAt = :now WHERE o.id = :id")

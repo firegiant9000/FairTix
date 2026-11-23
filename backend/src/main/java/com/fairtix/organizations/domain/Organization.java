@@ -8,11 +8,19 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.DynamicUpdate;
 
 import java.time.Instant;
 import java.util.UUID;
 
+/**
+ * {@code @DynamicUpdate}: a save writes only the columns that changed. Several writers load
+ * an org, call Stripe, then save (account.updated, refreshAccountStatus); without it, their
+ * update rewrote every column from the copy they loaded and could undo a concurrent
+ * {@link com.fairtix.organizations.infrastructure.OrganizationRepository#freezePayouts}.
+ */
 @Entity
+@DynamicUpdate
 @Table(name = "organizations")
 public class Organization {
 
