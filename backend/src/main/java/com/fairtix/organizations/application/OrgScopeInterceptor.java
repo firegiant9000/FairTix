@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
-import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.AsyncHandlerInterceptor;
 import org.springframework.web.servlet.HandlerMapping;
 
 import com.fairtix.audit.application.AuditService;
@@ -20,7 +20,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 @Component
-public class OrgScopeInterceptor implements HandlerInterceptor {
+public class OrgScopeInterceptor implements AsyncHandlerInterceptor {
 
   private static final Logger log = LoggerFactory.getLogger(OrgScopeInterceptor.class);
   private static final String HEADER = "X-Organization-Id";
@@ -35,15 +35,21 @@ public class OrgScopeInterceptor implements HandlerInterceptor {
 
   @Override
   public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+    // OrgContext is a thread-local on a pooled thread. Clear it first so a value left behind
+    // by an earlier request can't carry over, and set it only once the request is allowed:
+    // Spring skips afterCompletion for an interceptor whose preHandle throws.
+    OrgContext.clear();
     if (!(handler instanceof HandlerMethod method)) return true;
 
     OrgScoped scoped = method.getMethodAnnotation(OrgScoped.class);
     if (scoped == null) scoped = method.getBeanType().getAnnotation(OrgScoped.class);
 
     UUID orgId = resolveOrgId(request);
-    if (orgId != null) OrgContext.set(orgId);
 
-    if (scoped == null) return true;
+    if (scoped == null) {
+      if (orgId != null) OrgContext.set(orgId);
+      return true;
+    }
 
     UUID userId = currentUserId();
 
@@ -63,6 +69,7 @@ public class OrgScopeInterceptor implements HandlerInterceptor {
       auditDenial(userId, orgId, scoped.value(), request, "permission-denied");
       throw denied;
     }
+    OrgContext.set(orgId);
     return true;
   }
 
@@ -83,6 +90,16 @@ public class OrgScopeInterceptor implements HandlerInterceptor {
 
   @Override
   public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
+    OrgContext.clear();
+  }
+
+  /**
+   * An async request (the waiting-room stream) releases its thread here, and afterCompletion
+   * later runs on a different thread, so clear this thread's value now.
+   */
+  @Override
+  public void afterConcurrentHandlingStarted(HttpServletRequest request, HttpServletResponse response,
+                                             Object handler) {
     OrgContext.clear();
   }
 
