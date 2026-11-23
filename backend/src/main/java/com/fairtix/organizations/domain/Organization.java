@@ -14,10 +14,13 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * {@code @DynamicUpdate}: a save writes only the columns that changed. Several writers load
- * an org, call Stripe, then save (account.updated, refreshAccountStatus); without it, their
- * update rewrote every column from the copy they loaded and could undo a concurrent
+ * {@code @DynamicUpdate}: flushing a managed org writes only the columns that differ from the
+ * snapshot it was loaded with. Several writers load an org, call Stripe, then save
+ * (account.updated, refreshAccountStatus); without it, their update rewrote every column from
+ * the copy they loaded and could undo a concurrent
  * {@link com.fairtix.organizations.infrastructure.OrganizationRepository#freezePayouts}.
+ * This does not cover a detached copy passed to save() (merge compares against the current
+ * row), so don't save detached orgs; every writer today loads and saves in one transaction.
  */
 @Entity
 @DynamicUpdate
