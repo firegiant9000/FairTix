@@ -52,7 +52,8 @@ git push -u origin develop
 
 1. Stripe Dashboard → Developers → Webhooks → "Add endpoint".
 2. URL: `https://api.staging.fairtix.io/api/webhooks/stripe`.
-3. Subscribe to at least: `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.refunded`.
+3. Subscribe to at least: `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.refunded`,
+   `charge.dispute.created` (disputes on destination charges arrive here, not on the Connect endpoint).
 4. Copy the signing secret into Railway as `STRIPE_WEBHOOK_SECRET`.
 5. Add a second endpoint listening to events on connected accounts:
    `https://api.staging.fairtix.io/api/webhooks/stripe-connect`, with `account.updated`,

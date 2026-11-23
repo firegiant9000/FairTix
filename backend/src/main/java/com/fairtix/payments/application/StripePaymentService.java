@@ -145,6 +145,32 @@ public class StripePaymentService {
   }
 
   /**
+   * Where a payment's money went. {@code destinationAccountId} is the intent's
+   * {@code transfer_data.destination}; {@code organizationId} is the {@code fairtix_org_id}
+   * metadata FairTix set when it created the intent. Both are null for an intent that was
+   * not routed through Connect.
+   */
+  public record ConnectRouting(String destinationAccountId, String organizationId) {}
+
+  /**
+   * Looks the intent up in Stripe and returns its Connect routing. A dispute event carries
+   * only the intent's id, so this is how the platform webhook finds the organizer. Throws if
+   * Stripe can't be reached, so the webhook fails and Stripe retries the event.
+   */
+  public ConnectRouting connectRoutingOf(String paymentIntentId) {
+    try {
+      PaymentIntent intent = PaymentIntent.retrieve(paymentIntentId);
+      String destination = intent.getTransferData() == null
+          ? null : intent.getTransferData().getDestination();
+      String orgId = intent.getMetadata() == null ? null : intent.getMetadata().get("fairtix_org_id");
+      return new ConnectRouting(destination, orgId);
+    } catch (StripeException e) {
+      throw new RuntimeException("Failed to retrieve PaymentIntent " + paymentIntentId
+          + " for its Connect routing: " + e.getMessage(), e);
+    }
+  }
+
+  /**
    * Connect-aware PaymentIntent.
    *
    * When {@code connect} is non-null, the intent is routed to the connected
