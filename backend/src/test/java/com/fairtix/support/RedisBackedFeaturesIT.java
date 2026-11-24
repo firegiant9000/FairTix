@@ -158,6 +158,64 @@ class RedisBackedFeaturesIT extends PostgresIT {
     assertThat(queueService.isAdmitted(event.getId(), user)).isFalse();
   }
 
+  /**
+   * The admitted set outlives the admission window (queue.admission-window-minutes,
+   * 15 by default) by one minute, then Redis drops it.
+   */
+  @Test
+  void queueAdmission_admittedSetExpiresJustAfterTheWindow() {
+    Event event = queueEvent();
+    queueService.joinQueue(event.getId(), newUser("ttl@test.com"));
+
+    assertThat(queueService.admitNextBatch(event.getId())).hasSize(1);
+
+    assertThat(admittedSetTtlMillis(event)).isBetween(15 * 60_000L, 16 * 60_000L);
+  }
+
+  /**
+   * A released hold puts the user back in the admitted set. If the set's key was gone
+   * (Redis deletes an empty set, e.g. once the user's hold emptied it), that add creates
+   * a new key and it must still expire, not live forever.
+   */
+  @Test
+  void queueAdmission_reinstatedUserLandsInASetThatExpires() {
+    Event event = queueEvent();
+    UUID user = newUser("reinstate@test.com");
+    queueService.joinQueue(event.getId(), user);
+    assertThat(queueService.admitNextBatch(event.getId())).hasSize(1);
+    queueService.completeQueueEntry(event.getId(), user);
+    assertThat(redissonClient.getSet("queue:admitted:" + event.getId()).isExists())
+        .as("the set is empty, so Redis removed it").isFalse();
+
+    queueService.reinstateAfterHoldRelease(event.getId(), user);
+
+    assertThat(admittedInRedis(event, user)).isTrue();
+    assertThat(admittedSetTtlMillis(event)).as("TTL ms (-1 means no expiry)")
+        .isBetween(1L, 16 * 60_000L);
+  }
+
+  /** A reinstate into a set that still exists keeps the set's TTL; it doesn't extend it. */
+  @Test
+  void queueAdmission_reinstateDoesNotExtendALiveSet() {
+    Event event = queueEvent();
+    UUID reinstated = newUser("keep-ttl@test.com");
+    UUID other = newUser("keeps-set-alive@test.com");
+    queueService.joinQueue(event.getId(), reinstated);
+    queueService.joinQueue(event.getId(), other);
+    assertThat(queueService.admitNextBatch(event.getId())).hasSize(2);
+    queueService.completeQueueEntry(event.getId(), reinstated);
+    redissonClient.getSet("queue:admitted:" + event.getId()).expire(java.time.Duration.ofSeconds(60));
+
+    queueService.reinstateAfterHoldRelease(event.getId(), reinstated);
+
+    assertThat(admittedInRedis(event, reinstated)).isTrue();
+    assertThat(admittedSetTtlMillis(event)).isBetween(1L, 60_000L);
+  }
+
+  private long admittedSetTtlMillis(Event event) {
+    return redissonClient.getSet("queue:admitted:" + event.getId()).remainTimeToLive();
+  }
+
   private Event queueEvent() {
     Event event = new Event("Queue Concert", null, Instant.now().plusSeconds(86400), (UUID) null);
     event.updateQueueSettings(true, null);
