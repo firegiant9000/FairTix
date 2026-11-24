@@ -18,8 +18,6 @@ import com.fairtix.tickets.application.PurchaseCapGuard;
 import jakarta.transaction.Transactional;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RedissonClient;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
@@ -35,7 +33,6 @@ public class QueueService {
 
     private static final String POSITION_KEY = "queue:position:";
     private static final UUID SYSTEM = UUID.fromString("00000000-0000-0000-0000-000000000000");
-    private static final Logger log = LoggerFactory.getLogger(QueueService.class);
     private static final List<QueueStatus> REJOINABLE = List.of(QueueStatus.EXPIRED, QueueStatus.COMPLETED);
 
     private final QueueRepository queueRepository;
