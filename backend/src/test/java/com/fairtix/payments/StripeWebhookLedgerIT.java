@@ -12,6 +12,7 @@ import com.fairtix.audit.application.AuditService;
 import com.fairtix.orders.domain.Order;
 import com.fairtix.orders.domain.OrderStatus;
 import com.fairtix.orders.infrastructure.OrderRepository;
+import com.fairtix.payments.api.StripeWebhookBodyLimitFilter;
 import com.fairtix.payments.domain.PaymentRecord;
 import com.fairtix.payments.domain.PaymentStatus;
 import com.fairtix.payments.infrastructure.PaymentRecordRepository;
@@ -59,12 +60,14 @@ import org.springframework.web.context.WebApplicationContext;
  */
 @TestPropertySource(properties = {
     "stripe.enabled=true",
-    "stripe.webhook-secret=" + StripeWebhookLedgerIT.SECRET
+    "stripe.webhook-secret=" + StripeWebhookLedgerIT.SECRET,
+    "stripe.webhook-max-body-bytes=" + StripeWebhookLedgerIT.MAX_BODY_BYTES
 })
 @DirtiesContext
 class StripeWebhookLedgerIT extends PostgresIT {
 
   static final String SECRET = "whsec_ledger_test";
+  static final int MAX_BODY_BYTES = 4096;
 
   @Autowired private WebApplicationContext context;
   @Autowired private JdbcTemplate jdbcTemplate;
@@ -81,7 +84,23 @@ class StripeWebhookLedgerIT extends PostgresIT {
 
   @BeforeEach
   void setUp() {
-    mockMvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
+    // The body-limit filter is a servlet filter, which webAppContextSetup leaves out: add the
+    // context's bean so every delivery here is signature-checked against the cached body.
+    mockMvc = MockMvcBuilders.webAppContextSetup(context)
+        .addFilters(context.getBean(StripeWebhookBodyLimitFilter.class))
+        .apply(springSecurity())
+        .build();
+  }
+
+  /** A correctly signed event over the cap is refused before the controller: no ledger row. */
+  @Test
+  void signedEventOverBodyCap_isRejectedWith413() throws Exception {
+    String payload = unmatchedPaymentEvent("evt_ledger_oversized", "pi_ledger_big");
+    String padded = payload.replaceFirst("\\{", "{ " + " ".repeat(MAX_BODY_BYTES));
+
+    deliver(padded).andExpect(status().isContentTooLarge());
+
+    assertThat(count("SELECT COUNT(*) FROM stripe_webhook_events")).isZero();
   }
 
   /** Stripe delivers the same event twice: one audit row, one ledger row, both answered 200. */
