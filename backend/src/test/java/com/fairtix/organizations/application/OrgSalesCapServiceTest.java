@@ -81,6 +81,43 @@ class OrgSalesCapServiceTest {
         .isInstanceOf(SalesCapExceededException.class);
   }
 
+  /** A dispute is a ceiling, not a tier: a new org does not jump to $10k. */
+  @Test
+  void disputeOnNewOrgStaysAt1k() {
+    org.setSuccessfulPayoutCycles(0);
+    org.setDisputeCount(1);
+    when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    service.checkCanCharge(orgId, 100_000L);
+
+    assertThatThrownBy(() -> service.checkCanCharge(orgId, 100_001L))
+        .isInstanceOf(SalesCapExceededException.class);
+  }
+
+  @Test
+  void disputeOnEstablishedOrgStaysAt10k() {
+    org.setSuccessfulPayoutCycles(1);
+    org.setDisputeCount(2);
+    when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    service.checkCanCharge(orgId, 1_000_000L);
+
+    assertThatThrownBy(() -> service.checkCanCharge(orgId, 1_000_001L))
+        .isInstanceOf(SalesCapExceededException.class);
+  }
+
+  @Test
+  void disputeOnUnlimitedOrgIsCappedAt10k() {
+    org.setSuccessfulPayoutCycles(3);
+    org.setDisputeCount(1);
+    when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    service.checkCanCharge(orgId, 1_000_000L);
+
+    assertThatThrownBy(() -> service.checkCanCharge(orgId, 1_000_001L))
+        .isInstanceOf(SalesCapExceededException.class);
+  }
+
   @Test
   void overrideTakesPrecedenceWhileValid() {
     org.setSuccessfulPayoutCycles(0);

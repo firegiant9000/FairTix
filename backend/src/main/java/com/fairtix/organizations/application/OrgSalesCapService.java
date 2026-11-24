@@ -21,10 +21,12 @@ import com.fairtix.organizations.infrastructure.OrgSalesLedgerRepository;
  * <ol>
  *   <li>Admin override (organization.dailySalesCapCents non-null and
  *       planOverridesUntil in the future): use the override verbatim.</li>
- *   <li>{@code disputeCount > 0}: hold at the $10k tier until reviewed.</li>
  *   <li>{@code successfulPayoutCycles >= 3}: unlimited.</li>
  *   <li>{@code successfulPayoutCycles >= 1}: $10k/day.</li>
  *   <li>Otherwise (new org, first 30 days or zero successful cycles): $1k/day.</li>
+ *   <li>Then, if {@code disputeCount > 0}, the result is capped at $10k/day: a ceiling,
+ *       so a new org stays at $1k and an unlimited org drops to $10k. It lasts until an
+ *       admin sets an override.</li>
  * </ol>
  *
  * <p>The cap window is a rolling 24h read off the org_sales_ledger table.
@@ -101,10 +103,15 @@ public class OrgSalesCapService {
         && org.getPlanOverridesUntil().isAfter(Instant.now())) {
       return org.getDailySalesCapCents();
     }
-    if (org.getDisputeCount() > 0) return TIER_ESTABLISHED_CENTS;
     int cycles = org.getSuccessfulPayoutCycles();
-    if (cycles >= 3) return UNLIMITED;
-    if (cycles >= 1) return TIER_ESTABLISHED_CENTS;
-    return TIER_NEW_CENTS;
+    long tier;
+    if (cycles >= 3) tier = UNLIMITED;
+    else if (cycles >= 1) tier = TIER_ESTABLISHED_CENTS;
+    else tier = TIER_NEW_CENTS;
+    // A dispute is a ceiling, not a tier: it never raises a new org's cap.
+    if (org.getDisputeCount() > 0 && (tier == UNLIMITED || tier > TIER_ESTABLISHED_CENTS)) {
+      return TIER_ESTABLISHED_CENTS;
+    }
+    return tier;
   }
 }
