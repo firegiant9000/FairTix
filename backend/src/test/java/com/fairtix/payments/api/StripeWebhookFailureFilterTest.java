@@ -3,14 +3,19 @@ package com.fairtix.payments.api;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.servlet.FilterChain;
+import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 class StripeWebhookFailureFilterTest {
+
+  private static final String PLATFORM = "/api/webhooks/stripe";
+  private static final String CONNECT = "/api/webhooks/stripe-connect";
 
   private SimpleMeterRegistry registry;
   private StripeWebhookFailureFilter filter;
@@ -21,82 +26,81 @@ class StripeWebhookFailureFilterTest {
     filter = new StripeWebhookFailureFilter(registry);
   }
 
-  private double count(String endpoint) {
-    return registry.find("stripe.webhook.failures").tag("endpoint", endpoint).counters().stream()
-        .mapToDouble(io.micrometer.core.instrument.Counter::count).sum();
+  private double total() {
+    return registry.find("stripe.webhook.failures").counters().stream()
+        .mapToDouble(Counter::count).sum();
   }
 
-  @Test
-  void status409IsCountedWithStatusTag() throws Exception {
-    run("/api/webhooks/stripe", status(409));
-    assertThat(registry.find("stripe.webhook.failures")
-        .tag("endpoint", "platform").tag("status", "409").counter().count()).isEqualTo(1);
+  private double count(String endpoint, int status) {
+    Counter c = registry.find("stripe.webhook.failures")
+        .tag("endpoint", endpoint).tag("status", String.valueOf(status)).counter();
+    return c == null ? 0 : c.count();
   }
 
-  @Test
-  void status403And429AreNotCounted() throws Exception {
-    run("/api/webhooks/stripe", status(403));
-    run("/api/webhooks/stripe", status(429));
-    assertThat(count("platform")).isZero();
-  }
-
-  @Test
-  void getRequestsAreNotFiltered() throws Exception {
-    var request = new MockHttpServletRequest("GET", "/api/webhooks/stripe");
-    request.setRequestURI("/api/webhooks/stripe");
-    filter.doFilter(request, new MockHttpServletResponse(), status(405));
-    assertThat(count("platform")).isZero();
-  }
-
-  private MockHttpServletResponse run(String path, FilterChain chain) throws Exception {
-    var request = new MockHttpServletRequest("POST", path);
+  /** Runs the filter; the chain optionally marks the request verified, then sets a status. */
+  private void run(String method, String path, String verifiedAs, FilterChain after)
+      throws Exception {
+    var request = new MockHttpServletRequest(method, path);
     request.setRequestURI(path);
-    var response = new MockHttpServletResponse();
-    filter.doFilter(request, response, chain);
-    return response;
+    FilterChain chain = (req, res) -> {
+      if (verifiedAs != null) {
+        req.setAttribute(StripeWebhookFailureFilter.VERIFIED_ENDPOINT_ATTR, verifiedAs);
+      }
+      after.doFilter(req, res);
+    };
+    filter.doFilter(request, new MockHttpServletResponse(), chain);
   }
 
-  private FilterChain status(int s) {
-    return (req, res) -> ((jakarta.servlet.http.HttpServletResponse) res).setStatus(s);
+  private static FilterChain status(int s) {
+    return (req, res) -> ((HttpServletResponse) res).setStatus(s);
   }
 
-  @Test
-  void status500OnPlatformEndpointIsCounted() throws Exception {
-    run("/api/webhooks/stripe", status(500));
-    assertThat(count("platform")).isEqualTo(1);
-    assertThat(count("connect")).isZero();
-  }
-
-  @Test
-  void status500OnConnectEndpointIsTaggedConnect() throws Exception {
-    run("/api/webhooks/stripe-connect", status(503));
-    assertThat(count("connect")).isEqualTo(1);
-    assertThat(count("platform")).isZero();
-  }
-
-  @Test
-  void thrownExceptionIsCountedAndRethrown() {
-    FilterChain boom = (req, res) -> {
+  private static FilterChain boom() {
+    return (req, res) -> {
       throw new IllegalStateException("secret detail");
     };
-    assertThatThrownBy(() -> run("/api/webhooks/stripe", boom))
+  }
+
+  @Test
+  void unverifiedRequestsAreNeverCounted() throws Exception {
+    run("POST", PLATFORM, null, status(500));
+    run("POST", PLATFORM, null, status(409));
+    run("POST", CONNECT, null, status(415));
+    assertThatThrownBy(() -> run("POST", PLATFORM, null, boom()))
         .isInstanceOf(IllegalStateException.class);
-    assertThat(count("platform")).isEqualTo(1);
+    assertThat(total()).isZero();
   }
 
   @Test
-  void successAndClientErrorsAreNotCounted() throws Exception {
-    run("/api/webhooks/stripe", status(200));
-    run("/api/webhooks/stripe", status(400));
-    run("/api/webhooks/stripe-connect", status(400));
-    assertThat(count("platform")).isZero();
-    assertThat(count("connect")).isZero();
+  void verifiedFailuresAreCountedWithEndpointFromAttribute() throws Exception {
+    run("POST", PLATFORM, "platform", status(409));
+    run("POST", PLATFORM, "platform", status(400));
+    run("POST", PLATFORM, "platform", status(500));
+    run("POST", CONNECT, "connect", status(503));
+    assertThat(count("platform", 409)).isEqualTo(1);
+    assertThat(count("platform", 400)).isEqualTo(1);
+    assertThat(count("platform", 500)).isEqualTo(1);
+    assertThat(count("connect", 503)).isEqualTo(1);
   }
 
   @Test
-  void otherPathsAreNotFiltered() throws Exception {
-    run("/api/events", status(500));
-    assertThat(count("platform")).isZero();
-    assertThat(count("connect")).isZero();
+  void verifiedThrownExceptionIsCountedAndRethrown() {
+    assertThatThrownBy(() -> run("POST", CONNECT, "connect", boom()))
+        .isInstanceOf(IllegalStateException.class);
+    assertThat(count("connect", 500)).isEqualTo(1);
+  }
+
+  @Test
+  void verifiedSuccessIsNotCounted() throws Exception {
+    run("POST", PLATFORM, "platform", status(200));
+    run("POST", PLATFORM, "platform", status(204));
+    assertThat(total()).isZero();
+  }
+
+  @Test
+  void otherPathsAndMethodsAreNotFiltered() throws Exception {
+    run("POST", "/api/events", "platform", status(500));
+    run("GET", PLATFORM, "platform", status(405));
+    assertThat(total()).isZero();
   }
 }

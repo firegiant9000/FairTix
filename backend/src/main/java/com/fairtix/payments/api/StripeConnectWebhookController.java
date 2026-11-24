@@ -102,7 +102,8 @@ public class StripeConnectWebhookController {
   @PostMapping("/stripe-connect")
   @Transactional
   public ResponseEntity<Void> handle(@RequestBody String payload,
-                                     @RequestHeader(value = "Stripe-Signature", required = false) String sigHeader) {
+                                     @RequestHeader(value = "Stripe-Signature", required = false) String sigHeader,
+                                     jakarta.servlet.http.HttpServletRequest request) {
     if (!stripeEnabled) {
       return ResponseEntity.ok().build();
     }
@@ -116,6 +117,7 @@ public class StripeConnectWebhookController {
       log.warn("Stripe Connect webhook signature verification failed: {}", e.getMessage());
       return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
     }
+    request.setAttribute(StripeWebhookFailureFilter.VERIFIED_ENDPOINT_ATTR, "connect");
 
     Class<? extends StripeObject> objectType = OBJECT_TYPES.get(event.getType());
     if (objectType == null && !ACCOUNT_ONLY_TYPES.contains(event.getType())) {

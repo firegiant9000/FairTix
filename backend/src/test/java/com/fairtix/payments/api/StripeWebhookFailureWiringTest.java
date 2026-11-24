@@ -74,6 +74,25 @@ class StripeWebhookFailureWiringTest {
   }
 
   @Test
+  void unsupportedContentType_isNotCounted() throws Exception {
+    double before = failures();
+    mockMvc.perform(post("/api/webhooks/stripe")
+            .header("Content-Type", "x").content("{}"))
+        .andExpect(status().is4xxClientError());
+    assertThat(failures()).isEqualTo(before);
+  }
+
+  @Test
+  void badSignature_is400_andNotCounted() throws Exception {
+    double before = failures();
+    mockMvc.perform(post("/api/webhooks/stripe")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header("Stripe-Signature", "t=1,v1=bad").content("{}"))
+        .andExpect(status().isBadRequest());
+    assertThat(failures()).isEqualTo(before);
+  }
+
+  @Test
   void handlerFailureAfterVerification_isCountedWithStatus() throws Exception {
     when(paymentRecordRepository.findByTransactionId("pi_boom"))
         .thenThrow(new IllegalStateException("boom"));
