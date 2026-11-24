@@ -316,6 +316,9 @@ stripe listen --forward-to localhost:8080/api/webhooks/stripe
 # Restart the backend container after updating .env
 ```
 
+**Stripe webhook failing with 5xx (alerting)**
+A 5xx (or an exception) from `/api/webhooks/stripe` or `/api/webhooks/stripe-connect` makes Stripe retry. Each one logs an ERROR line containing `STRIPE_WEBHOOK_FAILURE endpoint=platform|connect status=<code>` (no payload or exception message); point log-based alerting at that marker. The same failures increment the Micrometer counter `stripe.webhook.failures{endpoint}`, registered for a future metrics backend (it is not exposed over HTTP). Bad signatures (4xx) are not counted. As a backstop, Stripe emails the account owner when deliveries keep failing and may disable the endpoint after repeated failures, so do not rely on that alone.
+
 **reCAPTCHA not appearing after 3 failed logins**
 `RECAPTCHA_ENABLED` is `false` (the default). Set it to `true` and ensure `RECAPTCHA_SECRET` and `REACT_APP_RECAPTCHA_SITE_KEY` are both set. The backend logs a warning at startup if the secret is blank.
 
