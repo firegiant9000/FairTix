@@ -117,6 +117,23 @@ class StripeDisputeServiceTest {
     verify(organizationRepository, never()).incrementDisputeCount(any(), any());
   }
 
+  @Test
+  void connectUnmatchedCreated_isAuditedWithTheAccount_andCountsNothing() {
+    service.recordUnmatchedConnectDispute(dispute("dp_k", 100, "needs_response"), "acct_nobody", false);
+
+    verify(auditService).logInCurrentTransaction(eq(SYSTEM_ACTOR), eq("STRIPE_DISPUTE_UNMATCHED"),
+        eq("PAYMENT"), eq(null), contains("stripe_account=acct_nobody"));
+    verify(organizationRepository, never()).incrementDisputeCount(any(), any());
+  }
+
+  @Test
+  void connectUnmatchedClosed_isAuditedWithAccountAndStatus() {
+    service.recordUnmatchedConnectDispute(dispute("dp_k2", 100, "won"), null, true);
+
+    verify(auditService).logInCurrentTransaction(eq(SYSTEM_ACTOR), eq("STRIPE_DISPUTE_UNMATCHED"),
+        eq("PAYMENT"), eq(null), contains(" status=won"));
+  }
+
   private static Dispute dispute(String id, long amount, String status) {
     return dispute(id, amount, status, null);
   }

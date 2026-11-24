@@ -15,8 +15,9 @@ import org.springframework.stereotype.Service;
 
 /**
  * Records a new Stripe dispute against the organizer: it adds one to the org's
- * {@code dispute_count} (any amount; never decremented automatically, and it holds the org at
- * the lower sales cap until reviewed) and, at or above the threshold, sets the org's
+ * {@code dispute_count} (any amount; never decremented automatically, and it caps the org at
+ * no more than $10k/day, new orgs staying at $1k, permanently unless an admin sets a sales-cap
+ * override) and, at or above the threshold, sets the org's
  * {@code stripe_payouts_frozen} flag. The flag is advisory: it is shown in the Connect status,
  * but nothing holds the connected account's payouts in Stripe. A closed dispute
  * ({@code charge.dispute.closed}) is audited as {@code STRIPE_DISPUTE_CLOSED} with its status
@@ -76,6 +77,16 @@ public class StripeDisputeService {
       return;
     }
     recordDisputeClosed(org.get(), dispute);
+  }
+
+  /**
+   * A Connect-webhook dispute whose account no org owns: put on record as
+   * {@code STRIPE_DISPUTE_UNMATCHED} (with the status when it is a closure), nothing counted.
+   */
+  public void recordUnmatchedConnectDispute(Dispute dispute, String accountId, boolean closed) {
+    log.warn("Stripe dispute {} on connected account {} has no organizer", dispute.getId(), accountId);
+    auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_DISPUTE_UNMATCHED", "PAYMENT", null,
+        detail(dispute) + " stripe_account=" + accountId + (closed ? " status=" + dispute.getStatus() : ""));
   }
 
   /** Audits a closed dispute with its status; changes nothing on the org. */

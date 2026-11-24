@@ -300,8 +300,9 @@ surefire, 249 failsafe and 202 frontend tests, with no failures.
   per-user purchase cap.
 - **Disputes do not reach orders, and the payout freeze is only a flag.** The
   platform webhook audits `charge.dispute.created`, adds one to the
-  organisation's `dispute_count` (which holds it at the lower sales cap until
-  reviewed) and, at or above `fairtix.connect.dispute-freeze-threshold-cents`,
+  organisation's `dispute_count` (which caps it at no more than $10k/day,
+  new organisations staying at $1k, permanently unless an admin sets a
+  sales-cap override) and, at or above `fairtix.connect.dispute-freeze-threshold-cents`,
   sets its `stripe_payouts_frozen` flag, shown in its Connect status. Nothing
   holds payouts in Stripe: a destination charge's funds are already on the
   connected account. A closed dispute (`charge.dispute.closed`) is only

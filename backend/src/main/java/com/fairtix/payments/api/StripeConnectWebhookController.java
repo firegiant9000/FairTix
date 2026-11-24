@@ -210,7 +210,10 @@ public class StripeConnectWebhookController {
   private void handleDisputeCreated(Event event) {
     getObject(event, Dispute.class).ifPresent(dispute -> {
       Organization org = orgForEvent(event);
-      if (org == null) return;
+      if (org == null) {
+        disputeService.recordUnmatchedConnectDispute(dispute, event.getAccount(), false);
+        return;
+      }
       disputeService.recordDispute(org, dispute);
     });
   }
@@ -219,7 +222,10 @@ public class StripeConnectWebhookController {
   private void handleDisputeClosed(Event event) {
     getObject(event, Dispute.class).ifPresent(dispute -> {
       Organization org = orgForEvent(event);
-      if (org == null) return;
+      if (org == null) {
+        disputeService.recordUnmatchedConnectDispute(dispute, event.getAccount(), true);
+        return;
+      }
       disputeService.recordDisputeClosed(org, dispute);
     });
   }

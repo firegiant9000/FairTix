@@ -190,6 +190,25 @@ class StripeConnectWebhookLedgerIT extends PostgresIT {
         + ACCOUNT + "'")).isEqualTo(1);
   }
 
+  /** A Connect dispute for an account no org owns is put on record, not dropped. */
+  @Test
+  void connectDisputeForUnknownAccount_isAuditedAsUnmatched() throws Exception {
+    deliver(disputeEvent("evt_unk_created", "dp_unk1", 1_000).replace(ACCOUNT, "acct_unknown"))
+        .andExpect(status().isOk());
+    String closed = """
+        { "id": "evt_unk_closed", "object": "event", "type": "charge.dispute.closed",
+          "account": "acct_unknown", "api_version": "%s",
+          "data": { "object": { "id": "dp_unk2", "object": "dispute", "amount": 1000,
+            "currency": "usd", "reason": "fraudulent", "status": "won" } } }
+        """.formatted(Stripe.API_VERSION);
+    deliver(closed).andExpect(status().isOk());
+
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_DISPUTE_UNMATCHED'"
+        + " AND details LIKE '%dp_unk1%' AND details LIKE '%acct_unknown%'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_DISPUTE_UNMATCHED'"
+        + " AND details LIKE '%dp_unk2%' AND details LIKE '%status=won%'")).isEqualTo(1);
+  }
+
   private static String disputeEvent(String eventId, String disputeId, long amountCents) {
     return """
         { "id": "%s", "object": "event", "type": "charge.dispute.created",
