@@ -21,6 +21,9 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -60,6 +63,8 @@ class RateLimitFilterTest {
     private JwtService jwtService;
     private RateLimitFilter filter;
     private FilterChain chain;
+    /** The filter's nanoTime source, so the warn throttle can be stepped. */
+    private final AtomicLong nanos = new AtomicLong(-5_000_000_000L);
 
     @BeforeEach
     void setUp() {
@@ -75,7 +80,7 @@ class RateLimitFilterTest {
         ReflectionTestUtils.setField(service, "defaultLimit", 100);
 
         jwtService = mock(JwtService.class);
-        filter = new RateLimitFilter(service, jwtService, new AllowedOrigins(SPA));
+        filter = new RateLimitFilter(service, jwtService, new AllowedOrigins(SPA), nanos::get);
         chain = mock(FilterChain.class);
     }
 
@@ -200,6 +205,40 @@ class RateLimitFilterTest {
         int first = out.indexOf("Rate limit rejected Stripe webhook");
         assertTrue(first >= 0);
         assertEquals(-1, out.indexOf("Rate limit rejected Stripe webhook", first + 1));
+    }
+
+    /** After the interval the next rejection logs again, with the count it suppressed. */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void rateLimitedWebhook_warnResumesAfterIntervalWithSuppressedCount(CapturedOutput output)
+            throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        nanos.addAndGet(TimeUnit.SECONDS.toNanos(59));
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        nanos.addAndGet(TimeUnit.SECONDS.toNanos(1));
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+
+        String out = output.getOut();
+        assertTrue(out.contains("path=/api/webhooks/stripe suppressedSinceLastWarn=0"));
+        assertTrue(out.contains("path=/api/webhooks/stripe suppressedSinceLastWarn=2"));
+    }
+
+    /** A flood on one webhook path must not hide the first rejection on the other. */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void rateLimitedWebhook_warnIsThrottledPerPath(CapturedOutput output) throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        filter.doFilter(request("POST", "/api/webhooks/stripe-connect"), new MockHttpServletResponse(), chain);
+
+        String out = output.getOut();
+        assertTrue(out.contains("path=/api/webhooks/stripe suppressedSinceLastWarn=0"));
+        assertTrue(out.contains("path=/api/webhooks/stripe-connect suppressedSinceLastWarn=0"));
     }
 
     @Test
