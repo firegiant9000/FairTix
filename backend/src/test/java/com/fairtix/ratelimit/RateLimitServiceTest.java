@@ -38,6 +38,7 @@ public class RateLimitServiceTest {
         ReflectionTestUtils.setField(rateLimitService, "ordersLimit", 20);
         ReflectionTestUtils.setField(rateLimitService, "seatsLimit", 60);
         ReflectionTestUtils.setField(rateLimitService, "defaultLimit", 100);
+        ReflectionTestUtils.setField(rateLimitService, "webhooksLimit", 1000);
     }
 
     @ParameterizedTest(name = "{0} → limit {1}")
@@ -136,6 +137,20 @@ public class RateLimitServiceTest {
     @Test
     public void refresh_getsTheDefaultTier() {
         assertEquals(100, rateLimitService.resolveLimit("/auth/refresh"));
+    }
+
+    /**
+     * Stripe sends no cookie, so webhook requests are keyed by IP, and a handful of Stripe
+     * IPs carry every event for the platform and all connected accounts. At the default
+     * 100/min a busy on-sale gets 429s, and Stripe's retries back off for hours.
+     */
+    @ParameterizedTest(name = "{0} → webhook tier")
+    @CsvSource({
+        "/api/webhooks/stripe",
+        "/api/webhooks/stripe-connect",
+    })
+    public void webhooks_getTheirOwnTier(String url) {
+        assertEquals(1000, rateLimitService.resolveLimit(url));
     }
 
     @Test

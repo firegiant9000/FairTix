@@ -44,6 +44,9 @@ public class RateLimitService {
     @Value("${ratelimit.default:100}")
     private int defaultLimit;
 
+    @Value("${ratelimit.webhooks:1000}")
+    private int webhooksLimit;
+
     public RateLimitService(RedissonClient redissonClient) {
         this.redissonClient = redissonClient;
     }
@@ -82,6 +85,13 @@ public class RateLimitService {
      * Returns the per-minute rate limit for the given URL.
      */
     int resolveLimit(String url) {
+        // Stripe sends no cookie, so webhooks are keyed by IP, and a handful of Stripe
+        // IPs carry every platform and connected-account event: the default tier would
+        // 429 a busy on-sale into Stripe's hours-long retry backoff. Still limited, since
+        // the bucket is checked before the signature.
+        if (url.startsWith("/api/webhooks/")) {
+            return webhooksLimit;
+        }
         // Refresh takes a high-entropy cookie, and a failed refresh signs the SPA user
         // out; after the access cookie expires it's keyed by IP, so 10/min would sign
         // out users who share a NAT.
