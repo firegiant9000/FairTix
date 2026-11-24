@@ -36,7 +36,8 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>Runs after {@code RateLimitFilter}, so a throttled caller is turned away before any body
  * is read. A legitimate Stripe event over the cap would be retried by Stripe and keep failing;
- * the WARN line (path and cap only, no client IP) is the trace of that.
+ * the WARN line (path, cap, declared length and whether a signature header was sent; no client
+ * IP, no header value) is the trace of that.
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 20)
@@ -83,9 +84,12 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
     filterChain.doFilter(new CachedBodyRequest(request, body), response);
   }
 
+  // signed=true (a Stripe-Signature header is present; its value is never logged) on a 413 is
+  // the case to alert on: it may be a real Stripe event that Stripe will keep retrying.
   private void reject(HttpServletRequest request, HttpServletResponse response) {
-    log.warn("Stripe webhook body over {} bytes rejected path={}", maxBodyBytes,
-        PATH_HELPER.getPathWithinApplication(request));
+    log.warn("Stripe webhook body over {} bytes rejected path={} declaredLength={} signed={}",
+        maxBodyBytes, PATH_HELPER.getPathWithinApplication(request),
+        request.getContentLengthLong(), request.getHeader("Stripe-Signature") != null);
     response.setStatus(HttpStatus.CONTENT_TOO_LARGE.value());
   }
 

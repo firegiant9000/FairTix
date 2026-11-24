@@ -3,6 +3,9 @@ package com.fairtix.payments.api;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletRequest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -109,6 +112,23 @@ class StripeWebhookBodyLimitFilterTest {
     filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> seen.set(req));
 
     assertThat(seen.get()).isSameAs(request);
+  }
+
+  /**
+   * A signed delivery over the cap may be a real Stripe event that will keep failing: the WARN
+   * says so, with the declared length, and never logs the signature value.
+   */
+  @Test
+  @ExtendWith(OutputCaptureExtension.class)
+  void rejection_logsDeclaredLengthAndWhetherSigned(CapturedOutput output) throws Exception {
+    MockHttpServletRequest request = post("/api/webhooks/stripe", new byte[CAP + 1]);
+    request.addHeader("Stripe-Signature", "t=1,v1=secretlooking");
+
+    filter.doFilter(request, new MockHttpServletResponse(), mock(FilterChain.class));
+
+    assertThat(output.getOut())
+        .contains("path=/api/webhooks/stripe declaredLength=" + (CAP + 1) + " signed=true")
+        .doesNotContain("secretlooking");
   }
 
   /** cap + 1 bytes are read, so the cap itself must leave room for the extra byte. */
