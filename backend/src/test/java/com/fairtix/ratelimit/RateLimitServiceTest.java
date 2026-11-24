@@ -153,6 +153,28 @@ public class RateLimitServiceTest {
         assertEquals(1000, rateLimitService.resolveLimit(url));
     }
 
+    /** Only the two Stripe endpoints: a future route under the prefix gets the default. */
+    @Test
+    public void otherWebhookPaths_getTheDefaultTier() {
+        assertEquals(100, rateLimitService.resolveLimit("/api/webhooks/other"));
+        assertEquals(100, rateLimitService.resolveLimit("/api/webhooks/stripe/"));
+    }
+
+    /**
+     * trySetRate is set-if-absent and every request renews the key's TTL, so a busy bucket
+     * would keep its old rate forever after a tier changes. The limit is in the key, so a
+     * new limit starts a new bucket.
+     */
+    @Test
+    public void limiterKey_changesWhenTheLimitChanges() {
+        rateLimitService.isAllowed("ip:1.2.3.4", "/api/webhooks/stripe");
+        ReflectionTestUtils.setField(rateLimitService, "webhooksLimit", 2000);
+        rateLimitService.isAllowed("ip:1.2.3.4", "/api/webhooks/stripe");
+
+        verify(redissonClient).getRateLimiter("rate_limit:ip:1.2.3.4:/api/webhooks/stripe:limit=1000");
+        verify(redissonClient).getRateLimiter("rate_limit:ip:1.2.3.4:/api/webhooks/stripe:limit=2000");
+    }
+
     @Test
     public void testResolveLimitCoversAllEndpointCategories() {
         assertEquals(10, rateLimitService.resolveLimit("/api/auth/login"));

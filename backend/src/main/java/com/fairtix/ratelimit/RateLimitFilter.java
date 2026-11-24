@@ -82,6 +82,11 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
 
         if (!allowed) {
+            if (rateLimitService.isStripeWebhook(url)) {
+                // Stripe backs off for hours after a 429, and the webhook failure metric
+                // counts only signature-verified requests: leave a trace. No client IP.
+                log.warn("Rate limit rejected Stripe webhook path={}", url);
+            }
             reject(request, response, HttpStatus.TOO_MANY_REQUESTS, "60",
                 "RATE_LIMITED", "Too many requests. Please try again later.");
             return;
