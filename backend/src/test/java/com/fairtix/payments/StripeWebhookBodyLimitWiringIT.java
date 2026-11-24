@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fairtix.payments.api.StripeWebhookBodyLimitFilter;
 import com.fairtix.support.PostgresIT;
+import java.io.ByteArrayInputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -45,6 +46,22 @@ class StripeWebhookBodyLimitWiringIT extends PostgresIT {
   @ValueSource(strings = {"/api/webhooks/stripe", "/api/webhooks/stripe-connect"})
   void bodyAtCap_reachesTheController(String path) throws Exception {
     assertThat(post(path, CAP).statusCode()).isEqualTo(200);
+  }
+
+  /** A chunked body (no Content-Length) is refused before any of it is read. */
+  @ParameterizedTest
+  @ValueSource(strings = {"/api/webhooks/stripe", "/api/webhooks/stripe-connect"})
+  void chunkedBody_isRejectedWith411(String path) throws Exception {
+    HttpResponse<String> response = http.send(
+        HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+            .header("Content-Type", "application/json")
+            .header("Stripe-Signature", "t=0,v1=unused")
+            .POST(HttpRequest.BodyPublishers.ofInputStream(
+                () -> new ByteArrayInputStream("{}".getBytes())))
+            .build(),
+        HttpResponse.BodyHandlers.ofString());
+
+    assertThat(response.statusCode()).isEqualTo(411);
   }
 
   private HttpResponse<String> post(String path, int bytes) throws Exception {

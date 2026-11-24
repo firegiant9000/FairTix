@@ -79,8 +79,33 @@ class StripeWebhookBodyLimitFilterTest {
     assertThat(seen.get().getInputStream().readAllBytes()).hasSize(8);
   }
 
+  /** Exactly at the deadline (end of stream included) is still in time: the check is "over". */
+  @Test
+  void bodyEndingExactlyAtTheDeadline_reachesTheController() throws Exception {
+    // Four bytes at 2 s each, then end of stream at 10 s.
+    MockHttpServletRequest request = trickling("/api/webhooks/stripe", 4, 2_000);
+    AtomicReference<ServletRequest> seen = new AtomicReference<>();
+
+    filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> seen.set(req));
+
+    assertThat(seen.get()).isNotNull();
+  }
+
+  /** End of stream arriving after the deadline is late too (the trailer case for chunked). */
+  @Test
+  void endOfStreamAfterTheDeadline_isRejectedWith408() throws Exception {
+    // Five bytes at 2 s each (10 s, in time), then end of stream at 12 s.
+    MockHttpServletRequest request = trickling("/api/webhooks/stripe", 5, 2_000);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+
+    filter.doFilter(request, response, mock(FilterChain.class));
+
+    assertThat(response.getStatus()).isEqualTo(408);
+  }
+
+  /** Long.MAX_VALUE-ish values would saturate toNanos and switch the deadline off. */
   @ParameterizedTest
-  @ValueSource(longs = {0, -1})
+  @ValueSource(longs = {0, -1, 300_001, Long.MAX_VALUE})
   void invalidTimeout_failsStartup(long timeoutMs) {
     assertThatThrownBy(() -> new StripeWebhookBodyLimitFilter(CAP, timeoutMs, System::nanoTime))
         .isInstanceOf(IllegalArgumentException.class);
@@ -116,10 +141,27 @@ class StripeWebhookBodyLimitFilterTest {
     verify(chain, never()).doFilter(any(), any());
   }
 
-  /** Chunked, or a Content-Length that understates the body: the bytes read decide. */
+  /**
+   * Chunked (no Content-Length): Tomcat can block inside one read() for a trickled chunk header
+   * or trailer, where the deadline can't be checked, so it is refused before reading.
+   */
+  @ParameterizedTest
+  @ValueSource(ints = {8, CAP + 1})
+  void bodyWithoutContentLength_isRejectedWith411(int bytes) throws Exception {
+    MockHttpServletRequest request = withDeclaredLength("/api/webhooks/stripe", new byte[bytes], -1);
+    MockHttpServletResponse response = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+
+    filter.doFilter(request, response, chain);
+
+    assertThat(response.getStatus()).isEqualTo(411);
+    verify(chain, never()).doFilter(any(), any());
+  }
+
+  /** A Content-Length that understates the body: the bytes actually read still decide. */
   @Test
-  void undeclaredBodyOverCap_isRejectedWithoutCallingTheController() throws Exception {
-    MockHttpServletRequest request = withoutContentLength("/api/webhooks/stripe", new byte[CAP + 1]);
+  void understatedBodyOverCap_isRejectedWith413() throws Exception {
+    MockHttpServletRequest request = withDeclaredLength("/api/webhooks/stripe", new byte[CAP + 1], 10);
     MockHttpServletResponse response = new MockHttpServletResponse();
     FilterChain chain = mock(FilterChain.class);
 
@@ -135,7 +177,7 @@ class StripeWebhookBodyLimitFilterTest {
     byte[] body = "{\"note\":\"café ✓\"}".getBytes(StandardCharsets.UTF_8);
     byte[] padded = Arrays.copyOf(body, CAP);
     Arrays.fill(padded, body.length, CAP, (byte) ' ');
-    MockHttpServletRequest request = withoutContentLength("/api/webhooks/stripe", padded);
+    MockHttpServletRequest request = post("/api/webhooks/stripe", padded);
     AtomicReference<ServletRequest> seen = new AtomicReference<>();
 
     filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> seen.set(req));
@@ -259,21 +301,31 @@ class StripeWebhookBodyLimitFilterTest {
       public ServletInputStream getInputStream() {
         return slow;
       }
+
+      @Override
+      public int getContentLength() {
+        return bytes;
+      }
+
+      @Override
+      public long getContentLengthLong() {
+        return bytes;
+      }
     };
     request.setContentType("application/json");
     return request;
   }
 
-  private static MockHttpServletRequest withoutContentLength(String path, byte[] body) {
+  private static MockHttpServletRequest withDeclaredLength(String path, byte[] body, int declared) {
     MockHttpServletRequest request = new MockHttpServletRequest("POST", path) {
       @Override
       public int getContentLength() {
-        return -1;
+        return declared;
       }
 
       @Override
       public long getContentLengthLong() {
-        return -1;
+        return declared;
       }
     };
     request.setContentType("application/json");

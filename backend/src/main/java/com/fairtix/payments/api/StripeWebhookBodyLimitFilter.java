@@ -34,15 +34,20 @@ import java.util.function.LongSupplier;
  * a String before checking the signature, and the routes are public, so without a cap anyone
  * could make the server buffer an arbitrarily large body.
  *
- * <p>A POST whose Content-Length exceeds the cap is answered 413 without reading the body.
- * Otherwise at most cap + 1 bytes are read (this also covers chunked bodies and an understated
- * Content-Length); more than the cap is answered 413, and anything else reaches the controller
- * as an in-memory copy of the exact bytes, which the signature covers.
+ * <p>A POST with no Content-Length (chunked) is answered 411 without reading the body: inside
+ * one {@code read()}, Tomcat's chunked decoder can block for a trickled chunk header or trailer
+ * for days, where no deadline can be checked. Stripe sends a Content-Length. A POST whose
+ * Content-Length exceeds the cap is answered 413 without reading the body. Otherwise at most
+ * cap + 1 bytes are read (Tomcat stops at the declared length anyway); more than the cap is
+ * answered 413, and anything else reaches the controller as an in-memory copy of the exact
+ * bytes, which the signature covers.
  *
- * <p>A body still arriving after {@code stripe.webhook-body-read-timeout-ms} (default 10 s) is
- * answered 408, so a sender trickling bytes can't hold a worker thread indefinitely; Stripe
- * sends the whole body at once. A reverse proxy that buffers request bodies (DEPLOY.md) stops
- * this before it reaches a worker thread at all.
+ * <p>A body not complete after {@code stripe.webhook-body-read-timeout-ms} (default 10 s) is
+ * answered 408. The check runs after each read returns, so a sender trickling bytes holds a
+ * worker thread for at most the timeout plus one socket read timeout (Tomcat's connection
+ * timeout: 60 s unless {@code server.tomcat.connection-timeout} is set), not indefinitely.
+ * Stripe sends the whole body at once. A reverse proxy that buffers request bodies
+ * (DEPLOY.md) keeps the trickle off the worker threads entirely.
  *
  * <p>Runs after {@code RateLimitFilter}, so a throttled caller is turned away before any body
  * is read. A legitimate Stripe event over the cap would be retried by Stripe and keep failing;
@@ -63,6 +68,7 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
   public static final int DEFAULT_MAX_BODY_BYTES = 1_048_576;
   /** Default of {@code stripe.webhook-body-read-timeout-ms}. */
   public static final long DEFAULT_READ_TIMEOUT_MS = 10_000;
+  private static final long MAX_READ_TIMEOUT_MS = 300_000;
 
   private final int maxBodyBytes;
   private final long readTimeoutMs;
@@ -82,8 +88,10 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
       throw new IllegalArgumentException(
           "stripe.webhook-max-body-bytes must be between 1 and " + (Integer.MAX_VALUE - 1));
     }
-    if (readTimeoutMs <= 0) {
-      throw new IllegalArgumentException("stripe.webhook-body-read-timeout-ms must be positive");
+    // Bounded above so toNanos can't saturate and silently switch the deadline off.
+    if (readTimeoutMs <= 0 || readTimeoutMs > MAX_READ_TIMEOUT_MS) {
+      throw new IllegalArgumentException(
+          "stripe.webhook-body-read-timeout-ms must be between 1 and " + MAX_READ_TIMEOUT_MS);
     }
     this.maxBodyBytes = maxBodyBytes;
     this.readTimeoutMs = readTimeoutMs;
@@ -103,6 +111,13 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
   @Override
   protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
       FilterChain filterChain) throws ServletException, IOException {
+    if (request.getContentLengthLong() < 0) {
+      log.warn("Stripe webhook without Content-Length rejected path={} signed={}",
+          PATH_HELPER.getPathWithinApplication(request),
+          request.getHeader("Stripe-Signature") != null);
+      response.setStatus(HttpStatus.LENGTH_REQUIRED.value());
+      return;
+    }
     if (request.getContentLengthLong() > maxBodyBytes) {
       reject(request, response);
       return;
@@ -124,8 +139,7 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
 
   /**
    * Reads at most cap + 1 bytes, or returns null once the body has taken longer than the read
-   * timeout. The check runs after each read returns, so a sender trickling bytes holds the
-   * thread for at most the timeout plus one socket read timeout, instead of indefinitely.
+   * timeout (checked after every read, end of stream included).
    */
   private byte[] readWithinDeadline(InputStream in) throws IOException {
     long start = nanoTime.getAsLong();
@@ -134,13 +148,13 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
     int limit = maxBodyBytes + 1;
     while (out.size() < limit) {
       int n = in.read(buffer, 0, Math.min(buffer.length, limit - out.size()));
+      if (nanoTime.getAsLong() - start > readTimeoutNanos) {
+        return null;
+      }
       if (n < 0) {
         break;
       }
       out.write(buffer, 0, n);
-      if (nanoTime.getAsLong() - start > readTimeoutNanos) {
-        return null;
-      }
     }
     return out.toByteArray();
   }
