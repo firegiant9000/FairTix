@@ -43,7 +43,10 @@ public class NotificationGate {
             return;
         }
         emailService.sendEmail(to, subject, body);
-        log.info("Notification sent requestId={} userId={} category={}", MDC.get("requestId"), userId, category);
+        // "Handed to", not "sent": with mail off the EmailService drops it. The EmailService
+        // logs what actually happened ("Email sent" or "Email suppressed").
+        log.info("Notification handed to mail service requestId={} userId={} category={}",
+                MDC.get("requestId"), userId, category);
     }
 
     private void logSuppressed(UUID userId, NotificationCategory category, String reason) {

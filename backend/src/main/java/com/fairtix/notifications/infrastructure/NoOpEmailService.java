@@ -11,6 +11,7 @@ public class NoOpEmailService implements EmailService {
     @Override
     public void sendEmail(String to, String subject, String htmlBody) {
         // No subject: a support-ticket subject is the user's own text (see SmtpEmailService).
-        log.debug("Email suppressed (fairtix.mail.enabled is off)");
+        // INFO, like SmtpEmailService's "Email sent", so the default log shows mail is off.
+        log.info("Email suppressed (fairtix.mail.enabled is off)");
     }
 }
