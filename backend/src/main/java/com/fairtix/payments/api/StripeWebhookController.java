@@ -48,7 +48,8 @@ public class StripeWebhookController {
       "charge.refunded", Charge.class,
       "payment_intent.payment_failed", PaymentIntent.class,
       // Disputes on FairTix's destination charges arrive here, not on the Connect endpoint.
-      "charge.dispute.created", Dispute.class);
+      "charge.dispute.created", Dispute.class,
+      "charge.dispute.closed", Dispute.class);
 
   @Value("${stripe.enabled:false}")
   private boolean stripeEnabled;
@@ -132,6 +133,8 @@ public class StripeWebhookController {
       case "payment_intent.payment_failed" -> handlePaymentIntentFailed(event);
       case "charge.dispute.created" ->
           getObject(event, Dispute.class).ifPresent(disputeService::recordPlatformDispute);
+      case "charge.dispute.closed" ->
+          getObject(event, Dispute.class).ifPresent(disputeService::recordPlatformDisputeClosed);
       default -> throw new IllegalStateException("Unreachable: " + event.getType());
     }
 

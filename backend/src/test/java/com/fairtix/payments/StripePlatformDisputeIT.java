@@ -201,6 +201,88 @@ class StripePlatformDisputeIT extends PostgresIT {
     assertThat(frozen()).isTrue();
   }
 
+  @Test
+  void everyNewDispute_incrementsTheCountInTheDatabase() throws Exception {
+    when(stripePaymentService.connectRoutingOf("pi_c1"))
+        .thenReturn(new ConnectRouting(ACCOUNT, org.getId().toString()));
+    when(stripePaymentService.connectRoutingOf("pi_c2"))
+        .thenReturn(new ConnectRouting(ACCOUNT, org.getId().toString()));
+    assertThat(disputeCountColumn()).isZero();
+
+    deliver(disputeEvent("evt_c1", "dp_c1", "pi_c1", 1_000)).andExpect(status().isOk());
+    assertThat(disputeCountColumn()).isEqualTo(1);
+    assertThat(frozen()).isFalse();
+
+    deliver(disputeEvent("evt_c2", "dp_c2", "pi_c2", 10_000)).andExpect(status().isOk());
+    assertThat(disputeCountColumn()).isEqualTo(2);
+    assertThat(frozen()).isTrue();
+  }
+
+  @Test
+  void redeliveredDispute_isCountedOnce() throws Exception {
+    when(stripePaymentService.connectRoutingOf("pi_once"))
+        .thenReturn(new ConnectRouting(ACCOUNT, org.getId().toString()));
+    String payload = disputeEvent("evt_once", "dp_once", "pi_once", 1_000);
+
+    deliver(payload).andExpect(status().isOk());
+    deliver(payload).andExpect(status().isOk());
+
+    assertThat(disputeCountColumn()).isEqualTo(1);
+  }
+
+  @Test
+  void unmatchedDispute_countsNothing() throws Exception {
+    when(stripePaymentService.connectRoutingOf("pi_nobody"))
+        .thenReturn(new ConnectRouting(null, null));
+
+    deliver(disputeEvent("evt_nobody", "dp_nobody", "pi_nobody", 1_000)).andExpect(status().isOk());
+
+    assertThat(disputeCountColumn()).isZero();
+  }
+
+  @Test
+  void closedDispute_isAuditedWithItsStatus_andChangesNothingElse() throws Exception {
+    when(stripePaymentService.connectRoutingOf("pi_close"))
+        .thenReturn(new ConnectRouting(ACCOUNT, org.getId().toString()));
+    deliver(disputeEvent("evt_open", "dp_close", "pi_close", 10_000)).andExpect(status().isOk());
+
+    deliver(closedEvent("evt_closed", "dp_close", "pi_close", 10_000, "won"))
+        .andExpect(status().isOk());
+
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_DISPUTE_CLOSED'"
+        + " AND resource_id = '" + org.getId() + "' AND details LIKE '%status=won%'")).isEqualTo(1);
+    assertThat(disputeCountColumn()).isEqualTo(1);
+    assertThat(frozen()).isTrue();
+  }
+
+  @Test
+  void closedDispute_onANonConnectPayment_isAuditedAsUnmatchedWithStatus() throws Exception {
+    when(stripePaymentService.connectRoutingOf("pi_close_none"))
+        .thenReturn(new ConnectRouting(null, null));
+
+    deliver(closedEvent("evt_closed_none", "dp_close_none", "pi_close_none", 10_000, "lost"))
+        .andExpect(status().isOk());
+
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_DISPUTE_UNMATCHED'"
+        + " AND details LIKE '%dp_close_none%' AND details LIKE '%status=lost%'")).isEqualTo(1);
+  }
+
+  private int disputeCountColumn() {
+    return count("SELECT dispute_count FROM organizations WHERE id = '" + org.getId() + "'");
+  }
+
+  private static String closedEvent(String eventId, String disputeId, String paymentIntentId,
+      long amountCents, String status) {
+    return """
+        { "id": "%s", "object": "event", "type": "charge.dispute.closed",
+          "api_version": "%s",
+          "data": { "object": { "id": "%s", "object": "dispute", "amount": %d,
+            "currency": "usd", "reason": "fraudulent", "status": "%s", "charge": "ch_%s",
+            "payment_intent": "%s" } } }
+        """.formatted(eventId, Stripe.API_VERSION, disputeId, amountCents, status, disputeId,
+        paymentIntentId);
+  }
+
   private boolean frozen() {
     return organizationRepository.findById(org.getId()).orElseThrow().isStripePayoutsFrozen();
   }

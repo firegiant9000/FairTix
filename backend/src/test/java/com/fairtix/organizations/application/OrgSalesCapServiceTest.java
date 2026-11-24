@@ -74,7 +74,7 @@ class OrgSalesCapServiceTest {
   @Test
   void disputeHoldsAt10kTierEvenAfterMultipleCycles() {
     org.setSuccessfulPayoutCycles(10);
-    org.incrementDisputeCount();
+    org.setDisputeCount(1);
     when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
 
     assertThatThrownBy(() -> service.checkCanCharge(orgId, 1_000_001L))

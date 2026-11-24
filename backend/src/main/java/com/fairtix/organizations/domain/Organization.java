@@ -378,5 +378,4 @@ public class Organization {
 
   public int getDisputeCount() { return disputeCount; }
   public void setDisputeCount(int v) { this.disputeCount = v; }
-  public void incrementDisputeCount() { this.disputeCount += 1; this.updatedAt = Instant.now(); }
 }

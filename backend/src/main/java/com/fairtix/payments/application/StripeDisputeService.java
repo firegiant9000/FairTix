@@ -14,9 +14,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
- * Records a new Stripe dispute against the organizer and, at or above the threshold, sets
- * the org's {@code stripe_payouts_frozen} flag. The flag is advisory: it is shown in the
- * Connect status, but nothing holds the connected account's payouts in Stripe.
+ * Records a new Stripe dispute against the organizer: it adds one to the org's
+ * {@code dispute_count} (any amount; never decremented automatically, and it holds the org at
+ * the lower sales cap until reviewed) and, at or above the threshold, sets the org's
+ * {@code stripe_payouts_frozen} flag. The flag is advisory: it is shown in the Connect status,
+ * but nothing holds the connected account's payouts in Stripe. A closed dispute
+ * ({@code charge.dispute.closed}) is audited as {@code STRIPE_DISPUTE_CLOSED} with its status
+ * and changes neither the count nor the flag.
  *
  * <p>FairTix creates destination charges ({@code on_behalf_of} +
  * {@code transfer_data.destination}). Stripe raises disputes on those against the platform
@@ -53,22 +57,39 @@ public class StripeDisputeService {
    * it (a payment not routed through Connect) is audited as {@code STRIPE_DISPUTE_UNMATCHED}.
    */
   public void recordPlatformDispute(Dispute dispute) {
-    String paymentIntentId = dispute.getPaymentIntent();
-    Optional<Organization> org = paymentIntentId == null
-        ? Optional.empty()
-        : orgFor(stripePaymentService.connectRoutingOf(paymentIntentId));
+    Optional<Organization> org = platformOrgFor(dispute);
     if (org.isEmpty()) {
-      log.warn("Stripe dispute {} on payment intent {} has no organizer to freeze",
-          dispute.getId(), paymentIntentId);
-      auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_DISPUTE_UNMATCHED", "PAYMENT", null,
-          detail(dispute) + " stripe_intent=" + paymentIntentId);
+      auditUnmatched(dispute, "");
       return;
     }
     recordDispute(org.get(), dispute);
   }
 
-  /** Sets the advisory freeze flag at or above the threshold; audits the dispute either way. */
+  /**
+   * A dispute closed (won, lost, warning_closed ...), from the platform webhook. Audit only:
+   * the dispute count and the freeze flag are left as they are.
+   */
+  public void recordPlatformDisputeClosed(Dispute dispute) {
+    Optional<Organization> org = platformOrgFor(dispute);
+    if (org.isEmpty()) {
+      auditUnmatched(dispute, " status=" + dispute.getStatus());
+      return;
+    }
+    recordDisputeClosed(org.get(), dispute);
+  }
+
+  /** Audits a closed dispute with its status; changes nothing on the org. */
+  public void recordDisputeClosed(Organization org, Dispute dispute) {
+    auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_DISPUTE_CLOSED", "ORGANIZATION", org.getId(),
+        detail(dispute) + " status=" + dispute.getStatus());
+  }
+
+  /**
+   * Counts the dispute on the org (any amount), sets the advisory freeze flag at or above the
+   * threshold, and audits the dispute either way.
+   */
   public void recordDispute(Organization org, Dispute dispute) {
+    organizationRepository.incrementDisputeCount(org.getId(), Instant.now());
     long amount = amountCents(dispute);
     String detail = detail(dispute);
     if (amount >= disputeFreezeThresholdCents) {
@@ -79,6 +100,20 @@ public class StripeDisputeService {
     } else {
       auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_DISPUTE_CREATED", "ORGANIZATION", org.getId(), detail);
     }
+  }
+
+  private Optional<Organization> platformOrgFor(Dispute dispute) {
+    String paymentIntentId = dispute.getPaymentIntent();
+    return paymentIntentId == null
+        ? Optional.empty()
+        : orgFor(stripePaymentService.connectRoutingOf(paymentIntentId));
+  }
+
+  private void auditUnmatched(Dispute dispute, String suffix) {
+    log.warn("Stripe dispute {} on payment intent {} has no organizer",
+        dispute.getId(), dispute.getPaymentIntent());
+    auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_DISPUTE_UNMATCHED", "PAYMENT", null,
+        detail(dispute) + " stripe_intent=" + dispute.getPaymentIntent() + suffix);
   }
 
   private Optional<Organization> orgFor(ConnectRouting routing) {

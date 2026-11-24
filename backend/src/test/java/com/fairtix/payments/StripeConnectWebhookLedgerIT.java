@@ -169,6 +169,27 @@ class StripeConnectWebhookLedgerIT extends PostgresIT {
     assertThat(count("SELECT COUNT(*) FROM stripe_webhook_events")).isZero();
   }
 
+  /** Connect path: created counts in the DB column; closed only audits its status. */
+  @Test
+  void connectDispute_isCounted_andItsClosureOnlyAudits() throws Exception {
+    deliver(disputeEvent("evt_connect_cnt", "dp_cnt", 1_000)).andExpect(status().isOk());
+    assertThat(count("SELECT dispute_count FROM organizations WHERE stripe_connect_account_id = '"
+        + ACCOUNT + "'")).isEqualTo(1);
+
+    String closed = """
+        { "id": "evt_connect_closed", "object": "event", "type": "charge.dispute.closed",
+          "account": "%s", "api_version": "%s",
+          "data": { "object": { "id": "dp_cnt", "object": "dispute", "amount": 1000,
+            "currency": "usd", "reason": "fraudulent", "status": "lost" } } }
+        """.formatted(ACCOUNT, Stripe.API_VERSION);
+    deliver(closed).andExpect(status().isOk());
+
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'STRIPE_DISPUTE_CLOSED'"
+        + " AND details LIKE '%status=lost%'")).isEqualTo(1);
+    assertThat(count("SELECT dispute_count FROM organizations WHERE stripe_connect_account_id = '"
+        + ACCOUNT + "'")).isEqualTo(1);
+  }
+
   private static String disputeEvent(String eventId, String disputeId, long amountCents) {
     return """
         { "id": "%s", "object": "event", "type": "charge.dispute.created",

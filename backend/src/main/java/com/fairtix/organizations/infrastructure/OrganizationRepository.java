@@ -26,4 +26,12 @@ public interface OrganizationRepository extends JpaRepository<Organization, UUID
   @Modifying
   @Query("UPDATE Organization o SET o.stripePayoutsFrozen = true, o.updatedAt = :now WHERE o.id = :id")
   int freezePayouts(@Param("id") UUID id, @Param("now") Instant now);
+
+  /**
+   * Adds one to {@code dispute_count} in SQL, so concurrent disputes can't lose an increment
+   * and a save of an older copy can't write the count back (see {@link #freezePayouts}).
+   */
+  @Modifying
+  @Query("UPDATE Organization o SET o.disputeCount = o.disputeCount + 1, o.updatedAt = :now WHERE o.id = :id")
+  int incrementDisputeCount(@Param("id") UUID id, @Param("now") Instant now);
 }

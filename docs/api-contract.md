@@ -354,8 +354,8 @@ simulated orders are refunded in FairTix only.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/webhooks/stripe` | Stripe signature | `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.refunded`, `charge.dispute.created` (destination charges); each event id is processed once |
-| POST | `/api/webhooks/stripe-connect` | Stripe signature | Connected-account events: account updates, payouts, `charge.dispute.created` (direct charges only) |
+| POST | `/api/webhooks/stripe` | Stripe signature | `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed` (destination charges); each event id is processed once |
+| POST | `/api/webhooks/stripe-connect` | Stripe signature | Connected-account events: account updates, payouts, `charge.dispute.created`, `charge.dispute.closed` (direct charges only) |
 
 A bad signature answers 400. With Stripe off, or no webhook secret set, both
 endpoints answer 200 and process nothing.
