@@ -1,6 +1,7 @@
 package com.fairtix.payments.api;
 
 import com.fairtix.audit.application.AuditService;
+import com.fairtix.payments.application.StripeDisputeService;
 import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import com.fairtix.payments.infrastructure.StripeWebhookEventRepository;
 import com.fairtix.refunds.domain.RefundRequest;
@@ -9,6 +10,7 @@ import com.fairtix.refunds.infrastructure.RefundRepository;
 import com.stripe.Stripe;
 import com.stripe.exception.SignatureVerificationException;
 import com.stripe.model.Charge;
+import com.stripe.model.Dispute;
 import com.stripe.model.Event;
 import com.stripe.model.PaymentIntent;
 import com.stripe.model.StripeObject;
@@ -44,7 +46,9 @@ public class StripeWebhookController {
   private static final Map<String, Class<? extends StripeObject>> HANDLED_TYPES = Map.of(
       "payment_intent.succeeded", PaymentIntent.class,
       "charge.refunded", Charge.class,
-      "payment_intent.payment_failed", PaymentIntent.class);
+      "payment_intent.payment_failed", PaymentIntent.class,
+      // Disputes on FairTix's destination charges arrive here, not on the Connect endpoint.
+      "charge.dispute.created", Dispute.class);
 
   @Value("${stripe.enabled:false}")
   private boolean stripeEnabled;
@@ -56,14 +60,16 @@ public class StripeWebhookController {
   private final RefundRepository refundRepository;
   private final AuditService auditService;
   private final StripeWebhookEventRepository webhookEventRepository;
+  private final StripeDisputeService disputeService;
 
   public StripeWebhookController(PaymentRecordRepository paymentRecordRepository,
       RefundRepository refundRepository, AuditService auditService,
-      StripeWebhookEventRepository webhookEventRepository) {
+      StripeWebhookEventRepository webhookEventRepository, StripeDisputeService disputeService) {
     this.paymentRecordRepository = paymentRecordRepository;
     this.refundRepository = refundRepository;
     this.auditService = auditService;
     this.webhookEventRepository = webhookEventRepository;
+    this.disputeService = disputeService;
   }
 
   /**
@@ -124,6 +130,8 @@ public class StripeWebhookController {
       case "payment_intent.succeeded" -> handlePaymentIntentSucceeded(event);
       case "charge.refunded" -> handleChargeRefunded(event);
       case "payment_intent.payment_failed" -> handlePaymentIntentFailed(event);
+      case "charge.dispute.created" ->
+          getObject(event, Dispute.class).ifPresent(disputeService::recordPlatformDispute);
       default -> throw new IllegalStateException("Unreachable: " + event.getType());
     }
 

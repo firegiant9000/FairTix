@@ -298,11 +298,14 @@ surefire, 249 failsafe and 202 frontend tests, with no failures.
   Stripe's failed-refund notifications are not handled either.
 - **Box office is uncapped.** Door sales by staff do not count against the
   per-user purchase cap.
-- **Disputes do not reach orders.** The Connect webhook audits
-  `charge.dispute.created` and can freeze an organisation's payouts; nothing
-  cancels tickets or changes a refund, and the platform webhook ignores dispute
-  events. Disputes are worked in the Stripe Dashboard; checkout refuses an
-  intent that is refunded or disputed.
+- **Disputes do not reach orders, and the payout freeze is only a flag.** The
+  platform webhook audits `charge.dispute.created` and, at or above
+  `fairtix.connect.dispute-freeze-threshold-cents`, sets the organisation's
+  `stripe_payouts_frozen` flag, shown in its Connect status. Nothing holds
+  payouts in Stripe: a destination charge's funds are already on the connected
+  account. Nothing cancels tickets, changes a refund or clears the flag when a
+  dispute closes. Disputes are worked in the Stripe Dashboard; checkout refuses
+  an intent that is refunded or disputed.
 - **The only load figure is one laptop run.** `QueueJoinLoadIT` (opt-in:
   `./mvnw verify -Dit.test=QueueJoinLoadIT`) measured about 100 queue joins per
   second per capped event, once, on one laptop with PostgreSQL and Redis in
