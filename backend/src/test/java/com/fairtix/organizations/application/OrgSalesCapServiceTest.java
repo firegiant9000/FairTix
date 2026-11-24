@@ -142,6 +142,35 @@ class OrgSalesCapServiceTest {
         .isInstanceOf(SalesCapExceededException.class);
   }
 
+  /** An admin override is how a disputed org is reviewed: it replaces the $10k ceiling. */
+  @Test
+  void validOverrideLiftsTheDisputeCeiling() {
+    org.setSuccessfulPayoutCycles(3);
+    org.setDisputeCount(1);
+    org.setDailySalesCapCents(50_000_00L);
+    org.setPlanOverridesUntil(Instant.now().plus(1, ChronoUnit.HOURS));
+    when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    service.checkCanCharge(orgId, 49_999_00L);
+
+    assertThatThrownBy(() -> service.checkCanCharge(orgId, 50_001_00L))
+        .isInstanceOf(SalesCapExceededException.class);
+  }
+
+  @Test
+  void expiredOverrideOnDisputedOrgFallsBackToTheCeiling() {
+    org.setSuccessfulPayoutCycles(3);
+    org.setDisputeCount(1);
+    org.setDailySalesCapCents(50_000_00L);
+    org.setPlanOverridesUntil(Instant.now().minus(1, ChronoUnit.HOURS));
+    when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    service.checkCanCharge(orgId, 1_000_000L);
+
+    assertThatThrownBy(() -> service.checkCanCharge(orgId, 1_000_001L))
+        .isInstanceOf(SalesCapExceededException.class);
+  }
+
   @Test
   void nullOrgIdIsNoOp() {
     service.checkCanCharge(null, 999_999_999L);
