@@ -233,6 +233,13 @@ Open your Netlify URL in a browser, log in, and complete a purchase end-to-end.
    docker compose up -d --build
    ```
 8. Point a reverse proxy (nginx, Caddy) at port 8080 (API) and 3000 (frontend), or serve the frontend as a static build behind the same proxy.
+   Have the proxy buffer request bodies, with a body-read timeout and a size limit, at least on
+   `/api/webhooks/*`. Those routes are public, and the backend reads their body before checking
+   the Stripe signature. The backend caps the body itself (`stripe.webhook-max-body-bytes`, 1 MiB:
+   413) and gives up on a body still arriving after `stripe.webhook-body-read-timeout-ms`
+   (10 s: 408). Until then, a slow sender still holds a backend thread. nginx buffers by default
+   (`proxy_request_buffering on`); set `client_body_timeout` (e.g. `10s`) and
+   `client_max_body_size 1m` on that location.
 
 ### Static frontend build
 

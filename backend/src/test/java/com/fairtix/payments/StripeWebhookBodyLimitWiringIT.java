@@ -2,6 +2,7 @@ package com.fairtix.payments;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fairtix.payments.api.StripeWebhookBodyLimitFilter;
 import com.fairtix.support.PostgresIT;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -24,8 +25,8 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class StripeWebhookBodyLimitWiringIT extends PostgresIT {
 
-  /** The default of stripe.webhook-max-body-bytes. */
-  static final int CAP = 1_048_576;
+  /** Pinned to main application.properties by StripeWebhookBodyLimitFilterTest. */
+  static final int CAP = StripeWebhookBodyLimitFilter.DEFAULT_MAX_BODY_BYTES;
 
   @LocalServerPort private int port;
 
