@@ -84,8 +84,9 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
     filterChain.doFilter(new CachedBodyRequest(request, body), response);
   }
 
-  // signed=true (a Stripe-Signature header is present; its value is never logged) on a 413 is
-  // the case to alert on: it may be a real Stripe event that Stripe will keep retrying.
+  // signed=true means only that a Stripe-Signature header was sent (its value is never logged).
+  // It is unverified, since the body can't be checked without reading it, and any client can
+  // send one: a hint for triage, not evidence that Stripe sent it.
   private void reject(HttpServletRequest request, HttpServletResponse response) {
     log.warn("Stripe webhook body over {} bytes rejected path={} declaredLength={} signed={}",
         maxBodyBytes, PATH_HELPER.getPathWithinApplication(request),

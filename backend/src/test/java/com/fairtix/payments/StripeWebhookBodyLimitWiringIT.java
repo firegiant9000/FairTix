@@ -29,7 +29,9 @@ class StripeWebhookBodyLimitWiringIT extends PostgresIT {
 
   @LocalServerPort private int port;
 
-  private final HttpClient http = HttpClient.newHttpClient();
+  // HTTP/1.1: no h2c upgrade attempt on a POST whose body Tomcat may not read.
+  private final HttpClient http =
+      HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
 
   @ParameterizedTest
   @ValueSource(strings = {"/api/webhooks/stripe", "/api/webhooks/stripe-connect"})
