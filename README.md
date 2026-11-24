@@ -53,8 +53,8 @@ off, payment simulated by the dev profile. Event and venue names are fictional.
   sweeps expired holds back to available every 30 seconds.
 - **Waiting room over Server-Sent Events.**
   [`QueueService`](backend/src/main/java/com/fairtix/queue/application/QueueService.java)
-  keeps queue entries and admission in PostgreSQL, with position counters and a
-  copy of the admitted set in Redis (Redisson). It admits fans in configurable
+  keeps queue entries and admission in PostgreSQL, with position counters in
+  Redis (Redisson). It admits fans in configurable
   batches, and
   [`QueueSseService`](backend/src/main/java/com/fairtix/queue/application/QueueSseService.java)
   pushes position updates to each connected browser. On an event that requires
@@ -82,8 +82,8 @@ off, payment simulated by the dev profile. Event and venue names are fictional.
   then the per-event sale lock, then row locks) so these paths cannot deadlock
   with each other; the one known exception is listed under
   [Known limitations](#known-limitations). Queue
-  admission is read from the database; the Redis admitted set is a copy written
-  after commit, so a Redis failure cannot grant or revoke checkout.
+  admission is read from the database only, so a Redis failure cannot grant or
+  revoke checkout.
 - **Stripe payments are idempotent and bound to what they pay for.** Every
   call that creates a PaymentIntent, a refund or a connected account carries a
   deterministic idempotency key

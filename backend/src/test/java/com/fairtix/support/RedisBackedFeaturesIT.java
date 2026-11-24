@@ -24,8 +24,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * The Redis-backed features against a real Redis 7 container (RM:139): the
- * {@code TestRedisConfig} mock always allows rate-limited calls and never finds a
- * user in the admitted set, so these paths had never run in a test.
+ * {@code TestRedisConfig} mock always allows rate-limited calls, so these paths had
+ * never run in a test.
  *
  * <p>{@link PostgresIT} flushes Redis after each test, so counters and sets do not
  * leak between tests.
@@ -117,7 +117,7 @@ class RedisBackedFeaturesIT extends PostgresIT {
   }
 
   @Test
-  void queueAdmission_redisSetTracksAdmitLeaveAndExpire() {
+  void queueAdmission_databaseTracksAdmitLeaveAndExpire() {
     Event event = queueEvent();
     UUID leaver = newUser("leaver@test.com");
     UUID expirer = newUser("expirer@test.com");
@@ -126,25 +126,20 @@ class RedisBackedFeaturesIT extends PostgresIT {
 
     assertThat(queueService.admitNextBatch(event.getId())).hasSize(2);
 
-    assertThat(admittedInRedis(event, leaver)).isTrue();
     assertThat(queueService.isAdmitted(event.getId(), leaver)).isTrue();
 
     queueService.leaveQueue(event.getId(), leaver);
-    assertThat(admittedInRedis(event, leaver)).isFalse();
     assertThat(queueService.isAdmitted(event.getId(), leaver)).isFalse();
 
     jdbcTemplate.update("UPDATE queue_entries SET expires_at = now() - interval '1 minute'"
         + " WHERE event_id = ? AND user_id = ?", event.getId(), expirer);
     queueService.expireAdmissions(event.getId());
-    assertThat(admittedInRedis(event, expirer)).isFalse();
     assertThat(queueService.isAdmitted(event.getId(), expirer)).isFalse();
   }
 
   /**
-   * Finding F-4.1, fixed: {@code admitNextBatch} adds to the Redis set only after
-   * its transaction commits, so a rolled-back admission leaves the user
-   * {@code WAITING} in the database and not admitted in Redis. Before, the add came
-   * first and {@code isAdmitted}, which then trusted a Redis hit, said admitted.
+   * A rolled-back {@code admitNextBatch} leaves the user {@code WAITING} and not
+   * admitted: admission is read from the database only.
    */
   @Test
   void queueAdmission_rollback_leavesUserNotAdmitted() {
@@ -160,7 +155,6 @@ class RedisBackedFeaturesIT extends PostgresIT {
     assertThat(jdbcTemplate.queryForObject(
         "SELECT status FROM queue_entries WHERE event_id = ? AND user_id = ?",
         String.class, event.getId(), user)).isEqualTo("WAITING");
-    assertThat(admittedInRedis(event, user)).as("Redis after the rollback").isFalse();
     assertThat(queueService.isAdmitted(event.getId(), user)).isFalse();
   }
 
@@ -179,9 +173,5 @@ class RedisBackedFeaturesIT extends PostgresIT {
     user.setPassword("$2a$10$dummyhashfortest");
     user.setEmailVerified(true);
     return userRepository.save(user).getId();
-  }
-
-  private boolean admittedInRedis(Event event, UUID userId) {
-    return redissonClient.getSet("queue:admitted:" + event.getId()).contains(userId.toString());
   }
 }

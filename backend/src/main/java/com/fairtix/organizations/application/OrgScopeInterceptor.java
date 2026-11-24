@@ -40,11 +40,9 @@ public class OrgScopeInterceptor implements HandlerInterceptor {
     OrgScoped scoped = method.getMethodAnnotation(OrgScoped.class);
     if (scoped == null) scoped = method.getBeanType().getAnnotation(OrgScoped.class);
 
-    UUID orgId = resolveOrgId(request);
-    if (orgId != null) OrgContext.set(orgId);
-
     if (scoped == null) return true;
 
+    UUID orgId = resolveOrgId(request);
     UUID userId = currentUserId();
 
     if (orgId == null) {
@@ -79,11 +77,6 @@ public class OrgScopeInterceptor implements HandlerInterceptor {
       log.warn("ORG_ACCESS_DENIED audit write failed user={} org={} permission={} reason={} error={}",
           userId, orgId, permission, reason, e.getClass().getSimpleName());
     }
-  }
-
-  @Override
-  public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
-    OrgContext.clear();
   }
 
   private UUID resolveOrgId(HttpServletRequest request) {
