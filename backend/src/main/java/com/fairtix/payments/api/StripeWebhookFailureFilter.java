@@ -7,28 +7,35 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 import java.io.IOException;
 
 /**
- * Surfaces server-side failures (5xx or a thrown exception) of the Stripe webhook endpoints.
- * Stripe retries on 5xx, so a persistent failure is otherwise silent. Records the Micrometer
- * counter {@code stripe.webhook.failures} (tag {@code endpoint=platform|connect}) and logs one
- * ERROR line starting with {@value #MARKER} as a log-alerting hook. Never logs the payload,
- * signature header or exception message. 4xx (e.g. bad signature) is not a failure here.
+ * Surfaces failed deliveries of the Stripe webhook endpoints. Stripe retries any non-2xx
+ * answer, so a persistent failure is otherwise silent. A POST that ends with a non-2xx status
+ * other than 400 (400 is a bad or missing signature, which is not our failure), or that throws,
+ * increments the Micrometer counter {@code stripe.webhook.failures} (tags
+ * {@code endpoint=platform|connect}, {@code status=<code>}) and logs one ERROR line starting
+ * with {@value #MARKER} as a log-alerting hook. Never logs the payload, signature header or
+ * exception message. Non-POST requests (scanners) are ignored.
  *
- * <p>Registered as a servlet-container {@code @Component} filter; it only observes the final
- * status, so its position relative to other filters does not affect correctness.
+ * <p>Runs at highest precedence so it wraps the rate limiter and security: a 429 or 403 on a
+ * webhook is counted too.
  */
 @Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
 public class StripeWebhookFailureFilter extends OncePerRequestFilter {
 
   static final String MARKER = "STRIPE_WEBHOOK_FAILURE";
   static final String METRIC = "stripe.webhook.failures";
   private static final String PLATFORM_PATH = "/api/webhooks/stripe";
   private static final String CONNECT_PATH = "/api/webhooks/stripe-connect";
+  private static final UrlPathHelper PATH_HELPER = new UrlPathHelper();
 
   private static final Logger log = LoggerFactory.getLogger(StripeWebhookFailureFilter.class);
 
@@ -36,25 +43,19 @@ public class StripeWebhookFailureFilter extends OncePerRequestFilter {
 
   public StripeWebhookFailureFilter(MeterRegistry registry) {
     this.registry = registry;
-    // Register both series up front so they exist (at 0) before the first failure.
-    registry.counter(METRIC, "endpoint", "platform");
-    registry.counter(METRIC, "endpoint", "connect");
   }
 
   @Override
   protected boolean shouldNotFilter(HttpServletRequest request) {
-    return endpointOf(request) == null;
+    return !"POST".equalsIgnoreCase(request.getMethod()) || endpointOf(request) == null;
   }
 
   private static String endpointOf(HttpServletRequest request) {
-    String path = request.getRequestURI();
-    if (path == null) {
-      return null;
-    }
-    if (path.equals(PLATFORM_PATH)) {
+    String path = PATH_HELPER.getPathWithinApplication(request);
+    if (PLATFORM_PATH.equals(path)) {
       return "platform";
     }
-    if (path.equals(CONNECT_PATH)) {
+    if (CONNECT_PATH.equals(path)) {
       return "connect";
     }
     return null;
@@ -72,13 +73,14 @@ public class StripeWebhookFailureFilter extends OncePerRequestFilter {
       record(endpoint, 500, e);
       throw e;
     }
-    if (response.getStatus() >= 500) {
-      record(endpoint, response.getStatus(), null);
+    int status = response.getStatus();
+    if ((status < 200 || status >= 300) && status != 400) {
+      record(endpoint, status, null);
     }
   }
 
   private void record(String endpoint, int status, Throwable thrown) {
-    registry.counter(METRIC, "endpoint", endpoint).increment();
+    registry.counter(METRIC, "endpoint", endpoint, "status", String.valueOf(status)).increment();
     if (thrown == null) {
       log.error("{} endpoint={} status={}", MARKER, endpoint, status);
     } else {

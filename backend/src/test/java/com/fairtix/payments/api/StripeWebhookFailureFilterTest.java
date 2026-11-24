@@ -22,8 +22,23 @@ class StripeWebhookFailureFilterTest {
   }
 
   private double count(String endpoint) {
-    var c = registry.find("stripe.webhook.failures").tag("endpoint", endpoint).counter();
-    return c == null ? 0 : c.count();
+    return registry.find("stripe.webhook.failures").tag("endpoint", endpoint).counters().stream()
+        .mapToDouble(io.micrometer.core.instrument.Counter::count).sum();
+  }
+
+  @Test
+  void status409IsCountedWithStatusTag() throws Exception {
+    run("/api/webhooks/stripe", status(409));
+    assertThat(registry.find("stripe.webhook.failures")
+        .tag("endpoint", "platform").tag("status", "409").counter().count()).isEqualTo(1);
+  }
+
+  @Test
+  void getRequestsAreNotFiltered() throws Exception {
+    var request = new MockHttpServletRequest("GET", "/api/webhooks/stripe");
+    request.setRequestURI("/api/webhooks/stripe");
+    filter.doFilter(request, new MockHttpServletResponse(), status(405));
+    assertThat(count("platform")).isZero();
   }
 
   private MockHttpServletResponse run(String path, FilterChain chain) throws Exception {

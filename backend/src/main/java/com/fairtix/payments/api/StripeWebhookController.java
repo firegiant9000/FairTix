@@ -85,10 +85,13 @@ public class StripeWebhookController {
   @Transactional
   public ResponseEntity<Void> handleStripeWebhook(
       @RequestBody String payload,
-      @RequestHeader("Stripe-Signature") String sigHeader) {
+      @RequestHeader(value = "Stripe-Signature", required = false) String sigHeader) {
 
     if (!stripeEnabled) {
       return ResponseEntity.ok().build();
+    }
+    if (sigHeader == null || sigHeader.isBlank()) {
+      return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
     }
 
     Event event;
