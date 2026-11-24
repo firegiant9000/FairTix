@@ -2,6 +2,7 @@ package com.fairtix.payments.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -34,11 +35,13 @@ import org.springframework.web.context.WebApplicationContext;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @TestPropertySource(properties = {
     "stripe.enabled=true",
-    "stripe.webhook-secret=whsec_test123"
+    "stripe.webhook-secret=whsec_test123",
+    "stripe.connect-webhook-secret=whsec_connect123"
 })
 class StripeWebhookFailureWiringTest {
 
   private static final String SECRET = "whsec_test123";
+  private static final String CONNECT_SECRET = "whsec_connect123";
 
   @Autowired private WebApplicationContext context;
   @Autowired private StripeWebhookFailureFilter failureFilter;
@@ -117,10 +120,51 @@ class StripeWebhookFailureWiringTest {
     assertThat(counter.count()).isGreaterThanOrEqualTo(1);
   }
 
+  @Test
+  void connectHandlerFailureAfterVerification_isCountedAsConnect() throws Exception {
+    when(webhookEventRepository.insertIfAbsent(eq("evt_connect_boom"), anyString()))
+        .thenThrow(new IllegalStateException("boom"));
+    String payload = """
+        { "id": "evt_connect_boom", "object": "event",
+          "type": "account.application.deauthorized", "account": "acct_boom",
+          "api_version": "%s",
+          "data": { "object": { "id": "ca_boom", "object": "application" } } }
+        """.formatted(Stripe.API_VERSION);
+    double before = connectFailures();
+
+    var result = mockMvc.perform(post("/api/webhooks/stripe-connect")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header("Stripe-Signature", signature(payload, CONNECT_SECRET))
+            .content(payload))
+        .andReturn();
+
+    assertThat(result.getResponse().getStatus()).isNotEqualTo(200).isNotEqualTo(400);
+    assertThat(connectFailures()).isEqualTo(before + 1);
+  }
+
+  @Test
+  void connectBadSignature_is400_andNotCounted() throws Exception {
+    double before = failures();
+    mockMvc.perform(post("/api/webhooks/stripe-connect")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header("Stripe-Signature", "t=1,v1=bad").content("{}"))
+        .andExpect(status().isBadRequest());
+    assertThat(failures()).isEqualTo(before);
+  }
+
+  private double connectFailures() {
+    return registry.find("stripe.webhook.failures").tag("endpoint", "connect").counters()
+        .stream().mapToDouble(Counter::count).sum();
+  }
+
   private static String signature(String payload) throws Exception {
+    return signature(payload, SECRET);
+  }
+
+  private static String signature(String payload, String secret) throws Exception {
     long ts = Instant.now().getEpochSecond();
     Mac mac = Mac.getInstance("HmacSHA256");
-    mac.init(new SecretKeySpec(SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+    mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
     String sig = HexFormat.of().formatHex(
         mac.doFinal((ts + "." + payload).getBytes(StandardCharsets.UTF_8)));
     return "t=" + ts + ",v1=" + sig;
