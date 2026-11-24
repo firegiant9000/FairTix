@@ -34,6 +34,13 @@ class StripeWebhookFailureFilterTest {
   }
 
   @Test
+  void status403And429AreNotCounted() throws Exception {
+    run("/api/webhooks/stripe", status(403));
+    run("/api/webhooks/stripe", status(429));
+    assertThat(count("platform")).isZero();
+  }
+
+  @Test
   void getRequestsAreNotFiltered() throws Exception {
     var request = new MockHttpServletRequest("GET", "/api/webhooks/stripe");
     request.setRequestURI("/api/webhooks/stripe");

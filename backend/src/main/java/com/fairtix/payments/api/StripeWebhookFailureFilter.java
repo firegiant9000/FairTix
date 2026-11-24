@@ -14,18 +14,21 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.util.UrlPathHelper;
 
 import java.io.IOException;
+import java.util.Set;
 
 /**
  * Surfaces failed deliveries of the Stripe webhook endpoints. Stripe retries any non-2xx
  * answer, so a persistent failure is otherwise silent. A POST that ends with a non-2xx status
- * other than 400 (400 is a bad or missing signature, which is not our failure), or that throws,
- * increments the Micrometer counter {@code stripe.webhook.failures} (tags
+ * other than 400, 403 or 429, or that throws, increments the Micrometer counter {@code stripe.webhook.failures} (tags
  * {@code endpoint=platform|connect}, {@code status=<code>}) and logs one ERROR line starting
  * with {@value #MARKER} as a log-alerting hook. Never logs the payload, signature header or
  * exception message. Non-POST requests (scanners) are ignored.
  *
- * <p>Runs at highest precedence so it wraps the rate limiter and security: a 429 or 403 on a
- * webhook is counted too.
+ * <p>Deliberately ignored: 400 (bad, missing or unparseable request), 403 (e.g. the origin
+ * check, which a real Stripe delivery never trips because it carries no auth cookie) and 429
+ * (per-IP rate limit). Anyone can provoke these, so counting them would let an unauthenticated
+ * caller raise the alert. Runs at highest precedence so it also sees exceptions thrown by, and
+ * statuses set by, filters further down the chain.
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -33,6 +36,8 @@ public class StripeWebhookFailureFilter extends OncePerRequestFilter {
 
   static final String MARKER = "STRIPE_WEBHOOK_FAILURE";
   static final String METRIC = "stripe.webhook.failures";
+  /** Statuses an unauthenticated caller can provoke at will, so they must not raise the alert. */
+  private static final Set<Integer> IGNORED_STATUSES = Set.of(400, 403, 429);
   private static final String PLATFORM_PATH = "/api/webhooks/stripe";
   private static final String CONNECT_PATH = "/api/webhooks/stripe-connect";
   private static final UrlPathHelper PATH_HELPER = new UrlPathHelper();
@@ -74,7 +79,7 @@ public class StripeWebhookFailureFilter extends OncePerRequestFilter {
       throw e;
     }
     int status = response.getStatus();
-    if ((status < 200 || status >= 300) && status != 400) {
+    if ((status < 200 || status >= 300) && !IGNORED_STATUSES.contains(status)) {
       record(endpoint, status, null);
     }
   }
