@@ -51,6 +51,7 @@ public class OrgScopeInterceptor implements AsyncHandlerInterceptor {
       return true;
     }
 
+    UUID orgId = resolveOrgId(request);
     UUID userId = currentUserId();
 
     if (orgId == null) {

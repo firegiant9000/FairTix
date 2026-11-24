@@ -5,7 +5,6 @@ import org.redisson.api.RAtomicLong;
 import org.redisson.api.RBucket;
 import org.redisson.api.RRateLimiter;
 import org.redisson.api.RScript;
-import org.redisson.api.RSet;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.Codec;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -79,17 +78,6 @@ public class TestRedisConfig {
       }).when(bucketMock).set(Mockito.any(), Mockito.any(java.time.Duration.class));
       when(bucketMock.delete()).thenAnswer(i -> buckets.remove(key) != null);
       return bucketMock;
-    });
-
-    // RSet mock for QueueService (admitted set per event)
-    when(mock.getSet(anyString())).thenAnswer(invocation -> {
-      @SuppressWarnings("unchecked")
-      RSet<String> setMock = Mockito.mock(RSet.class);
-      when(setMock.contains(Mockito.any())).thenReturn(false);
-      when(setMock.add(Mockito.any())).thenReturn(true);
-      when(setMock.remove(Mockito.any())).thenReturn(true);
-      when(setMock.expire(Mockito.any(java.time.Duration.class))).thenReturn(true);
-      return setMock;
     });
 
     // Script mock for TransferVelocityLimiter's acquire script: always takes a slot,
