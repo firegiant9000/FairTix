@@ -166,7 +166,7 @@ Browser → Netlify (static frontend) → Railway (Spring Boot API)
 1. Create a free account at [railway.app](https://railway.app) and start a new project.
 2. Click **Deploy from GitHub repo** → select this repository → set the **Root Directory** to `backend/`.
 3. Railway detects the `Dockerfile` automatically and builds it.
-4. Add a **PostgreSQL** plugin and a **Redis** plugin from the Railway dashboard. Railway injects connection variables automatically.
+4. Add a **PostgreSQL** plugin and a **Redis** plugin from the Railway dashboard. Railway injects connection variables automatically. Redis must be 7.0 or later: the waiting room uses `EXPIRE ... NX`, which older versions reject.
 5. In the Railway service's **Variables** tab, add all required backend environment variables from the table above. At minimum:
    - `JWT_SECRET` (generate: `python3 -c "import secrets; print(secrets.token_hex(48))"`)
    - `SPRING_PROFILES_ACTIVE=prod`

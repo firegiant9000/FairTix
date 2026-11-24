@@ -352,9 +352,15 @@ public class QueueService {
             try {
                 RSet<String> admittedSet = redissonClient.getSet(ADMITTED_KEY + eventId);
                 admittedSet.addAll(userIds);
+                // TTL on the admitted set slightly longer than the admission window
+                Duration ttl = Duration.ofMinutes(admissionWindowMinutes + 1);
                 if (refreshTtl) {
-                    // TTL on the admitted set slightly longer than the admission window
-                    admittedSet.expire(Duration.ofMinutes(admissionWindowMinutes + 1));
+                    admittedSet.expire(ttl);
+                } else {
+                    // A reinstated user keeps their original window, so don't extend the set.
+                    // But if the set was gone (Redis deletes an empty set), addAll created a
+                    // new key with no expiry; give it one.
+                    admittedSet.expireIfNotSet(ttl);
                 }
             } catch (RuntimeException ex) {
                 log.warn("Could not add {} user(s) to the admitted set of event {}: {}",
