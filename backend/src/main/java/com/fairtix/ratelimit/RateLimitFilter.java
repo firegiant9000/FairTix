@@ -19,6 +19,7 @@ import com.fairtix.auth.application.JwtService;
 import com.fairtix.config.AllowedOrigins;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Filter that intercepts incoming HTTP requests and applies rate limiting based
@@ -33,6 +34,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private static final String AUTH_COOKIE = "fairtix_token";
     private static final UrlPathHelper PATH_HELPER = new UrlPathHelper();
 
+    private static final long WEBHOOK_WARN_INTERVAL_MS = 60_000;
+
+    private final AtomicLong lastWebhookWarnMillis = new AtomicLong(Long.MIN_VALUE / 2);
+    private final AtomicLong suppressedWebhookWarns = new AtomicLong();
     private final JwtService jwtService;
     private final RateLimitService rateLimitService;
     private final AllowedOrigins allowedOrigins;
@@ -83,9 +88,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
         if (!allowed) {
             if (rateLimitService.isStripeWebhook(url)) {
-                // Stripe backs off for hours after a 429, and the webhook failure metric
-                // counts only signature-verified requests: leave a trace. No client IP.
-                log.warn("Rate limit rejected Stripe webhook path={}", url);
+                warnWebhookRejected(url);
             }
             reject(request, response, HttpStatus.TOO_MANY_REQUESTS, "60",
                 "RATE_LIMITED", "Too many requests. Please try again later.");
@@ -93,6 +96,20 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    // Stripe backs off for hours after a 429, and nothing else records a rejection
+    // before the signature check: leave a trace. At most one line a minute, with the
+    // count suppressed since the last one, since the route is public. No client IP.
+    private void warnWebhookRejected(String url) {
+        long now = System.currentTimeMillis();
+        long last = lastWebhookWarnMillis.get();
+        if (now - last >= WEBHOOK_WARN_INTERVAL_MS && lastWebhookWarnMillis.compareAndSet(last, now)) {
+            log.warn("Rate limit rejected Stripe webhook path={} suppressedSinceLastWarn={}",
+                url, suppressedWebhookWarns.getAndSet(0));
+        } else {
+            suppressedWebhookWarns.incrementAndGet();
+        }
     }
 
     // CORS preflights carry no credentials and would use up the caller's quota; health

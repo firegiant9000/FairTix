@@ -186,6 +186,22 @@ class RateLimitFilterTest {
         assertTrue(!output.getOut().contains(REMOTE));
     }
 
+    /** The route is public: a flood past the bucket must not become a log flood. */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void rateLimitedWebhook_warnIsThrottledToOnePerMinute(CapturedOutput output) throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+
+        for (int i = 0; i < 5; i++) {
+            filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        }
+
+        String out = output.getOut();
+        int first = out.indexOf("Rate limit rejected Stripe webhook");
+        assertTrue(first >= 0);
+        assertEquals(-1, out.indexOf("Rate limit rejected Stripe webhook", first + 1));
+    }
+
     @Test
     @ExtendWith(OutputCaptureExtension.class)
     void rateLimitedNonWebhook_doesNotLogWebhookWarn(CapturedOutput output) throws Exception {

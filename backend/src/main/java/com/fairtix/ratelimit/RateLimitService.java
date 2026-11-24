@@ -64,7 +64,9 @@ public class RateLimitService {
     public boolean isAllowed(String key, String url) {
         // The limit is part of the key: trySetRate below never overwrites a stored rate,
         // and every request renews the TTL, so a busy bucket would otherwise keep its old
-        // rate after a tier changes. It also keeps old and new replicas apart in a deploy.
+        // rate after a tier changes. Side effect: during a rolling deploy that changes the
+        // key, old and new replicas keep separate buckets, so the per-IP ceiling doubles
+        // for the overlap (the per-account login lockout is a separate counter).
         int limit = resolveLimit(url);
         String redisKey = "rate_limit:" + key + ":" + url + ":limit=" + limit;
 
