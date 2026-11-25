@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.organizations.domain.Organization;
+import com.fairtix.payments.api.StripeWebhookBodyLimitFilter;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.support.PostgresIT;
 import com.stripe.Stripe;
@@ -63,7 +64,12 @@ class StripeConnectWebhookLedgerIT extends PostgresIT {
 
   @BeforeEach
   void setUp() {
-    mockMvc = MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();
+    // As in StripeWebhookLedgerIT: run every signed delivery through the body-limit filter's
+    // cached body, which webAppContextSetup would otherwise leave out.
+    mockMvc = MockMvcBuilders.webAppContextSetup(context)
+        .addFilters(context.getBean(StripeWebhookBodyLimitFilter.class))
+        .apply(springSecurity())
+        .build();
     Organization org = new Organization("Ledger Venue", "ledger-venue-" + UUID.randomUUID(),
         "ledger@venue.test");
     org.setStripeConnectAccountId(ACCOUNT);

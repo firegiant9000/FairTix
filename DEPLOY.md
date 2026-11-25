@@ -233,6 +233,34 @@ Open your Netlify URL in a browser, log in, and complete a purchase end-to-end.
    docker compose up -d --build
    ```
 8. Point a reverse proxy (nginx, Caddy) at port 8080 (API) and 3000 (frontend), or serve the frontend as a static build behind the same proxy.
+   The webhook routes (`/api/webhooks/`) are public, and the backend reads their body before
+   checking the Stripe signature. On these routes the backend limits what it reads:
+   - no Content-Length (chunked): 411;
+   - body over `stripe.webhook-max-body-bytes` (1 MiB): 413;
+   - body not complete after `stripe.webhook-body-read-timeout-ms` (10 s): 408.
+
+   After any of these, or a rate-limit 429 on a request with a body, the backend closes the
+   connection without reading the rest of the body. If the client already sent those bytes,
+   it may see a connection reset rather than the status. A slow sender can still hold a
+   backend thread for up to that timeout plus Tomcat's 60 s socket read timeout. Other public
+   POST routes (for example `/auth/**`) have no read deadline at all.
+
+   So the real protection, for every route, is the proxy buffering the whole request body
+   before forwarding it:
+   - **nginx** buffers by default; don't set `proxy_request_buffering off`. Add
+     `location /api/webhooks/ { client_max_body_size 1m; client_body_timeout 10s; ... }`,
+     so nginx answers an oversized webhook with 413 itself. `client_body_timeout` limits the
+     gap between two reads, not the total time, so the buffering is the protection, not the
+     timeout.
+   - **Caddy** streams request bodies unless told otherwise. For `/api/webhooks/*`:
+     - add `request_body { max_size 1MiB }` (`MB` would be 1,000,000 bytes, below the backend's
+       1 MiB), so Caddy refuses an oversized body itself;
+     - add `request_buffers 1MiB` to the `reverse_proxy`. This only buffers; it doesn't cap
+       the size.
+     - Cap the body read with the global option `servers { timeouts { read_body 10s } }`.
+       Unlike nginx's timeout, it covers the whole body. But it applies to every route on that
+       server, including admin CSV imports, so give it room or serve the webhooks on a
+       separate `servers :<port>` block.
 
 ### Static frontend build
 

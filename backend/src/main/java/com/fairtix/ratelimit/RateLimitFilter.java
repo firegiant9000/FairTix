@@ -18,6 +18,7 @@ import org.springframework.http.HttpStatus;
 import io.jsonwebtoken.Claims;
 import com.fairtix.auth.application.JwtService;
 import com.fairtix.config.AllowedOrigins;
+import com.fairtix.config.SkipBodyDrainConfig;
 
 import java.io.IOException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -159,6 +160,15 @@ public class RateLimitFilter extends OncePerRequestFilter {
             response.setHeader("Access-Control-Allow-Credentials", "true");
         }
         response.setStatus(status.value());
+        // On the public webhook routes, Tomcat would otherwise read the unread body after the
+        // 429 with no overall deadline, so a throttled caller trickling one could hold a worker
+        // thread. Only there: closing early can reach the client as a reset instead of the 429,
+        // which the SPA's own POSTs shouldn't risk.
+        if (PATH_HELPER.getPathWithinApplication(request).startsWith("/api/webhooks/")
+                && (request.getContentLengthLong() > 0
+                    || request.getHeader("Transfer-Encoding") != null)) {
+            SkipBodyDrainConfig.mark(request);
+        }
         response.setHeader("Retry-After", retryAfterSeconds);
         response.setContentType("application/json");
         response.getWriter().write(

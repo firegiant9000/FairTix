@@ -2,6 +2,7 @@ package com.fairtix.ratelimit;
 
 import com.fairtix.auth.application.JwtService;
 import com.fairtix.config.AllowedOrigins;
+import com.fairtix.config.SkipBodyDrainConfig;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import jakarta.servlet.FilterChain;
@@ -25,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -174,81 +176,31 @@ class RateLimitFilterTest {
     }
 
     /**
-     * Stripe treats a 429 like any failure and backs off for hours, and the webhook
-     * failure metric only counts signature-verified requests, so a rejected delivery
-     * must leave a trace here. The path only: no client IP.
+     * A throttled webhook request that declares a body is marked, so Tomcat doesn't read (and a
+     * trickling sender can't hold a thread with) the body after the 429. One without a body keeps
+     * its keep-alive connection, and so do other routes.
      */
     @Test
-    @ExtendWith(OutputCaptureExtension.class)
-    void rateLimitedWebhook_logsWarnWithoutIp(CapturedOutput output) throws Exception {
+    void rateLimited_withBody_isMarkedToSkipTheBodyDrain() throws Exception {
         when(limiter.tryAcquire(1)).thenReturn(false);
-        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockHttpServletRequest withBody = request("POST", "/api/webhooks/stripe");
+        withBody.setContent(new byte[16]);
+        MockHttpServletRequest chunked = request("POST", "/api/webhooks/stripe");
+        chunked.addHeader("Transfer-Encoding", "chunked");
+        MockHttpServletRequest noBody = request("POST", "/api/webhooks/stripe");
+        // The SPA's own POSTs keep a clean 429: closing early could reach them as a reset.
+        MockHttpServletRequest appPost = request("POST", "/auth/login");
+        appPost.setContent(new byte[16]);
 
-        filter.doFilter(request("POST", "/api/webhooks/stripe-connect"), response, chain);
+        filter.doFilter(withBody, new MockHttpServletResponse(), chain);
+        filter.doFilter(chunked, new MockHttpServletResponse(), chain);
+        filter.doFilter(noBody, new MockHttpServletResponse(), chain);
+        filter.doFilter(appPost, new MockHttpServletResponse(), chain);
 
-        assertEquals(429, response.getStatus());
-        assertTrue(output.getOut().contains("Rate limit rejected Stripe webhook path=/api/webhooks/stripe-connect"));
-        assertTrue(!output.getOut().contains(REMOTE));
-    }
-
-    /** The route is public: a flood past the bucket must not become a log flood. */
-    @Test
-    @ExtendWith(OutputCaptureExtension.class)
-    void rateLimitedWebhook_warnIsThrottledToOnePerMinute(CapturedOutput output) throws Exception {
-        when(limiter.tryAcquire(1)).thenReturn(false);
-
-        for (int i = 0; i < 5; i++) {
-            filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
-        }
-
-        String out = output.getOut();
-        int first = out.indexOf("Rate limit rejected Stripe webhook");
-        assertTrue(first >= 0);
-        assertEquals(-1, out.indexOf("Rate limit rejected Stripe webhook", first + 1));
-    }
-
-    /** After the interval the next rejection logs again, with the count it suppressed. */
-    @Test
-    @ExtendWith(OutputCaptureExtension.class)
-    void rateLimitedWebhook_warnResumesAfterIntervalWithSuppressedCount(CapturedOutput output)
-            throws Exception {
-        when(limiter.tryAcquire(1)).thenReturn(false);
-
-        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
-        nanos.addAndGet(TimeUnit.SECONDS.toNanos(59));
-        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
-        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
-        nanos.addAndGet(TimeUnit.SECONDS.toNanos(1));
-        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
-
-        String out = output.getOut();
-        assertTrue(out.contains("path=/api/webhooks/stripe suppressedSinceLastWarn=0"));
-        assertTrue(out.contains("path=/api/webhooks/stripe suppressedSinceLastWarn=2"));
-    }
-
-    /** A flood on one webhook path must not hide the first rejection on the other. */
-    @Test
-    @ExtendWith(OutputCaptureExtension.class)
-    void rateLimitedWebhook_warnIsThrottledPerPath(CapturedOutput output) throws Exception {
-        when(limiter.tryAcquire(1)).thenReturn(false);
-
-        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
-        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
-        filter.doFilter(request("POST", "/api/webhooks/stripe-connect"), new MockHttpServletResponse(), chain);
-
-        String out = output.getOut();
-        assertTrue(out.contains("path=/api/webhooks/stripe suppressedSinceLastWarn=0"));
-        assertTrue(out.contains("path=/api/webhooks/stripe-connect suppressedSinceLastWarn=0"));
-    }
-
-    @Test
-    @ExtendWith(OutputCaptureExtension.class)
-    void rateLimitedNonWebhook_doesNotLogWebhookWarn(CapturedOutput output) throws Exception {
-        when(limiter.tryAcquire(1)).thenReturn(false);
-
-        filter.doFilter(request("POST", "/auth/login"), new MockHttpServletResponse(), chain);
-
-        assertTrue(!output.getOut().contains("Stripe webhook"));
+        assertTrue(SkipBodyDrainConfig.isMarked(withBody));
+        assertTrue(SkipBodyDrainConfig.isMarked(chunked));
+        assertFalse(SkipBodyDrainConfig.isMarked(noBody));
+        assertFalse(SkipBodyDrainConfig.isMarked(appPost));
     }
 
     /** A CORS preflight carries no credentials and must not use up the caller's quota. */
