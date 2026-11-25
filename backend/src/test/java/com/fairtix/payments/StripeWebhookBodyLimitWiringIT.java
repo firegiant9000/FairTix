@@ -5,7 +5,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.fairtix.payments.api.StripeWebhookBodyLimitFilter;
 import com.fairtix.support.PostgresIT;
 import java.io.ByteArrayInputStream;
+import java.io.OutputStream;
+import java.net.Socket;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -62,6 +65,35 @@ class StripeWebhookBodyLimitWiringIT extends PostgresIT {
         HttpResponse.BodyHandlers.ofString());
 
     assertThat(response.statusCode()).isEqualTo(411);
+  }
+
+  /**
+   * After a reject, Tomcat would otherwise keep reading the unsent body (up to its 2 MB
+   * maxSwallowSize, with no overall deadline) on the worker thread. The headers here promise a
+   * body that never comes, so the connection closes promptly only if that read is switched off.
+   * readAllBytes returns on close; a held thread shows up as the socket timeout.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "Content-Length: " + (CAP + 1) + "|413",
+      "Transfer-Encoding: chunked|411"})
+  void rejectedRequest_closesWithoutReadingTheRestOfTheBody(String headerAndStatus)
+      throws Exception {
+    String[] parts = headerAndStatus.split("\\|");
+    try (Socket socket = new Socket("localhost", port)) {
+      socket.setSoTimeout(5_000);
+      OutputStream out = socket.getOutputStream();
+      out.write(("POST /api/webhooks/stripe HTTP/1.1\r\n"
+          + "Host: localhost\r\n"
+          + "Content-Type: application/json\r\n"
+          + parts[0] + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+      out.flush();
+
+      String response = new String(socket.getInputStream().readAllBytes(),
+          StandardCharsets.US_ASCII);
+
+      assertThat(response).startsWith("HTTP/1.1 " + parts[1]);
+    }
   }
 
   private HttpResponse<String> post(String path, int bytes) throws Exception {

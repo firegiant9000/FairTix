@@ -46,8 +46,10 @@ import java.util.function.LongSupplier;
  * answered 408. The check runs after each read returns, so a sender trickling bytes holds a
  * worker thread for at most the timeout plus one socket read timeout (Tomcat's connection
  * timeout: 60 s unless {@code server.tomcat.connection-timeout} is set), not indefinitely.
- * Stripe sends the whole body at once. A reverse proxy that buffers request bodies
- * (DEPLOY.md) keeps the trickle off the worker threads entirely.
+ * Every rejected request is marked with {@link #SKIP_BODY_DRAIN_ATTR}, so
+ * {@link StripeWebhookTomcatConfig} stops Tomcat reading the rest of the body after the
+ * response and the connection closes. Stripe sends the whole body at once. A reverse proxy that
+ * buffers request bodies (DEPLOY.md) keeps the trickle off the worker threads entirely.
  *
  * <p>Runs after {@code RateLimitFilter}, so a throttled caller is turned away before any body
  * is read. A legitimate Stripe event over the cap would be retried by Stripe and keep failing;
@@ -69,6 +71,9 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
   /** Default of {@code stripe.webhook-body-read-timeout-ms}. */
   public static final long DEFAULT_READ_TIMEOUT_MS = 10_000;
   private static final long MAX_READ_TIMEOUT_MS = 300_000;
+  /** Set on a rejected request: Tomcat must not read the rest of its body. */
+  public static final String SKIP_BODY_DRAIN_ATTR =
+      StripeWebhookBodyLimitFilter.class.getName() + ".skipBodyDrain";
 
   private final int maxBodyBytes;
   private final long readTimeoutMs;
@@ -115,7 +120,7 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
       log.warn("Stripe webhook without Content-Length rejected path={} signed={}",
           PATH_HELPER.getPathWithinApplication(request),
           request.getHeader("Stripe-Signature") != null);
-      response.setStatus(HttpStatus.LENGTH_REQUIRED.value());
+      refuse(request, response, HttpStatus.LENGTH_REQUIRED);
       return;
     }
     if (request.getContentLengthLong() > maxBodyBytes) {
@@ -127,7 +132,7 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
       log.warn("Stripe webhook body not received within {} ms path={} declaredLength={}",
           readTimeoutMs, PATH_HELPER.getPathWithinApplication(request),
           request.getContentLengthLong());
-      response.setStatus(HttpStatus.REQUEST_TIMEOUT.value());
+      refuse(request, response, HttpStatus.REQUEST_TIMEOUT);
       return;
     }
     if (body.length > maxBodyBytes) {
@@ -166,7 +171,13 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
     log.warn("Stripe webhook body over {} bytes rejected path={} declaredLength={} signed={}",
         maxBodyBytes, PATH_HELPER.getPathWithinApplication(request),
         request.getContentLengthLong(), request.getHeader("Stripe-Signature") != null);
-    response.setStatus(HttpStatus.CONTENT_TOO_LARGE.value());
+    refuse(request, response, HttpStatus.CONTENT_TOO_LARGE);
+  }
+
+  private static void refuse(HttpServletRequest request, HttpServletResponse response,
+      HttpStatus status) {
+    request.setAttribute(SKIP_BODY_DRAIN_ATTR, Boolean.TRUE);
+    response.setStatus(status.value());
   }
 
   /** Serves the already-read body to the controller. */

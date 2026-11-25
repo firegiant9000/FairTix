@@ -66,6 +66,7 @@ class StripeWebhookBodyLimitFilterTest {
     assertThat(response.getStatus()).isEqualTo(408);
     verify(chain, never()).doFilter(any(), any());
     assertThat(output.getOut()).contains("Stripe webhook body not received within 10000 ms");
+    assertThat(request.getAttribute(StripeWebhookBodyLimitFilter.SKIP_BODY_DRAIN_ATTR)).isNotNull();
   }
 
   /** The same trickle, finished inside the deadline, still reaches the controller intact. */
@@ -77,6 +78,8 @@ class StripeWebhookBodyLimitFilterTest {
     filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> seen.set(req));
 
     assertThat(seen.get().getInputStream().readAllBytes()).hasSize(8);
+    // Only a reject turns off Tomcat's body drain; an accepted request keeps its connection.
+    assertThat(request.getAttribute(StripeWebhookBodyLimitFilter.SKIP_BODY_DRAIN_ATTR)).isNull();
   }
 
   /** Exactly at the deadline (end of stream included) is still in time: the check is "over". */
@@ -139,6 +142,7 @@ class StripeWebhookBodyLimitFilterTest {
 
     assertThat(response.getStatus()).isEqualTo(413);
     verify(chain, never()).doFilter(any(), any());
+    assertThat(request.getAttribute(StripeWebhookBodyLimitFilter.SKIP_BODY_DRAIN_ATTR)).isNotNull();
   }
 
   /**
@@ -156,6 +160,7 @@ class StripeWebhookBodyLimitFilterTest {
 
     assertThat(response.getStatus()).isEqualTo(411);
     verify(chain, never()).doFilter(any(), any());
+    assertThat(request.getAttribute(StripeWebhookBodyLimitFilter.SKIP_BODY_DRAIN_ATTR)).isNotNull();
   }
 
   /** A Content-Length that understates the body: the bytes actually read still decide. */
@@ -169,6 +174,7 @@ class StripeWebhookBodyLimitFilterTest {
 
     assertThat(response.getStatus()).isEqualTo(413);
     verify(chain, never()).doFilter(any(), any());
+    assertThat(request.getAttribute(StripeWebhookBodyLimitFilter.SKIP_BODY_DRAIN_ATTR)).isNotNull();
   }
 
   /** The signature covers the exact bytes, so the controller must see them unchanged. */

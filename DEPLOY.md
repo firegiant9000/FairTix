@@ -239,15 +239,18 @@ Open your Netlify URL in a browser, log in, and complete a purchase end-to-end.
    - body over `stripe.webhook-max-body-bytes` (1 MiB): 413;
    - body not complete after `stripe.webhook-body-read-timeout-ms` (10 s): 408.
 
-   A slow sender can still hold a backend thread for up to that timeout plus Tomcat's 60 s
-   socket read timeout. What keeps it off backend threads entirely is the proxy buffering the
-   whole request body before forwarding it:
+   After any of these, the backend closes the connection without reading the rest of the
+   body. A slow sender can still hold a backend thread for up to that timeout plus Tomcat's
+   60 s socket read timeout. What keeps it off backend threads entirely is the proxy buffering
+   the whole request body before forwarding it:
    - **nginx** buffers by default; don't set `proxy_request_buffering off` on this location.
      Add `location /api/webhooks/ { client_max_body_size 1m; client_body_timeout 10s; ... }`.
      `client_body_timeout` limits the gap between two reads, not the total time, so the
      buffering is the protection, not the timeout.
    - **Caddy** streams request bodies unless told otherwise: add `request_buffers 1MiB` to the
-     `reverse_proxy` for these paths.
+     `reverse_proxy` for these paths, and cap the body read with the global option
+     `servers { timeouts { read_body 10s } }`. Unlike nginx's timeout, that one covers the
+     whole body.
 
 ### Static frontend build
 
