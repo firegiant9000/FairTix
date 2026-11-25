@@ -54,7 +54,8 @@ public class StripeConnectWebhookController {
       "account.updated", Account.class,
       "payout.paid", Payout.class,
       "payout.failed", Payout.class,
-      "charge.dispute.created", Dispute.class);
+      "charge.dispute.created", Dispute.class,
+      "charge.dispute.closed", Dispute.class);
   /** Handled types that need only the event's account id, not its object. */
   private static final Set<String> ACCOUNT_ONLY_TYPES = Set.of("account.application.deauthorized");
 
@@ -143,6 +144,7 @@ public class StripeConnectWebhookController {
       case "payout.paid" -> handlePayout(event, "STRIPE_PAYOUT_PAID");
       case "payout.failed" -> handlePayoutFailed(event);
       case "charge.dispute.created" -> handleDisputeCreated(event);
+      case "charge.dispute.closed" -> handleDisputeClosed(event);
       default -> throw new IllegalStateException("Unreachable: " + event.getType());
     }
     return ResponseEntity.ok().build();
@@ -208,8 +210,23 @@ public class StripeConnectWebhookController {
   private void handleDisputeCreated(Event event) {
     getObject(event, Dispute.class).ifPresent(dispute -> {
       Organization org = orgForEvent(event);
-      if (org == null) return;
+      if (org == null) {
+        disputeService.recordUnmatchedConnectDispute(dispute, event.getAccount(), false);
+        return;
+      }
       disputeService.recordDispute(org, dispute);
+    });
+  }
+
+  /** Audit only; the count and the freeze flag are left as they are. */
+  private void handleDisputeClosed(Event event) {
+    getObject(event, Dispute.class).ifPresent(dispute -> {
+      Organization org = orgForEvent(event);
+      if (org == null) {
+        disputeService.recordUnmatchedConnectDispute(dispute, event.getAccount(), true);
+        return;
+      }
+      disputeService.recordDisputeClosed(org, dispute);
     });
   }
 
