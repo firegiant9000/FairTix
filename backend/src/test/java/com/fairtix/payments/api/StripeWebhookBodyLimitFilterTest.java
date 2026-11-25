@@ -1,5 +1,6 @@
 package com.fairtix.payments.api;
 
+import com.fairtix.config.SkipBodyDrainConfig;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletRequest;
 import org.junit.jupiter.api.Test;
@@ -16,7 +17,9 @@ import jakarta.servlet.ServletInputStream;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -66,7 +69,7 @@ class StripeWebhookBodyLimitFilterTest {
     assertThat(response.getStatus()).isEqualTo(408);
     verify(chain, never()).doFilter(any(), any());
     assertThat(output.getOut()).contains("Stripe webhook body not received within 10000 ms");
-    assertThat(request.getAttribute(StripeWebhookBodyLimitFilter.SKIP_BODY_DRAIN_ATTR)).isNotNull();
+    assertThat(SkipBodyDrainConfig.isMarked(request)).isTrue();
   }
 
   /** The same trickle, finished inside the deadline, still reaches the controller intact. */
@@ -79,7 +82,50 @@ class StripeWebhookBodyLimitFilterTest {
 
     assertThat(seen.get().getInputStream().readAllBytes()).hasSize(8);
     // Only a reject turns off Tomcat's body drain; an accepted request keeps its connection.
-    assertThat(request.getAttribute(StripeWebhookBodyLimitFilter.SKIP_BODY_DRAIN_ATTR)).isNull();
+    assertThat(SkipBodyDrainConfig.isMarked(request)).isFalse();
+  }
+
+  /**
+   * A socket read timeout surfaces as an IOException from the read. Tomcat has already set a 408
+   * then, but would still drain the rest of the body unless the request is marked.
+   */
+  @Test
+  void bodyReadFailure_marksTheRequestAndRethrows() {
+    MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/webhooks/stripe") {
+      @Override
+      public ServletInputStream getInputStream() {
+        return new ServletInputStream() {
+          @Override
+          public int read() throws IOException {
+            throw new SocketTimeoutException("read timed out");
+          }
+
+          @Override
+          public int read(byte[] b, int off, int len) throws IOException {
+            throw new SocketTimeoutException("read timed out");
+          }
+
+          @Override
+          public boolean isFinished() {
+            return false;
+          }
+
+          @Override
+          public boolean isReady() {
+            return true;
+          }
+
+          @Override
+          public void setReadListener(ReadListener listener) {
+          }
+        };
+      }
+    };
+    request.setContent(new byte[8]);
+
+    assertThatThrownBy(() -> filter.doFilter(request, new MockHttpServletResponse(),
+        mock(FilterChain.class))).isInstanceOf(SocketTimeoutException.class);
+    assertThat(SkipBodyDrainConfig.isMarked(request)).isTrue();
   }
 
   /** Exactly at the deadline (end of stream included) is still in time: the check is "over". */
@@ -142,7 +188,7 @@ class StripeWebhookBodyLimitFilterTest {
 
     assertThat(response.getStatus()).isEqualTo(413);
     verify(chain, never()).doFilter(any(), any());
-    assertThat(request.getAttribute(StripeWebhookBodyLimitFilter.SKIP_BODY_DRAIN_ATTR)).isNotNull();
+    assertThat(SkipBodyDrainConfig.isMarked(request)).isTrue();
   }
 
   /**
@@ -160,7 +206,7 @@ class StripeWebhookBodyLimitFilterTest {
 
     assertThat(response.getStatus()).isEqualTo(411);
     verify(chain, never()).doFilter(any(), any());
-    assertThat(request.getAttribute(StripeWebhookBodyLimitFilter.SKIP_BODY_DRAIN_ATTR)).isNotNull();
+    assertThat(SkipBodyDrainConfig.isMarked(request)).isTrue();
   }
 
   /** A Content-Length that understates the body: the bytes actually read still decide. */
@@ -174,7 +220,7 @@ class StripeWebhookBodyLimitFilterTest {
 
     assertThat(response.getStatus()).isEqualTo(413);
     verify(chain, never()).doFilter(any(), any());
-    assertThat(request.getAttribute(StripeWebhookBodyLimitFilter.SKIP_BODY_DRAIN_ATTR)).isNotNull();
+    assertThat(SkipBodyDrainConfig.isMarked(request)).isTrue();
   }
 
   /** The signature covers the exact bytes, so the controller must see them unchanged. */

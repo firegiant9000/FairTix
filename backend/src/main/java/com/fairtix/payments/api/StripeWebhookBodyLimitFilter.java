@@ -1,5 +1,6 @@
 package com.fairtix.payments.api;
 
+import com.fairtix.config.SkipBodyDrainConfig;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
@@ -46,13 +47,13 @@ import java.util.function.LongSupplier;
  * answered 408. The check runs after each read returns, so a sender trickling bytes holds a
  * worker thread for at most the timeout plus one socket read timeout (Tomcat's connection
  * timeout: 60 s unless {@code server.tomcat.connection-timeout} is set), not indefinitely.
- * Every rejected request is marked with {@link #SKIP_BODY_DRAIN_ATTR}, so
- * {@link StripeWebhookTomcatConfig} stops Tomcat reading the rest of the body after the
- * response and the connection closes. Stripe sends the whole body at once. A reverse proxy that
- * buffers request bodies (DEPLOY.md) keeps the trickle off the worker threads entirely.
+ * Every rejected request, and one whose body read fails (a socket timeout or client abort), is
+ * passed to {@link SkipBodyDrainConfig#mark}, so Tomcat doesn't read the rest of the body after
+ * the response and the connection closes. Stripe sends the whole body at once. A reverse proxy
+ * that buffers request bodies (DEPLOY.md) keeps the trickle off the worker threads entirely.
  *
- * <p>Runs after {@code RateLimitFilter}, so a throttled caller is turned away before any body
- * is read. A legitimate Stripe event over the cap would be retried by Stripe and keep failing;
+ * <p>Runs after {@code RateLimitFilter}, so a throttled caller is turned away before this
+ * filter reads any body (that filter marks its own rejections too). A legitimate Stripe event over the cap would be retried by Stripe and keep failing;
  * the WARN line (path, cap, declared length and whether a signature header was sent; no client
  * IP, no header value) is the trace of that.
  */
@@ -71,9 +72,6 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
   /** Default of {@code stripe.webhook-body-read-timeout-ms}. */
   public static final long DEFAULT_READ_TIMEOUT_MS = 10_000;
   private static final long MAX_READ_TIMEOUT_MS = 300_000;
-  /** Set on a rejected request: Tomcat must not read the rest of its body. */
-  public static final String SKIP_BODY_DRAIN_ATTR =
-      StripeWebhookBodyLimitFilter.class.getName() + ".skipBodyDrain";
 
   private final int maxBodyBytes;
   private final long readTimeoutMs;
@@ -127,7 +125,15 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
       reject(request, response);
       return;
     }
-    byte[] body = readWithinDeadline(request.getInputStream());
+    byte[] body;
+    try {
+      body = readWithinDeadline(request.getInputStream());
+    } catch (IOException e) {
+      // A socket read timeout or client abort: Tomcat has already set a 4xx, but would still
+      // drain the rest of the body unless told not to.
+      SkipBodyDrainConfig.mark(request);
+      throw e;
+    }
     if (body == null) {
       log.warn("Stripe webhook body not received within {} ms path={} declaredLength={}",
           readTimeoutMs, PATH_HELPER.getPathWithinApplication(request),
@@ -176,7 +182,7 @@ public class StripeWebhookBodyLimitFilter extends OncePerRequestFilter {
 
   private static void refuse(HttpServletRequest request, HttpServletResponse response,
       HttpStatus status) {
-    request.setAttribute(SKIP_BODY_DRAIN_ATTR, Boolean.TRUE);
+    SkipBodyDrainConfig.mark(request);
     response.setStatus(status.value());
   }
 

@@ -2,6 +2,7 @@ package com.fairtix.ratelimit;
 
 import com.fairtix.auth.application.JwtService;
 import com.fairtix.config.AllowedOrigins;
+import com.fairtix.config.SkipBodyDrainConfig;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import jakarta.servlet.FilterChain;
@@ -19,6 +20,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -163,6 +165,29 @@ class RateLimitFilterTest {
         assertEquals(429, response.getStatus());
         assertEquals("60", response.getHeader("Retry-After"));
         verify(chain, never()).doFilter(any(), any());
+    }
+
+    /**
+     * A throttled request that declares a body is marked, so Tomcat doesn't read (and a trickling
+     * sender can't hold a thread with) the body after the 429. One without a body keeps its
+     * keep-alive connection.
+     */
+    @Test
+    void rateLimited_withBody_isMarkedToSkipTheBodyDrain() throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+        MockHttpServletRequest withBody = request("POST", "/api/webhooks/stripe");
+        withBody.setContent(new byte[16]);
+        MockHttpServletRequest chunked = request("POST", "/api/webhooks/stripe");
+        chunked.addHeader("Transfer-Encoding", "chunked");
+        MockHttpServletRequest noBody = request("GET", "/api/events");
+
+        filter.doFilter(withBody, new MockHttpServletResponse(), chain);
+        filter.doFilter(chunked, new MockHttpServletResponse(), chain);
+        filter.doFilter(noBody, new MockHttpServletResponse(), chain);
+
+        assertTrue(SkipBodyDrainConfig.isMarked(withBody));
+        assertTrue(SkipBodyDrainConfig.isMarked(chunked));
+        assertFalse(SkipBodyDrainConfig.isMarked(noBody));
     }
 
     /** A CORS preflight carries no credentials and must not use up the caller's quota. */
