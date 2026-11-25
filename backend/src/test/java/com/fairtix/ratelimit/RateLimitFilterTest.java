@@ -8,15 +8,21 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.redisson.api.RRateLimiter;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.RedisException;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -57,6 +63,8 @@ class RateLimitFilterTest {
     private JwtService jwtService;
     private RateLimitFilter filter;
     private FilterChain chain;
+    /** The filter's nanoTime source, so the warn throttle can be stepped. */
+    private final AtomicLong nanos = new AtomicLong(-5_000_000_000L);
 
     @BeforeEach
     void setUp() {
@@ -72,7 +80,7 @@ class RateLimitFilterTest {
         ReflectionTestUtils.setField(service, "defaultLimit", 100);
 
         jwtService = mock(JwtService.class);
-        filter = new RateLimitFilter(service, jwtService, new AllowedOrigins(SPA));
+        filter = new RateLimitFilter(service, jwtService, new AllowedOrigins(SPA), nanos::get);
         chain = mock(FilterChain.class);
     }
 
@@ -163,6 +171,84 @@ class RateLimitFilterTest {
         assertEquals(429, response.getStatus());
         assertEquals("60", response.getHeader("Retry-After"));
         verify(chain, never()).doFilter(any(), any());
+    }
+
+    /**
+     * Stripe treats a 429 like any failure and backs off for hours, and the webhook
+     * failure metric only counts signature-verified requests, so a rejected delivery
+     * must leave a trace here. The path only: no client IP.
+     */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void rateLimitedWebhook_logsWarnWithoutIp(CapturedOutput output) throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request("POST", "/api/webhooks/stripe-connect"), response, chain);
+
+        assertEquals(429, response.getStatus());
+        assertTrue(output.getOut().contains("Rate limit rejected Stripe webhook path=/api/webhooks/stripe-connect"));
+        assertTrue(!output.getOut().contains(REMOTE));
+    }
+
+    /** The route is public: a flood past the bucket must not become a log flood. */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void rateLimitedWebhook_warnIsThrottledToOnePerMinute(CapturedOutput output) throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+
+        for (int i = 0; i < 5; i++) {
+            filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        }
+
+        String out = output.getOut();
+        int first = out.indexOf("Rate limit rejected Stripe webhook");
+        assertTrue(first >= 0);
+        assertEquals(-1, out.indexOf("Rate limit rejected Stripe webhook", first + 1));
+    }
+
+    /** After the interval the next rejection logs again, with the count it suppressed. */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void rateLimitedWebhook_warnResumesAfterIntervalWithSuppressedCount(CapturedOutput output)
+            throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        nanos.addAndGet(TimeUnit.SECONDS.toNanos(59));
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        nanos.addAndGet(TimeUnit.SECONDS.toNanos(1));
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+
+        String out = output.getOut();
+        assertTrue(out.contains("path=/api/webhooks/stripe suppressedSinceLastWarn=0"));
+        assertTrue(out.contains("path=/api/webhooks/stripe suppressedSinceLastWarn=2"));
+    }
+
+    /** A flood on one webhook path must not hide the first rejection on the other. */
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void rateLimitedWebhook_warnIsThrottledPerPath(CapturedOutput output) throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        filter.doFilter(request("POST", "/api/webhooks/stripe"), new MockHttpServletResponse(), chain);
+        filter.doFilter(request("POST", "/api/webhooks/stripe-connect"), new MockHttpServletResponse(), chain);
+
+        String out = output.getOut();
+        assertTrue(out.contains("path=/api/webhooks/stripe suppressedSinceLastWarn=0"));
+        assertTrue(out.contains("path=/api/webhooks/stripe-connect suppressedSinceLastWarn=0"));
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void rateLimitedNonWebhook_doesNotLogWebhookWarn(CapturedOutput output) throws Exception {
+        when(limiter.tryAcquire(1)).thenReturn(false);
+
+        filter.doFilter(request("POST", "/auth/login"), new MockHttpServletResponse(), chain);
+
+        assertTrue(!output.getOut().contains("Stripe webhook"));
     }
 
     /** A CORS preflight carries no credentials and must not use up the caller's quota. */
@@ -343,6 +429,8 @@ class RateLimitFilterTest {
     private String limiterKey() {
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
         verify(redisson).getRateLimiter(key.capture());
-        return key.getValue();
+        // These tests are about who and which path is keyed; the limit suffix is
+        // covered in RateLimitServiceTest.
+        return key.getValue().replaceFirst(":limit=\\d+$", "");
     }
 }

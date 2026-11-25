@@ -8,6 +8,7 @@ import jakarta.servlet.http.HttpServletResponse;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -19,6 +20,11 @@ import com.fairtix.auth.application.JwtService;
 import com.fairtix.config.AllowedOrigins;
 
 import java.io.IOException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 /**
  * Filter that intercepts incoming HTTP requests and applies rate limiting based
@@ -33,15 +39,29 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private static final String AUTH_COOKIE = "fairtix_token";
     private static final UrlPathHelper PATH_HELPER = new UrlPathHelper();
 
+    private static final long WEBHOOK_WARN_INTERVAL_NANOS = TimeUnit.MINUTES.toNanos(1);
+
+    // One throttle per webhook path. Keys are only the exact paths isStripeWebhook
+    // accepts, so the map stays bounded.
+    private final ConcurrentMap<String, WarnThrottle> webhookWarnThrottles = new ConcurrentHashMap<>();
     private final JwtService jwtService;
     private final RateLimitService rateLimitService;
     private final AllowedOrigins allowedOrigins;
 
+    private final LongSupplier nanoTime;
+
+    @Autowired
     public RateLimitFilter(RateLimitService rateLimitService, JwtService jwtService,
             AllowedOrigins allowedOrigins) {
+        this(rateLimitService, jwtService, allowedOrigins, System::nanoTime);
+    }
+
+    RateLimitFilter(RateLimitService rateLimitService, JwtService jwtService,
+            AllowedOrigins allowedOrigins, LongSupplier nanoTime) {
         this.rateLimitService = rateLimitService;
         this.jwtService = jwtService;
         this.allowedOrigins = allowedOrigins;
+        this.nanoTime = nanoTime;
     }
 
     @Override
@@ -82,12 +102,42 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
 
         if (!allowed) {
+            if (rateLimitService.isStripeWebhook(url)) {
+                warnWebhookRejected(url);
+            }
             reject(request, response, HttpStatus.TOO_MANY_REQUESTS, "60",
                 "RATE_LIMITED", "Too many requests. Please try again later.");
             return;
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    // Stripe backs off for hours after a 429, and nothing else records a rejection
+    // before the signature check: leave a trace. At most one line a minute, with the
+    // count suppressed since the last one, per path, since the route is public. No
+    // client IP.
+    private void warnWebhookRejected(String url) {
+        WarnThrottle throttle = webhookWarnThrottles.computeIfAbsent(url,
+            k -> new WarnThrottle(nanoTime.getAsLong() - WEBHOOK_WARN_INTERVAL_NANOS));
+        long now = nanoTime.getAsLong();
+        long last = throttle.lastWarnNanos.get();
+        // nanoTime has an arbitrary origin: compare differences only.
+        if (now - last >= WEBHOOK_WARN_INTERVAL_NANOS && throttle.lastWarnNanos.compareAndSet(last, now)) {
+            log.warn("Rate limit rejected Stripe webhook path={} suppressedSinceLastWarn={}",
+                url, throttle.suppressed.getAndSet(0));
+        } else {
+            throttle.suppressed.incrementAndGet();
+        }
+    }
+
+    private static final class WarnThrottle {
+        final AtomicLong lastWarnNanos;
+        final AtomicLong suppressed = new AtomicLong();
+
+        WarnThrottle(long lastWarnNanos) {
+            this.lastWarnNanos = new AtomicLong(lastWarnNanos);
+        }
     }
 
     // CORS preflights carry no credentials and would use up the caller's quota; health

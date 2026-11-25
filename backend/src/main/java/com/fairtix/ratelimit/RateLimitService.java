@@ -23,6 +23,10 @@ public class RateLimitService {
         "/auth/reset-password",
         "/auth/step-up/verify");
 
+    private static final Set<String> STRIPE_WEBHOOK_PATHS = Set.of(
+        "/api/webhooks/stripe",
+        "/api/webhooks/stripe-connect");
+
     // Longer than the one-minute window, so an active bucket never resets early. The
     // key includes the path, which the caller chooses, so it must expire.
     private static final Duration KEY_TTL = Duration.ofMinutes(2);
@@ -44,6 +48,9 @@ public class RateLimitService {
     @Value("${ratelimit.default:100}")
     private int defaultLimit;
 
+    @Value("${ratelimit.webhooks:1000}")
+    private int webhooksLimit;
+
     public RateLimitService(RedissonClient redissonClient) {
         this.redissonClient = redissonClient;
     }
@@ -55,14 +62,20 @@ public class RateLimitService {
      * @return true if the request is allowed, false if it exceeds the rate limit
      */
     public boolean isAllowed(String key, String url) {
-        String redisKey = "rate_limit:" + key + ":" + url;
+        // The limit is part of the key: trySetRate below never overwrites a stored rate,
+        // and every request renews the TTL, so a busy bucket would otherwise keep its old
+        // rate after a tier changes. Side effect: during a rolling deploy that changes the
+        // key, old and new replicas keep separate buckets, so for the overlap the per-IP
+        // ceiling is the old limit plus the new one (the per-account login lockout is a
+        // separate counter).
+        int limit = resolveLimit(url);
+        String redisKey = "rate_limit:" + key + ":" + url + ":limit=" + limit;
 
         RRateLimiter limiter = redissonClient.getRateLimiter(redisKey);
 
         // trySetRate is set-if-absent, so it runs on every call. The key can still
         // expire in the round trip before tryAcquire, which then throws "not
         // initialized": set the rate again and retry once.
-        int limit = resolveLimit(url);
         limiter.trySetRate(RateType.OVERALL, limit, Duration.ofMinutes(1));
         boolean allowed;
         try {
@@ -82,6 +95,14 @@ public class RateLimitService {
      * Returns the per-minute rate limit for the given URL.
      */
     int resolveLimit(String url) {
+        // Stripe sends no cookie, so webhooks are keyed by IP, and a handful of Stripe
+        // IPs carry every platform and connected-account event: the default tier would
+        // 429 a busy on-sale into Stripe's hours-long retry backoff. Still limited, since
+        // the bucket is checked before the signature. The two exact paths only, so a
+        // future route under /api/webhooks/ doesn't inherit this limit unreviewed.
+        if (isStripeWebhook(url)) {
+            return webhooksLimit;
+        }
         // Refresh takes a high-entropy cookie, and a failed refresh signs the SPA user
         // out; after the access cookie expires it's keyed by IP, so 10/min would sign
         // out users who share a NAT.
@@ -101,6 +122,10 @@ public class RateLimitService {
             return seatsLimit;
         }
         return defaultLimit;
+    }
+
+    public boolean isStripeWebhook(String url) {
+        return STRIPE_WEBHOOK_PATHS.contains(url);
     }
 
     boolean isAuthTier(String url) {

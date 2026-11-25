@@ -38,6 +38,7 @@ public class RateLimitServiceTest {
         ReflectionTestUtils.setField(rateLimitService, "ordersLimit", 20);
         ReflectionTestUtils.setField(rateLimitService, "seatsLimit", 60);
         ReflectionTestUtils.setField(rateLimitService, "defaultLimit", 100);
+        ReflectionTestUtils.setField(rateLimitService, "webhooksLimit", 1000);
     }
 
     @ParameterizedTest(name = "{0} → limit {1}")
@@ -136,6 +137,42 @@ public class RateLimitServiceTest {
     @Test
     public void refresh_getsTheDefaultTier() {
         assertEquals(100, rateLimitService.resolveLimit("/auth/refresh"));
+    }
+
+    /**
+     * Stripe sends no cookie, so webhook requests are keyed by IP, and a handful of Stripe
+     * IPs carry every event for the platform and all connected accounts. At the default
+     * 100/min a busy on-sale gets 429s, and Stripe's retries back off for hours.
+     */
+    @ParameterizedTest(name = "{0} → webhook tier")
+    @CsvSource({
+        "/api/webhooks/stripe",
+        "/api/webhooks/stripe-connect",
+    })
+    public void webhooks_getTheirOwnTier(String url) {
+        assertEquals(1000, rateLimitService.resolveLimit(url));
+    }
+
+    /** Only the two Stripe endpoints: a future route under the prefix gets the default. */
+    @Test
+    public void otherWebhookPaths_getTheDefaultTier() {
+        assertEquals(100, rateLimitService.resolveLimit("/api/webhooks/other"));
+        assertEquals(100, rateLimitService.resolveLimit("/api/webhooks/stripe/"));
+    }
+
+    /**
+     * trySetRate is set-if-absent and every request renews the key's TTL, so a busy bucket
+     * would keep its old rate forever after a tier changes. The limit is in the key, so a
+     * new limit starts a new bucket.
+     */
+    @Test
+    public void limiterKey_changesWhenTheLimitChanges() {
+        rateLimitService.isAllowed("ip:1.2.3.4", "/api/webhooks/stripe");
+        ReflectionTestUtils.setField(rateLimitService, "webhooksLimit", 2000);
+        rateLimitService.isAllowed("ip:1.2.3.4", "/api/webhooks/stripe");
+
+        verify(redissonClient).getRateLimiter("rate_limit:ip:1.2.3.4:/api/webhooks/stripe:limit=1000");
+        verify(redissonClient).getRateLimiter("rate_limit:ip:1.2.3.4:/api/webhooks/stripe:limit=2000");
     }
 
     @Test
