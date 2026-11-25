@@ -316,6 +316,15 @@ stripe listen --forward-to localhost:8080/api/webhooks/stripe
 # Restart the backend container after updating .env
 ```
 
+**Stripe webhook failing with 5xx (alerting)**
+Stripe retries any non-2xx answer from `/api/webhooks/stripe` or `/api/webhooks/stripe-connect`.
+- **Counted:** a request whose Stripe signature verified and that then ends non-2xx (including a 400 from a handler) or throws. It logs an ERROR line containing `STRIPE_WEBHOOK_FAILURE endpoint=platform|connect status=<code>` (no payload or exception message); point log-based alerting at that marker. The same failures increment the Micrometer counter `stripe.webhook.failures{endpoint,status}`, registered for a future metrics backend (it is not exposed over HTTP). Only callers holding the signing secret can trigger it.
+- **Not counted:** unsigned or bad-signature 400s, 403, 429, 415, and errors before the handler runs (for example the database being down at transaction start, or a signed but unparseable body). Anyone can provoke those, so they never alert.
+- **Rate limit:** each webhook path has its own per-IP bucket (`ratelimit.default`, 100/min), checked before the signature is verified. A real Stripe burst throttled with 429 will not alert (follow-up: exempt the webhook paths or raise their limit).
+- **After rotating `STRIPE_WEBHOOK_SECRET` or `STRIPE_CONNECT_WEBHOOK_SECRET`:** send a test event from the Stripe Dashboard and check the failed deliveries. A wrong secret makes every delivery a 400, which never alerts.
+
+As a backstop, Stripe emails the account owner when deliveries keep failing and may disable the endpoint after repeated failures, so do not rely on that alone.
+
 **reCAPTCHA not appearing after 3 failed logins**
 `RECAPTCHA_ENABLED` is `false` (the default). Set it to `true` and ensure `RECAPTCHA_SECRET` and `REACT_APP_RECAPTCHA_SITE_KEY` are both set. The backend logs a warning at startup if the secret is blank.
 
