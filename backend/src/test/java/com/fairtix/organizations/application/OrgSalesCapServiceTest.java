@@ -74,8 +74,45 @@ class OrgSalesCapServiceTest {
   @Test
   void disputeHoldsAt10kTierEvenAfterMultipleCycles() {
     org.setSuccessfulPayoutCycles(10);
-    org.incrementDisputeCount();
+    org.setDisputeCount(1);
     when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    assertThatThrownBy(() -> service.checkCanCharge(orgId, 1_000_001L))
+        .isInstanceOf(SalesCapExceededException.class);
+  }
+
+  /** A dispute is a ceiling, not a tier: a new org does not jump to $10k. */
+  @Test
+  void disputeOnNewOrgStaysAt1k() {
+    org.setSuccessfulPayoutCycles(0);
+    org.setDisputeCount(1);
+    when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    service.checkCanCharge(orgId, 100_000L);
+
+    assertThatThrownBy(() -> service.checkCanCharge(orgId, 100_001L))
+        .isInstanceOf(SalesCapExceededException.class);
+  }
+
+  @Test
+  void disputeOnEstablishedOrgStaysAt10k() {
+    org.setSuccessfulPayoutCycles(1);
+    org.setDisputeCount(2);
+    when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    service.checkCanCharge(orgId, 1_000_000L);
+
+    assertThatThrownBy(() -> service.checkCanCharge(orgId, 1_000_001L))
+        .isInstanceOf(SalesCapExceededException.class);
+  }
+
+  @Test
+  void disputeOnUnlimitedOrgIsCappedAt10k() {
+    org.setSuccessfulPayoutCycles(3);
+    org.setDisputeCount(1);
+    when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    service.checkCanCharge(orgId, 1_000_000L);
 
     assertThatThrownBy(() -> service.checkCanCharge(orgId, 1_000_001L))
         .isInstanceOf(SalesCapExceededException.class);
@@ -102,6 +139,35 @@ class OrgSalesCapServiceTest {
     when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
 
     assertThatThrownBy(() -> service.checkCanCharge(orgId, 200_000L))
+        .isInstanceOf(SalesCapExceededException.class);
+  }
+
+  /** An admin override is how a disputed org is reviewed: it replaces the $10k ceiling. */
+  @Test
+  void validOverrideLiftsTheDisputeCeiling() {
+    org.setSuccessfulPayoutCycles(3);
+    org.setDisputeCount(1);
+    org.setDailySalesCapCents(50_000_00L);
+    org.setPlanOverridesUntil(Instant.now().plus(1, ChronoUnit.HOURS));
+    when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    service.checkCanCharge(orgId, 49_999_00L);
+
+    assertThatThrownBy(() -> service.checkCanCharge(orgId, 50_001_00L))
+        .isInstanceOf(SalesCapExceededException.class);
+  }
+
+  @Test
+  void expiredOverrideOnDisputedOrgFallsBackToTheCeiling() {
+    org.setSuccessfulPayoutCycles(3);
+    org.setDisputeCount(1);
+    org.setDailySalesCapCents(50_000_00L);
+    org.setPlanOverridesUntil(Instant.now().minus(1, ChronoUnit.HOURS));
+    when(ledger.sumSince(eq(orgId), any())).thenReturn(0L);
+
+    service.checkCanCharge(orgId, 1_000_000L);
+
+    assertThatThrownBy(() -> service.checkCanCharge(orgId, 1_000_001L))
         .isInstanceOf(SalesCapExceededException.class);
   }
 

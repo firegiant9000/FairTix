@@ -52,12 +52,13 @@ git push -u origin develop
 
 1. Stripe Dashboard → Developers → Webhooks → "Add endpoint".
 2. URL: `https://api.staging.fairtix.io/api/webhooks/stripe`.
-3. Subscribe to at least: `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.refunded`.
+3. Subscribe to at least: `payment_intent.succeeded`, `payment_intent.payment_failed`, `charge.refunded`,
+   `charge.dispute.created`, `charge.dispute.closed` (disputes on destination charges arrive here, not on the Connect endpoint).
 4. Copy the signing secret into Railway as `STRIPE_WEBHOOK_SECRET`.
 5. Add a second endpoint listening to events on connected accounts:
    `https://api.staging.fairtix.io/api/webhooks/stripe-connect`, with `account.updated`,
-   `account.application.deauthorized`, `payout.paid`, `payout.failed` and
-   `charge.dispute.created`. Copy its signing secret into Railway as
+   `account.application.deauthorized`, `payout.paid`, `payout.failed`,
+   `charge.dispute.created` and `charge.dispute.closed`. Copy its signing secret into Railway as
    `STRIPE_CONNECT_WEBHOOK_SECRET`.
 
 The backend refuses to start with Stripe on and either secret blank, so set both before deploying.

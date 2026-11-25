@@ -3,6 +3,10 @@
 > Branch: `feature/m1-queue-email-password-reset`
 > Base: `feature/implement-issues-49-66-67-71-74`
 > Date: 2026-04-15
+>
+> **Superseded (2026-11):** the Redis admitted set (`queue:admitted:{eventId}`) described
+> below was removed in #360; nothing read it. Queue admission is checked against
+> `queue_entries` in PostgreSQL only. The Redis position counter remains.
 
 ---
 
@@ -47,7 +51,7 @@
 | #90 Transactional Email Service | ✅ COMPLETE | `spring-boot-starter-mail`, `SmtpEmailService`, `EmailTemplateService`, MailHog in Docker Compose — all present |
 | #89 Email Verification on Signup | ✅ COMPLETE | V9 migration correctly grandfathers existing users (`UPDATE users SET email_verified = TRUE WHERE deleted_at IS NULL`) |
 | #91 Forgot/Reset Password Flow | ✅ COMPLETE | Redis rate-limiting (3/15 min), `LoginAttemptService` integration, and audit logging all present |
-| #88 Waiting Room & Queue | ✅ COMPLETE | Redis + DB fallback for admission checks, `SeatHoldService` gate, schedulers, and all frontend components present |
+| #88 Waiting Room & Queue | ✅ COMPLETE | DB admission checks (Redis set removed in #360), `SeatHoldService` gate, schedulers, and all frontend components present |
 
 ### Deviations from Plan
 
@@ -65,10 +69,10 @@ Tests exist for `SmtpEmailService` and `EmailTemplateService` only. The followin
 **Backend unit tests:**
 - `EmailVerificationService` — token generation, expiry, one-time-use, max active tokens
 - `PasswordResetService` — rate limiting, silent enumeration, lockout reset, password strength
-- `QueueService` — join, status, leave, admission check (Redis hit, Redis miss → DB fallback)
+- `QueueService` — join, status, leave, admission check ~~(Redis hit, Redis miss → DB fallback)~~ (DB only; see note at top)
 - `SeatHoldService` — queue gate rejection (no admission), queue gate pass, `completeQueueEntry` on hold success
 - `QueueAdmissionScheduler` — batch sizing, seat availability math
-- `QueueExpirationScheduler` — expires ADMITTED entries, removes from Redis admitted set
+- `QueueExpirationScheduler` — expires ADMITTED entries ~~and removes them from the Redis admitted set~~
 - `VerificationTokenCleanupScheduler` — deletes expired verification and reset tokens
 
 **Frontend tests:**
@@ -383,10 +387,10 @@ CREATE INDEX idx_qe_event_position ON queue_entries(event_id, position);
 | **QueueService** | `queue/application/QueueService.java` | Core logic — see detailed flow below. |
 | **QueueController** | `queue/api/QueueController.java` | Endpoints — see below. |
 | **Redis queue position counter** | Via `RedissonClient` | `RAtomicLong` keyed `queue:position:{eventId}` for fast position assignment. |
-| **Redis admitted set** | Via `RedissonClient` | `RSet<String>` keyed `queue:admitted:{eventId}` for O(1) admission check during hold creation. TTL matches admission window. |
-| **SeatHoldService gate** | `inventory/application/SeatHoldService.java` | Insert check at start of `createHold()`: if `event.isQueueRequired()`, verify user has `ADMITTED` queue entry (check Redis set first, fall back to DB). |
+| ~~**Redis admitted set**~~ | ~~Via `RedissonClient`~~ | ~~`RSet<String>` keyed `queue:admitted:{eventId}` for O(1) admission check during hold creation. TTL matches admission window.~~ Removed (#360). |
+| **SeatHoldService gate** | `inventory/application/SeatHoldService.java` | Insert check at start of `createHold()`: if `event.isQueueRequired()`, verify user has `ADMITTED` queue entry ~~(check Redis set first, fall back to DB)~~ (DB). |
 | **QueueAdmissionScheduler** | `queue/scheduler/QueueAdmissionScheduler.java` | Runs every 30s. For each queue-required event: count available seats, count currently admitted users, admit next N users from WAITING to ADMITTED. Set admission expiry (15 min). |
-| **QueueExpirationScheduler** | `queue/scheduler/QueueExpirationScheduler.java` | Runs every 30s. Expire ADMITTED entries past their `expires_at`. Remove from Redis admitted set. |
+| **QueueExpirationScheduler** | `queue/scheduler/QueueExpirationScheduler.java` | Runs every 30s. Expire ADMITTED entries past their `expires_at`. ~~Remove from Redis admitted set.~~ |
 
 #### Queue Flow (Detailed)
 
@@ -421,9 +425,10 @@ CREATE INDEX idx_qe_event_position ON queue_entries(event_id, position);
 2. POST /api/events/{eventId}/holds (existing endpoint)
 3. SeatHoldService.createHold():
    a. Load event
-   b. NEW: if event.queueRequired → check Redis admitted set
-      - If user NOT in set → 403 "Queue admission required"
-      - If user in set → proceed
+   b. NEW: if event.queueRequired → check for an ADMITTED queue entry (DB;
+      the Redis admitted set planned here was removed in #360)
+      - If not admitted → 403 "Queue admission required"
+      - If admitted → proceed
    c. Existing: active hold count, seat validation, pessimistic lock, etc.
 4. On successful hold: mark queue entry as COMPLETED
 ```
@@ -454,8 +459,8 @@ CREATE INDEX idx_qe_event_position ON queue_entries(event_id, position);
 | Admission window | 15 minutes | Enough time to browse seats and create hold |
 | Admission batch size | Dynamic: `available_seats - admitted_users` (min 1, max 50) | Don't admit more users than there are seats |
 | Position counter | Redis `RAtomicLong` | Fast, atomic, no DB contention |
-| Admitted set | Redis `RSet` with per-entry TTL | O(1) lookup during hold creation hot path |
-| DB persistence | `queue_entries` table | Durable record; Redis is cache layer for performance |
+| ~~Admitted set~~ | ~~Redis `RSet` with per-entry TTL~~ | ~~O(1) lookup during hold creation hot path~~ Removed (#360) |
+| DB persistence | `queue_entries` table | Durable record and the admission source of truth |
 | Unique constraint | One queue entry per user per event | Prevents re-joining after leaving |
 | Scheduler interval | 30 seconds | Matches hold expiration scheduler cadence |
 
@@ -480,7 +485,7 @@ CREATE INDEX idx_qe_event_position ON queue_entries(event_id, position);
 **Backend:**
 - QueueService: join queue (success, duplicate, non-queue event), get status (waiting, admitted, expired), leave queue.
 - QueueAdmissionScheduler: admits correct batch size, respects available seat count, handles no-waiters.
-- QueueExpirationScheduler: expires old admissions, removes from Redis.
+- QueueExpirationScheduler: expires old admissions ~~and removes them from Redis~~.
 - SeatHoldService: rejects hold for queue-required event without admission, allows hold with valid admission.
 - Integration: full flow — join → wait → admit → hold → complete.
 

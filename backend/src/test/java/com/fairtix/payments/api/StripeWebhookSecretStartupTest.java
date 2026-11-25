@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 import com.fairtix.audit.application.AuditService;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.payments.application.StripeConnectService;
+import com.fairtix.payments.application.StripeDisputeService;
 import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import com.fairtix.payments.infrastructure.StripeWebhookEventRepository;
 import com.fairtix.refunds.infrastructure.RefundRepository;
@@ -64,7 +65,8 @@ class StripeWebhookSecretStartupTest {
   private StripeWebhookController platform(boolean enabled, String secret) {
     StripeWebhookController controller = new StripeWebhookController(
         mock(PaymentRecordRepository.class), mock(RefundRepository.class),
-        mock(AuditService.class), mock(StripeWebhookEventRepository.class));
+        mock(AuditService.class), mock(StripeWebhookEventRepository.class),
+        mock(StripeDisputeService.class));
     ReflectionTestUtils.setField(controller, "stripeEnabled", enabled);
     ReflectionTestUtils.setField(controller, "webhookSecret", secret);
     return controller;
@@ -74,7 +76,7 @@ class StripeWebhookSecretStartupTest {
     StripeConnectWebhookController controller = new StripeConnectWebhookController(
         mock(OrganizationRepository.class), mock(StripeConnectService.class),
         mock(AuditService.class), mock(PayoutReportService.class),
-        mock(StripeWebhookEventRepository.class));
+        mock(StripeWebhookEventRepository.class), mock(StripeDisputeService.class));
     ReflectionTestUtils.setField(controller, "stripeEnabled", enabled);
     ReflectionTestUtils.setField(controller, "webhookSecret", secret);
     return controller;

@@ -2,10 +2,6 @@ package com.fairtix.queue;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 import com.fairtix.events.domain.Event;
 import com.fairtix.events.infrastructure.EventRepository;
@@ -25,33 +21,17 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.redisson.api.RSet;
-import org.redisson.api.RedissonClient;
-import org.redisson.client.RedisException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.annotation.DirtiesContext;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 /**
- * The Redis admitted set is a copy of the database's queue state, and Redis
- * failing must not undo database work or grant access the database does not.
+ * Queue admission against a real database: admission is read from the database
+ * only, and holds and paid orders move the queue entry to COMPLETED.
  *
- * <p>Red on {@code 625dcbdc}: removing a user from the admitted set ran inside
- * the caller's transaction with no error handling, so a Redis error rolled back
- * a paid Stripe order (after the charge), a queue exit and the admission-expiry
- * sweep; and {@code isAdmitted} trusted a Redis hit, so a set entry left behind
- * by a failed removal still let the user hold seats and check out.
- *
- * <p>Redis failures are injected on a spy of the real client: for this test's
- * event, the admitted set reports every user as present and throws on removal.
- * Not {@code @Transactional}: every write commits, and {@link PostgresIT}
+ * <p>Not {@code @Transactional}: every write commits, and {@link PostgresIT}
  * truncates the tables after each test.
  */
-// Its own context (spies on RedissonClient): close it after the class so its pool
-// doesn't count against the shared container's max_connections for the rest of the suite.
-@DirtiesContext
-class QueueRedisFailureIT extends PostgresIT {
+class QueueAdmissionIT extends PostgresIT {
 
   @Autowired private UserRepository userRepository;
   @Autowired private EventRepository eventRepository;
@@ -60,8 +40,6 @@ class QueueRedisFailureIT extends PostgresIT {
   @Autowired private OrderService orderService;
   @Autowired private QueueService queueService;
   @Autowired private JdbcTemplate jdbcTemplate;
-
-  @MockitoSpyBean private RedissonClient redissonClient;
 
   private Event event;
   private Seat seat;
@@ -77,28 +55,27 @@ class QueueRedisFailureIT extends PostgresIT {
   }
 
   @Test
-  void paidOrder_commitsWhenTheAdmittedSetRemovalFails() {
+  void paidOrder_completesTheAdmittedEntry() {
     admit(buyer);
     SeatHold hold =
         seatHoldService.createHold(event.getId(), List.of(seat.getId()), buyer, 10).get(0);
     seatHoldService.confirmHold(hold.getId(), buyer);
     // Back to ADMITTED, as after releasing another hold (reinstateAfterHoldRelease):
-    // checkout then completes the entry and removes the user from the set.
+    // checkout then completes the entry.
     setEntry("ADMITTED", "now() + interval '10 minutes'");
-    redisAdmittedSetIsBroken();
+    assertThat(entryStatus()).isEqualTo("ADMITTED");
 
-    orderService.createOrderWithStripePayment(buyer, List.of(hold.getId()), "pi_test_redis_down");
+    orderService.createOrderWithStripePayment(buyer, List.of(hold.getId()), "pi_test_queue_admission");
 
     assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
     assertThat(count("SELECT COUNT(*) FROM tickets WHERE status = 'VALID'")).isEqualTo(1);
     assertThat(entryStatus()).isEqualTo("COMPLETED");
   }
 
-  /** Creating a hold completes the admission, which removes the user from the set. */
   @Test
-  void hold_commitsWhenTheAdmittedSetRemovalFails() {
+  void hold_completesTheAdmittedEntry() {
     admit(buyer);
-    redisAdmittedSetIsBroken();
+    assertThat(entryStatus()).isEqualTo("ADMITTED");
 
     seatHoldService.createHold(event.getId(), List.of(seat.getId()), buyer, 10);
 
@@ -107,20 +84,8 @@ class QueueRedisFailureIT extends PostgresIT {
   }
 
   @Test
-  void leavingTheQueue_commitsWhenTheAdmittedSetRemovalFails() {
+  void expiredAdmission_grantsNoClearance() {
     admit(buyer);
-    redisAdmittedSetIsBroken();
-
-    queueService.leaveQueue(event.getId(), buyer);
-
-    assertThat(entryStatus()).isEqualTo("EXPIRED");
-    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'QUEUE_LEFT'")).isEqualTo(1);
-  }
-
-  @Test
-  void expiredAdmission_withAStaleRedisEntry_grantsNoClearance() {
-    admit(buyer);
-    redisAdmittedSetIsBroken();
     setEntry("ADMITTED", "now() - interval '1 minute'");
 
     queueService.expireAdmissions(event.getId());
@@ -129,11 +94,9 @@ class QueueRedisFailureIT extends PostgresIT {
     assertNoClearance();
   }
 
-  /** The set says admitted, the database says the user is still waiting. */
   @Test
-  void staleRedisEntry_aloneGrantsNoClearance() {
+  void waitingUser_grantsNoClearance() {
     queueService.joinQueue(event.getId(), buyer);
-    redisAdmittedSetIsBroken();
 
     assertThat(entryStatus()).isEqualTo("WAITING");
     assertNoClearance();
@@ -152,19 +115,6 @@ class QueueRedisFailureIT extends PostgresIT {
   private void admit(UUID userId) {
     queueService.joinQueue(event.getId(), userId);
     assertThat(queueService.admitNextBatch(event.getId())).hasSize(1);
-  }
-
-  /**
-   * From here on, this event's admitted set holds every user (a removal that
-   * failed earlier left them there) and every removal fails.
-   */
-  @SuppressWarnings("unchecked")
-  private void redisAdmittedSetIsBroken() {
-    RSet<Object> set = mock(RSet.class);
-    when(set.contains(any())).thenReturn(true);
-    when(set.remove(any())).thenThrow(new RedisException("simulated Redis failure"));
-    when(set.removeAll(any())).thenThrow(new RedisException("simulated Redis failure"));
-    doReturn(set).when(redissonClient).getSet("queue:admitted:" + event.getId());
   }
 
   private void setEntry(String status, String expiresAtSql) {

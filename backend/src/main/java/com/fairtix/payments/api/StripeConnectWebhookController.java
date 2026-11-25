@@ -5,6 +5,7 @@ import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.organizations.application.PublicEndpoint;
 import com.fairtix.payments.application.StripeConnectService;
+import com.fairtix.payments.application.StripeDisputeService;
 import com.fairtix.payments.infrastructure.StripeWebhookEventRepository;
 import com.fairtix.reports.application.PayoutReportService;
 import com.stripe.exception.SignatureVerificationException;
@@ -53,7 +54,8 @@ public class StripeConnectWebhookController {
       "account.updated", Account.class,
       "payout.paid", Payout.class,
       "payout.failed", Payout.class,
-      "charge.dispute.created", Dispute.class);
+      "charge.dispute.created", Dispute.class,
+      "charge.dispute.closed", Dispute.class);
   /** Handled types that need only the event's account id, not its object. */
   private static final Set<String> ACCOUNT_ONLY_TYPES = Set.of("account.application.deauthorized");
 
@@ -63,25 +65,25 @@ public class StripeConnectWebhookController {
   @Value("${stripe.connect-webhook-secret:}")
   private String webhookSecret;
 
-  @Value("${fairtix.connect.dispute-freeze-threshold-cents:5000}")
-  private long disputeFreezeThresholdCents;
-
   private final OrganizationRepository organizationRepository;
   private final StripeConnectService connectService;
   private final AuditService auditService;
   private final PayoutReportService payoutReportService;
   private final StripeWebhookEventRepository webhookEventRepository;
+  private final StripeDisputeService disputeService;
 
   public StripeConnectWebhookController(OrganizationRepository organizationRepository,
                                         StripeConnectService connectService,
                                         AuditService auditService,
                                         PayoutReportService payoutReportService,
-                                        StripeWebhookEventRepository webhookEventRepository) {
+                                        StripeWebhookEventRepository webhookEventRepository,
+                                        StripeDisputeService disputeService) {
     this.organizationRepository = organizationRepository;
     this.connectService = connectService;
     this.auditService = auditService;
     this.payoutReportService = payoutReportService;
     this.webhookEventRepository = webhookEventRepository;
+    this.disputeService = disputeService;
   }
 
   /**
@@ -102,9 +104,13 @@ public class StripeConnectWebhookController {
   @PostMapping("/stripe-connect")
   @Transactional
   public ResponseEntity<Void> handle(@RequestBody String payload,
-                                     @RequestHeader("Stripe-Signature") String sigHeader) {
+                                     @RequestHeader(value = "Stripe-Signature", required = false) String sigHeader,
+                                     jakarta.servlet.http.HttpServletRequest request) {
     if (!stripeEnabled) {
       return ResponseEntity.ok().build();
+    }
+    if (sigHeader == null || sigHeader.isBlank()) {
+      return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
     }
     Event event;
     try {
@@ -113,6 +119,7 @@ public class StripeConnectWebhookController {
       log.warn("Stripe Connect webhook signature verification failed: {}", e.getMessage());
       return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
     }
+    request.setAttribute(StripeWebhookFailureFilter.VERIFIED_ENDPOINT_ATTR, "connect");
 
     Class<? extends StripeObject> objectType = OBJECT_TYPES.get(event.getType());
     if (objectType == null && !ACCOUNT_ONLY_TYPES.contains(event.getType())) {
@@ -142,6 +149,7 @@ public class StripeConnectWebhookController {
       case "payout.paid" -> handlePayout(event, "STRIPE_PAYOUT_PAID");
       case "payout.failed" -> handlePayoutFailed(event);
       case "charge.dispute.created" -> handleDisputeCreated(event);
+      case "charge.dispute.closed" -> handleDisputeClosed(event);
       default -> throw new IllegalStateException("Unreachable: " + event.getType());
     }
     return ResponseEntity.ok().build();
@@ -200,25 +208,30 @@ public class StripeConnectWebhookController {
     });
   }
 
+  /**
+   * Disputes on direct charges, which are raised on the connected account. FairTix creates
+   * destination charges, whose disputes reach the platform webhook instead (issue #343).
+   */
   private void handleDisputeCreated(Event event) {
     getObject(event, Dispute.class).ifPresent(dispute -> {
       Organization org = orgForEvent(event);
-      if (org == null) return;
-      long amount = dispute.getAmount() == null ? 0L : dispute.getAmount();
-      String detail = "dispute=" + dispute.getId()
-          + " amount=" + amount
-          + " currency=" + dispute.getCurrency()
-          + " reason=" + dispute.getReason();
-      if (amount >= disputeFreezeThresholdCents) {
-        org.setStripePayoutsFrozen(true);
-        organizationRepository.save(org);
-        auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_DISPUTE_FROZE_PAYOUTS", "ORGANIZATION", org.getId(),
-            detail + " threshold=" + disputeFreezeThresholdCents);
-        log.warn("Froze payouts for org {} after dispute {} ({} cents)",
-            org.getId(), dispute.getId(), amount);
-      } else {
-        auditService.logInCurrentTransaction(SYSTEM_ACTOR, "STRIPE_DISPUTE_CREATED", "ORGANIZATION", org.getId(), detail);
+      if (org == null) {
+        disputeService.recordUnmatchedConnectDispute(dispute, event.getAccount(), false);
+        return;
       }
+      disputeService.recordDispute(org, dispute);
+    });
+  }
+
+  /** Audit only; the count and the freeze flag are left as they are. */
+  private void handleDisputeClosed(Event event) {
+    getObject(event, Dispute.class).ifPresent(dispute -> {
+      Organization org = orgForEvent(event);
+      if (org == null) {
+        disputeService.recordUnmatchedConnectDispute(dispute, event.getAccount(), true);
+        return;
+      }
+      disputeService.recordDisputeClosed(org, dispute);
     });
   }
 

@@ -53,8 +53,8 @@ off, payment simulated by the dev profile. Event and venue names are fictional.
   sweeps expired holds back to available every 30 seconds.
 - **Waiting room over Server-Sent Events.**
   [`QueueService`](backend/src/main/java/com/fairtix/queue/application/QueueService.java)
-  keeps queue entries and admission in PostgreSQL, with position counters and a
-  copy of the admitted set in Redis (Redisson). It admits fans in configurable
+  keeps queue entries and admission in PostgreSQL, with position counters in
+  Redis (Redisson). It admits fans in configurable
   batches, and
   [`QueueSseService`](backend/src/main/java/com/fairtix/queue/application/QueueSseService.java)
   pushes position updates to each connected browser. On an event that requires
@@ -82,8 +82,8 @@ off, payment simulated by the dev profile. Event and venue names are fictional.
   then the per-event sale lock, then row locks) so these paths cannot deadlock
   with each other; the one known exception is listed under
   [Known limitations](#known-limitations). Queue
-  admission is read from the database; the Redis admitted set is a copy written
-  after commit, so a Redis failure cannot grant or revoke checkout.
+  admission is read from the database only, so a Redis failure cannot grant or
+  revoke checkout.
 - **Stripe payments are idempotent and bound to what they pay for.** Every
   call that creates a PaymentIntent, a refund or a connected account carries a
   deterministic idempotency key
@@ -298,11 +298,17 @@ surefire, 249 failsafe and 202 frontend tests, with no failures.
   Stripe's failed-refund notifications are not handled either.
 - **Box office is uncapped.** Door sales by staff do not count against the
   per-user purchase cap.
-- **Disputes do not reach orders.** The Connect webhook audits
-  `charge.dispute.created` and can freeze an organisation's payouts; nothing
-  cancels tickets or changes a refund, and the platform webhook ignores dispute
-  events. Disputes are worked in the Stripe Dashboard; checkout refuses an
-  intent that is refunded or disputed.
+- **Disputes do not reach orders, and the payout freeze is only a flag.** The
+  platform webhook audits `charge.dispute.created`, adds one to the
+  organisation's `dispute_count` (which caps it at no more than $10k/day,
+  new organisations staying at $1k, permanently unless an admin sets a
+  sales-cap override) and, at or above `fairtix.connect.dispute-freeze-threshold-cents`,
+  sets its `stripe_payouts_frozen` flag, shown in its Connect status. Nothing
+  holds payouts in Stripe: a destination charge's funds are already on the
+  connected account. A closed dispute (`charge.dispute.closed`) is only
+  audited with its status; nothing cancels tickets, changes a refund, lowers
+  the count or clears the flag. Disputes are worked in the Stripe Dashboard; checkout refuses
+  an intent that is refunded or disputed.
 - **The only load figure is one laptop run.** `QueueJoinLoadIT` (opt-in:
   `./mvnw verify -Dit.test=QueueJoinLoadIT`) measured about 100 queue joins per
   second per capped event, once, on one laptop with PostgreSQL and Redis in

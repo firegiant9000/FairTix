@@ -44,7 +44,13 @@ public class StripePaymentService {
   /** Online PaymentIntent metadata key carrying the user it was created for. */
   static final String USER_ID_METADATA = "fairtix_user_id";
 
-  /** {@link #isPaidBy}'s request options: fail fast rather than hold the caller's connection. */
+  /** Connect PaymentIntent metadata key carrying the organizer's org id. */
+  static final String ORG_ID_METADATA = "fairtix_org_id";
+
+  /**
+   * Request options for Stripe reads made while the caller holds a pooled DB connection
+   * ({@link #isPaidBy}, {@link #connectRoutingOf}): fail fast rather than hold it.
+   */
   static final RequestOptions PAID_CHECK_OPTIONS = RequestOptions.builder()
       .setConnectTimeout(2_000)
       .setReadTimeout(5_000)
@@ -106,7 +112,7 @@ public class StripePaymentService {
         if (suffix != null) {
           builder.setStatementDescriptorSuffix(suffix);
         }
-        builder.putMetadata("fairtix_org_id", connect.organizationId());
+        builder.putMetadata(ORG_ID_METADATA, connect.organizationId());
       }
       builder.putMetadata(CHANNEL_METADATA, "box_office");
       return PaymentIntent.create(builder.build(), keyed(idempotencyKey));
@@ -145,6 +151,48 @@ public class StripePaymentService {
   }
 
   /**
+   * Where a payment's money went. {@code destinationAccountId} is the intent's
+   * {@code transfer_data.destination}; {@code organizationId} is the {@code fairtix_org_id}
+   * metadata FairTix set when it created the intent. Both are null for an intent that was
+   * not routed through Connect.
+   */
+  public record ConnectRouting(String destinationAccountId, String organizationId) {}
+
+  /**
+   * Looks the intent up in Stripe and returns its Connect routing. A dispute event carries
+   * only the intent's id, so this is how the platform webhook finds the organizer.
+   *
+   * <p>The webhook holds a pooled DB connection and its event-ledger row while this runs, so
+   * it uses {@link #PAID_CHECK_OPTIONS} (short timeouts, no retries). A network or API error
+   * throws, so the webhook fails and Stripe's redelivery is the retry; that includes a key
+   * without permission to read the intent, which is a config error to fix and then replay.
+   * An intent Stripe says doesn't exist is logged and gets an empty routing, so the dispute
+   * is recorded as unmatched instead of failing on every redelivery.
+   */
+  public ConnectRouting connectRoutingOf(String paymentIntentId) {
+    try {
+      return routingOf(PaymentIntent.retrieve(paymentIntentId, PAID_CHECK_OPTIONS));
+    } catch (InvalidRequestException e) {
+      if (!"resource_missing".equals(e.getCode())) {
+        throw new RuntimeException("Failed to retrieve PaymentIntent " + paymentIntentId
+            + " for its Connect routing: " + e.getMessage(), e);
+      }
+      log.error("PaymentIntent {} does not exist in Stripe; its dispute has no organizer", paymentIntentId);
+      return new ConnectRouting(null, null);
+    } catch (StripeException e) {
+      throw new RuntimeException("Failed to retrieve PaymentIntent " + paymentIntentId
+          + " for its Connect routing: " + e.getMessage(), e);
+    }
+  }
+
+  static ConnectRouting routingOf(PaymentIntent intent) {
+    String destination = intent.getTransferData() == null
+        ? null : intent.getTransferData().getDestination();
+    String orgId = intent.getMetadata() == null ? null : intent.getMetadata().get(ORG_ID_METADATA);
+    return new ConnectRouting(destination, orgId);
+  }
+
+  /**
    * Connect-aware PaymentIntent.
    *
    * When {@code connect} is non-null, the intent is routed to the connected
@@ -178,7 +226,7 @@ public class StripePaymentService {
         if (suffix != null) {
           builder.setStatementDescriptorSuffix(suffix);
         }
-        builder.putMetadata("fairtix_org_id", connect.organizationId());
+        builder.putMetadata(ORG_ID_METADATA, connect.organizationId());
       }
       PaymentIntent intent = PaymentIntent.create(builder.build(), keyed(idempotencyKey));
       return toStripeIntent(intent);

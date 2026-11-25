@@ -231,9 +231,11 @@ class NotificationGateTest {
 
     List<String> sentLines = logs.list.stream()
         .map(ILoggingEvent::getFormattedMessage)
-        .filter(m -> m.contains("Notification sent"))
+        .filter(m -> m.contains("Notification handed to mail service"))
         .toList();
     assertThat(sentLines).hasSize(1);
+    // The gate can't tell whether mail is on; delivery is logged by the EmailService.
+    assertThat(logs.list).noneMatch(e -> e.getFormattedMessage().contains("Notification sent"));
     assertThat(sentLines.get(0))
         .contains("category=ORDER")
         .doesNotContain("alice@example.com")
@@ -253,7 +255,7 @@ class NotificationGateTest {
         .isInstanceOf(RuntimeException.class);
 
     assertThat(logs.list)
-        .noneMatch(e -> e.getFormattedMessage().contains("Notification sent"));
+        .noneMatch(e -> e.getFormattedMessage().contains("Notification handed to mail service"));
   }
 
   // ---- helpers ----

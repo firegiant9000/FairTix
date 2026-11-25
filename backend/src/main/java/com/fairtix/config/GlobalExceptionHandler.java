@@ -330,13 +330,13 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(CaptchaRequiredException.class)
   public ResponseEntity<Map<String, Object>> handleCaptchaRequired(
       CaptchaRequiredException ex, HttpServletRequest req) {
-    return error(HttpStatus.UNPROCESSABLE_ENTITY, "CAPTCHA_REQUIRED", ex.getMessage(), req);
+    return error(HttpStatus.UNPROCESSABLE_CONTENT, "CAPTCHA_REQUIRED", ex.getMessage(), req);
   }
 
   @ExceptionHandler(InvalidCaptchaException.class)
   public ResponseEntity<Map<String, Object>> handleInvalidCaptcha(
       InvalidCaptchaException ex, HttpServletRequest req) {
-    return error(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_CAPTCHA", ex.getMessage(), req);
+    return error(HttpStatus.UNPROCESSABLE_CONTENT, "INVALID_CAPTCHA", ex.getMessage(), req);
   }
 
   @ExceptionHandler(RecaptchaUnavailableException.class)
@@ -372,7 +372,7 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(RefundNotEligibleException.class)
   public ResponseEntity<Map<String, Object>> handleRefundNotEligible(
       RefundNotEligibleException ex, HttpServletRequest req) {
-    return error(HttpStatus.UNPROCESSABLE_ENTITY, "REFUND_NOT_ELIGIBLE", ex.getMessage(), req);
+    return error(HttpStatus.UNPROCESSABLE_CONTENT, "REFUND_NOT_ELIGIBLE", ex.getMessage(), req);
   }
 
   @ExceptionHandler(PaymentFailedException.class)
@@ -438,7 +438,7 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(PaymentDeclinedException.class)
   public ResponseEntity<Map<String, Object>> handleCardDeclined(
       PaymentDeclinedException ex, HttpServletRequest req) {
-    return error(HttpStatus.UNPROCESSABLE_ENTITY, "CARD_DECLINED", ex.getMessage(), req);
+    return error(HttpStatus.UNPROCESSABLE_CONTENT, "CARD_DECLINED", ex.getMessage(), req);
   }
 
   @ExceptionHandler(OptimisticLockingFailureException.class)

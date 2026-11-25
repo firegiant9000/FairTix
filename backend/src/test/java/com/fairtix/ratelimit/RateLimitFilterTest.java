@@ -9,15 +9,21 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.redisson.api.RRateLimiter;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.RedisException;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -59,6 +65,8 @@ class RateLimitFilterTest {
     private JwtService jwtService;
     private RateLimitFilter filter;
     private FilterChain chain;
+    /** The filter's nanoTime source, so the warn throttle can be stepped. */
+    private final AtomicLong nanos = new AtomicLong(-5_000_000_000L);
 
     @BeforeEach
     void setUp() {
@@ -74,7 +82,7 @@ class RateLimitFilterTest {
         ReflectionTestUtils.setField(service, "defaultLimit", 100);
 
         jwtService = mock(JwtService.class);
-        filter = new RateLimitFilter(service, jwtService, new AllowedOrigins(SPA));
+        filter = new RateLimitFilter(service, jwtService, new AllowedOrigins(SPA), nanos::get);
         chain = mock(FilterChain.class);
     }
 
@@ -373,6 +381,8 @@ class RateLimitFilterTest {
     private String limiterKey() {
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
         verify(redisson).getRateLimiter(key.capture());
-        return key.getValue();
+        // These tests are about who and which path is keyed; the limit suffix is
+        // covered in RateLimitServiceTest.
+        return key.getValue().replaceFirst(":limit=\\d+$", "");
     }
 }
