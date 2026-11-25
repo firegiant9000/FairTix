@@ -110,9 +110,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
             response.setHeader("Access-Control-Allow-Credentials", "true");
         }
         response.setStatus(status.value());
-        // Tomcat would otherwise read the unread body after the 429 with no overall deadline,
-        // so a throttled caller trickling one could still hold a worker thread.
-        if (request.getContentLengthLong() > 0 || request.getHeader("Transfer-Encoding") != null) {
+        // On the public webhook routes, Tomcat would otherwise read the unread body after the
+        // 429 with no overall deadline, so a throttled caller trickling one could hold a worker
+        // thread. Only there: closing early can reach the client as a reset instead of the 429,
+        // which the SPA's own POSTs shouldn't risk.
+        if (PATH_HELPER.getPathWithinApplication(request).startsWith("/api/webhooks/")
+                && (request.getContentLengthLong() > 0
+                    || request.getHeader("Transfer-Encoding") != null)) {
             SkipBodyDrainConfig.mark(request);
         }
         response.setHeader("Retry-After", retryAfterSeconds);

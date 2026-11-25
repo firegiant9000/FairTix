@@ -65,6 +65,11 @@ public class SkipBodyDrainConfig {
         getNext().invoke(request, response);
       } finally {
         if (request.getAttribute(ATTR) != null) {
+          // Tomcat closes the socket either way; say so, or a proxy pooling upstream
+          // connections (429 isn't one Tomcat closes by itself) may reuse it and fail a request.
+          if (!response.isCommitted()) {
+            response.setHeader("Connection", "close");
+          }
           request.getCoyoteRequest().action(ActionCode.DISABLE_SWALLOW_INPUT, null);
         }
       }

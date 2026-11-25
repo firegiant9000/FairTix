@@ -253,7 +253,8 @@ Open your Netlify URL in a browser, log in, and complete a purchase end-to-end.
      gap between two reads, not the total time, so the buffering is the protection, not the
      timeout.
    - **Caddy** streams request bodies unless told otherwise. For `/api/webhooks/*`:
-     - add `request_body { max_size 1MB }`, so Caddy answers an oversized body with 413;
+     - add `request_body { max_size 1MiB }` (`MB` would be 1,000,000 bytes, below the backend's
+       1 MiB), so Caddy refuses an oversized body itself;
      - add `request_buffers 1MiB` to the `reverse_proxy`. This only buffers; it doesn't cap
        the size.
      - Cap the body read with the global option `servers { timeouts { read_body 10s } }`.

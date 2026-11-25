@@ -168,9 +168,9 @@ class RateLimitFilterTest {
     }
 
     /**
-     * A throttled request that declares a body is marked, so Tomcat doesn't read (and a trickling
-     * sender can't hold a thread with) the body after the 429. One without a body keeps its
-     * keep-alive connection.
+     * A throttled webhook request that declares a body is marked, so Tomcat doesn't read (and a
+     * trickling sender can't hold a thread with) the body after the 429. One without a body keeps
+     * its keep-alive connection, and so do other routes.
      */
     @Test
     void rateLimited_withBody_isMarkedToSkipTheBodyDrain() throws Exception {
@@ -179,15 +179,20 @@ class RateLimitFilterTest {
         withBody.setContent(new byte[16]);
         MockHttpServletRequest chunked = request("POST", "/api/webhooks/stripe");
         chunked.addHeader("Transfer-Encoding", "chunked");
-        MockHttpServletRequest noBody = request("GET", "/api/events");
+        MockHttpServletRequest noBody = request("POST", "/api/webhooks/stripe");
+        // The SPA's own POSTs keep a clean 429: closing early could reach them as a reset.
+        MockHttpServletRequest appPost = request("POST", "/auth/login");
+        appPost.setContent(new byte[16]);
 
         filter.doFilter(withBody, new MockHttpServletResponse(), chain);
         filter.doFilter(chunked, new MockHttpServletResponse(), chain);
         filter.doFilter(noBody, new MockHttpServletResponse(), chain);
+        filter.doFilter(appPost, new MockHttpServletResponse(), chain);
 
         assertTrue(SkipBodyDrainConfig.isMarked(withBody));
         assertTrue(SkipBodyDrainConfig.isMarked(chunked));
         assertFalse(SkipBodyDrainConfig.isMarked(noBody));
+        assertFalse(SkipBodyDrainConfig.isMarked(appPost));
     }
 
     /** A CORS preflight carries no credentials and must not use up the caller's quota. */
