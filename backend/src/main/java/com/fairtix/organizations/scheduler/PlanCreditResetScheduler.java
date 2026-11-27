@@ -6,6 +6,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -33,6 +34,7 @@ public class PlanCreditResetScheduler {
     this.organizations = organizations;
   }
 
+  @SchedulerLock(name = "planCreditReset", lockAtMostFor = "PT1H", lockAtLeastFor = "PT10M")
   @Scheduled(cron = "${plan.credit.reset.cron:0 0 0 * * *}")
   @Transactional
   public void resetMonthlyCredits() {

@@ -1,6 +1,7 @@
 package com.fairtix.holds.scheduler;
 
 import com.fairtix.holds.application.EventHoldService;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -32,6 +33,7 @@ public class HoldReleaseScheduler {
     this.holds = holds;
   }
 
+  @SchedulerLock(name = "holdAutoRelease", lockAtMostFor = "PT5M", lockAtLeastFor = "PT10S")
   @Scheduled(fixedDelayString = "${holds.event.auto-release-interval-ms:60000}")
   public void run() {
     try {

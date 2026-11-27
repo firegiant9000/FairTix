@@ -5,8 +5,10 @@ import org.redisson.api.RAtomicLong;
 import org.redisson.api.RBucket;
 import org.redisson.api.RRateLimiter;
 import org.redisson.api.RScript;
+import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
 import org.redisson.client.codec.Codec;
+import org.redisson.misc.CompletableFutureWrapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -86,6 +88,13 @@ public class TestRedisConfig {
     RScript scriptMock = Mockito.mock(RScript.class,
         invocation -> "eval".equals(invocation.getMethod().getName()) ? 1L : null);
     when(mock.getScript(Mockito.any(Codec.class))).thenReturn(scriptMock);
+
+    // Topic mock for QueueSseService's cross-instance updates: publish reaches no
+    // subscriber (returns 0), so the service broadcasts locally, as on a single instance.
+    // MultiInstanceIT covers the topic against a real Redis.
+    RTopic topicMock = Mockito.mock(RTopic.class);
+    when(topicMock.publishAsync(Mockito.any())).thenAnswer(i -> new CompletableFutureWrapper<>(0L));
+    when(mock.getTopic(anyString(), Mockito.any(Codec.class))).thenReturn(topicMock);
 
     return mock;
   }

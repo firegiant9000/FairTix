@@ -97,5 +97,6 @@ public class QueueController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void adminAdmit(@PathVariable UUID eventId) {
         queueService.admitNextBatch(eventId);
+        queueSseService.publishUpdate(eventId);
     }
 }

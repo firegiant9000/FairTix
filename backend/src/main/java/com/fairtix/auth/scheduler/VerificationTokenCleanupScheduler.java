@@ -3,6 +3,7 @@ package com.fairtix.auth.scheduler;
 import com.fairtix.auth.infrastructure.EmailVerificationTokenRepository;
 import com.fairtix.auth.infrastructure.PasswordResetTokenRepository;
 import com.fairtix.auth.infrastructure.RefreshTokenRepository;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -32,6 +33,7 @@ public class VerificationTokenCleanupScheduler {
         this.refreshTokenRepository = refreshTokenRepository;
     }
 
+    @SchedulerLock(name = "verificationTokenCleanup", lockAtMostFor = "PT55M", lockAtLeastFor = "PT50M")
     @Scheduled(fixedDelayString = "${verification.token.cleanup.interval-ms:3600000}")
     @Transactional
     public void cleanUpExpiredTokens() {
