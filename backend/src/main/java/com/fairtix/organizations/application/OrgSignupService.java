@@ -165,7 +165,7 @@ public class OrgSignupService {
       throw new ResourceNotFoundException("Organization not found: " + orgId);
     }
     if (organizations.clearPayoutsFreeze(orgId, Instant.now()) > 0) {
-      auditService.log(adminUserId, "STRIPE_PAYOUT_FREEZE_CLEARED", "ORGANIZATION", orgId, "");
+      auditService.logInCurrentTransaction(adminUserId, "STRIPE_PAYOUT_FREEZE_CLEARED", "ORGANIZATION", orgId, "");
     }
   }
 

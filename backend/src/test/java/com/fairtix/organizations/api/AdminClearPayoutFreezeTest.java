@@ -66,6 +66,7 @@ class AdminClearPayoutFreezeTest {
   }
 
   private boolean frozen(Organization org) {
+    entityManager.flush();
     entityManager.clear();
     return organizations.findById(org.getId()).orElseThrow().isStripePayoutsFrozen();
   }

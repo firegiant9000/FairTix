@@ -117,10 +117,14 @@ class OrgSignupServiceTest {
   void clearPayoutFreezeClearsFlagAndAuditsOnce() {
     Organization org = organizationService.createOrganization("Velvet Room", "v@x.test", owner.getId());
     organizations.freezePayouts(org.getId(), Instant.now());
+    assertThat(com.fairtix.organizations.dto.SignupDtos.OrganizationReviewResponse
+        .from(frozenCopy(org)).stripePayoutsFrozen()).isTrue();
 
     signupService.clearPayoutFreeze(org.getId(), admin.getId());
 
     assertThat(frozen(org)).isFalse();
+    assertThat(com.fairtix.organizations.dto.SignupDtos.OrganizationReviewResponse
+        .from(organizations.findById(org.getId()).orElseThrow()).stripePayoutsFrozen()).isFalse();
     assertThat(clearedAudits(org)).singleElement().satisfies(a -> {
       assertThat(a.getUserId()).isEqualTo(admin.getId());
       assertThat(a.getResourceType()).isEqualTo("ORGANIZATION");
@@ -154,6 +158,12 @@ class OrgSignupServiceTest {
   }
 
   // helpers
+
+  private Organization frozenCopy(Organization org) {
+    entityManager.flush();
+    entityManager.clear();
+    return organizations.findById(org.getId()).orElseThrow();
+  }
 
   private boolean frozen(Organization org) {
     entityManager.flush();

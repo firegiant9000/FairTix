@@ -57,7 +57,8 @@ public final class SignupDtos {
       Long dailySalesCapCents,
       Instant planOverridesUntil,
       int successfulPayoutCycles,
-      int disputeCount
+      int disputeCount,
+      boolean stripePayoutsFrozen
   ) {
     public static OrganizationReviewResponse from(Organization o) {
       return new OrganizationReviewResponse(
@@ -71,7 +72,8 @@ public final class SignupDtos {
           o.getReviewedByUserId(), o.getRejectionReason(),
           o.isStripeChargesEnabled(), o.isStripeDetailsSubmitted(),
           o.getDailySalesCapCents(), o.getPlanOverridesUntil(),
-          o.getSuccessfulPayoutCycles(), o.getDisputeCount());
+          o.getSuccessfulPayoutCycles(), o.getDisputeCount(),
+          o.isStripePayoutsFrozen());
     }
   }
 
