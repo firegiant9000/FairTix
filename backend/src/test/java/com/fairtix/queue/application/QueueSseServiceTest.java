@@ -54,8 +54,14 @@ class QueueSseServiceTest {
         sseService.unsubscribe();
     }
 
+    private void subscribed() {
+        when(topic.addListener(eq(String.class), any())).thenReturn(1);
+        sseService.subscribe();
+    }
+
     @Test
     void publishUpdate_sendsOnlyTheEventId_andLeavesTheBroadcastToSubscribers() {
+        subscribed();
         QueueEntry entry = mockWaitingEntry();
         when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
         sseService.register(EVENT_ID, USER_ID);
@@ -70,6 +76,7 @@ class QueueSseServiceTest {
 
     @Test
     void publishUpdate_broadcastsLocallyWhenRedisFails() {
+        subscribed();
         QueueEntry entry = mockWaitingEntry();
         when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
         sseService.register(EVENT_ID, USER_ID);
@@ -83,6 +90,7 @@ class QueueSseServiceTest {
 
     @Test
     void publishUpdate_broadcastsLocallyWhenNoInstanceIsSubscribed() {
+        subscribed();
         QueueEntry entry = mockWaitingEntry();
         when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
         sseService.register(EVENT_ID, USER_ID);
@@ -95,23 +103,41 @@ class QueueSseServiceTest {
 
     /** Subscription failed at startup: peers still receive, so publish alone would not reach us. */
     @Test
-    void publishUpdate_broadcastsLocallyAndRetriesWhileThisInstanceIsNotSubscribed() {
-        when(topic.addListener(eq(String.class), any()))
-                .thenThrow(new RedisTimeoutException("down"))
-                .thenThrow(new RedisTimeoutException("down"))
-                .thenReturn(3);
+    void publishUpdate_broadcastsLocallyAndRetriesInTheBackgroundWhileNotSubscribed() {
+        when(topic.addListener(eq(String.class), any())).thenThrow(new RedisTimeoutException("down"));
         sseService.subscribe();
+        sseService.resubscribeCooldownNanos = 0;
+        when(topic.addListenerAsync(eq(String.class), any()))
+                .thenReturn(new CompletableFutureWrapper<>(new RedisTimeoutException("down")))
+                .thenReturn(new CompletableFutureWrapper<>(3));
         QueueEntry entry = mockWaitingEntry();
         when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
         sseService.register(EVENT_ID, USER_ID);
         when(topic.publishAsync(anyString())).thenReturn(new CompletableFutureWrapper<>(1L));
 
-        sseService.publishUpdate(EVENT_ID);
+        sseService.publishUpdate(EVENT_ID); // retry fails; local broadcast
         verify(queueService, timeout(5000).times(2)).getStatus(EVENT_ID, USER_ID);
 
+        sseService.publishUpdate(EVENT_ID); // retry succeeds; still local this time
+        verify(queueService, timeout(5000).times(3)).getStatus(EVENT_ID, USER_ID);
+
+        sseService.publishUpdate(EVENT_ID); // subscribed: left to the topic
+        verify(topic, times(2)).addListenerAsync(eq(String.class), any());
+        verify(queueService, after(300).times(3)).getStatus(EVENT_ID, USER_ID);
+        sseService.unsubscribe();
+        verify(topic).removeListener(3);
+    }
+
+    @Test
+    void subscriptionRetry_isThrottled() {
+        when(topic.addListener(eq(String.class), any())).thenThrow(new RedisTimeoutException("down"));
+        sseService.subscribe();
+
         sseService.publishUpdate(EVENT_ID);
-        verify(topic, times(3)).addListener(eq(String.class), any());
-        verify(queueService, after(300).times(2)).getStatus(EVENT_ID, USER_ID);
+        sseService.publishUpdate(EVENT_ID);
+
+        verify(topic, never()).addListenerAsync(eq(String.class), any());
+        verify(topic, times(1)).addListener(eq(String.class), any());
     }
 
     @Test
