@@ -20,6 +20,7 @@ import com.fairtix.tickets.application.TransferService;
 import com.fairtix.users.application.UserEmailLookup;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.dto.LoginRequest;
+import com.fairtix.users.dto.RegisterRequest;
 import com.fairtix.users.infrastructure.UserRepository;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -27,17 +28,17 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
- * Accounts are found by email ignoring case, since registration keeps the address as typed
- * and {@code users.email} is unique only case-sensitively. Transfers resolve the recipient
- * like comps (ranked when several accounts match). Login and password reset ignore case only
- * when exactly one account matches; otherwise they use the exact match, so an ambiguous
- * address never reaches someone else's account.
+ * Accounts are found by email ignoring case. Since V57 {@code users.email} is unique ignoring
+ * case and registration stores the address lower-cased, so two accounts can no longer differ
+ * only by case; the lookups' tie-breaking for that case ({@code UserEmailLookupTest}) stays as
+ * a defence.
  *
  * <p>Red before the change: a transfer to {@code RECIPIENT@...} and a login or reset as
  * {@code ALICE@...} found no account.
@@ -72,20 +73,6 @@ class EmailCaseLookupIT extends PostgresIT {
     assertThat(request.getToUser().getId()).isEqualTo(recipient.getId());
   }
 
-  /** Ranked as comps rank it: a verified registered account before a comp stub. */
-  @Test
-  void transferToAnEmailMatchingTwoAccounts_reachesTheVerifiedRegisteredOne() {
-    User sender = newUser("sender@test.com", PASSWORD, true);
-    User stub = newUser("guest@test.com",
-        UserEmailLookup.COMP_STUB_PASSWORD_PREFIX + "x", false);
-    User registered = newUser("Guest@test.com", PASSWORD, true);
-    UUID ticketId = buyOneTicket(sender);
-
-    var request = transferService.createTransferRequest(ticketId, sender.getId(), "guest@test.com");
-
-    assertThat(request.getToUser().getId()).isEqualTo(registered.getId()).isNotEqualTo(stub.getId());
-  }
-
   // ---- login ---------------------------------------------------------------
 
   @Test
@@ -93,24 +80,6 @@ class EmailCaseLookupIT extends PostgresIT {
     newUser("alice@test.com", PASSWORD, true);
 
     assertThat(authService.login(new LoginRequest("ALICE@test.com", PASSWORD, null))).isNotBlank();
-  }
-
-  /**
-   * Two accounts differ only in case: the exact address signs in to its own account only,
-   * and a third spelling matches neither.
-   */
-  @Test
-  void loginWithAnEmailMatchingTwoAccounts_usesTheExactMatchOnly() {
-    newUser("bob@test.com", PASSWORD, true);
-    newUser("Bob@test.com", OTHER_PASSWORD, true);
-
-    assertThat(authService.login(new LoginRequest("bob@test.com", PASSWORD, null))).isNotBlank();
-    assertThatThrownBy(() -> authService.login(new LoginRequest("bob@test.com", OTHER_PASSWORD, null)))
-        .as("never the other account's password")
-        .isInstanceOf(ResponseStatusException.class);
-    assertThatThrownBy(() -> authService.login(new LoginRequest("BOB@test.com", PASSWORD, null)))
-        .as("an ambiguous spelling with no exact match signs in to nobody")
-        .isInstanceOf(ResponseStatusException.class);
   }
 
   /**
@@ -153,26 +122,36 @@ class EmailCaseLookupIT extends PostgresIT {
     assertThat(resetTokenOwners()).containsExactly(carol.getId());
   }
 
+  // ---- registration and V57 ------------------------------------------------
+
   @Test
-  void resetWithAnEmailMatchingTwoAccounts_usesTheExactMatchOnly() {
-    User lower = newUser("dave@test.com", PASSWORD, true);
-    newUser("Dave@test.com", OTHER_PASSWORD, true);
+  void registration_storesTheAddressTrimmedAndLowerCased() {
+    authService.register(new RegisterRequest("  Frank@Test.COM ", PASSWORD));
 
-    passwordResetService.requestReset("DAVE@test.com");
-    assertThat(resetTokenOwners()).as("an ambiguous spelling resets nobody").isEmpty();
-
-    passwordResetService.requestReset("dave@test.com");
-    assertThat(resetTokenOwners()).containsExactly(lower.getId());
+    assertThat(jdbcTemplate.queryForList(
+        "SELECT email FROM users WHERE upper(email) = upper('frank@test.com')", String.class))
+        .containsExactly("frank@test.com");
   }
 
-  // ---- V54 -----------------------------------------------------------------
-
   @Test
-  void usersHaveANonUniqueUpperEmailIndex() {
+  void registration_ofACaseVariant_isRefused() {
+    newUser("gina@test.com", PASSWORD, true);
+
+    assertThatThrownBy(() -> authService.register(new RegisterRequest("GINA@test.com", PASSWORD)))
+        .isInstanceOf(ResponseStatusException.class);
+  }
+
+  /** The database refuses a case variant even when the application's check is bypassed. */
+  @Test
+  void usersEmailIsUniqueIgnoringCase() {
+    newUser("hank@test.com", PASSWORD, true);
+
+    assertThatThrownBy(() -> newUser("Hank@Test.com", OTHER_PASSWORD, true))
+        .isInstanceOf(DataIntegrityViolationException.class);
     String def = jdbcTemplate.queryForObject(
         "SELECT indexdef FROM pg_indexes WHERE tablename = 'users'"
-            + " AND indexname = 'idx_users_email_upper'", String.class);
-    assertThat(def).contains("upper((email)::text)").doesNotContain("UNIQUE");
+            + " AND indexname = 'uk_users_email_upper'", String.class);
+    assertThat(def).contains("UNIQUE").contains("upper((email)::text)");
   }
 
   /**
@@ -198,7 +177,7 @@ class EmailCaseLookupIT extends PostgresIT {
         return lines;
       }
     });
-    assertThat(String.join("\n", plan)).contains("idx_users_email_upper");
+    assertThat(String.join("\n", plan)).contains("uk_users_email_upper");
   }
 
   // ---- helpers -------------------------------------------------------------
