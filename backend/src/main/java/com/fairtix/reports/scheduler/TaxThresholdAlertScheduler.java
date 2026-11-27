@@ -6,6 +6,7 @@ import com.fairtix.organizations.domain.Organization;
 import com.fairtix.organizations.infrastructure.OrganizationRepository;
 import com.fairtix.reports.application.TaxReportService;
 import com.fairtix.reports.dto.ReportDtos.TaxThreshold;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -55,6 +56,7 @@ public class TaxThresholdAlertScheduler {
     this.auditRepo = auditRepo;
   }
 
+  @SchedulerLock(name = "taxThresholdAlert", lockAtMostFor = "PT1H", lockAtLeastFor = "PT10M")
   @Scheduled(cron = "${reports.tax.threshold-alert-cron:0 15 2 * * *}")
   public void run() {
     int year = LocalDate.now(ZoneOffset.UTC).getYear();

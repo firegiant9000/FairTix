@@ -13,6 +13,7 @@ import com.fairtix.notifications.domain.NotificationCategory;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.transaction.Transactional;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -100,6 +101,7 @@ public class HoldExpirationScheduler {
    * sweep rolls back its page and retries next tick; an aborted user request rolls back
    * and is answered by the pessimistic-lock handler (#317).
    */
+  @SchedulerLock(name = "expireActiveHolds", lockAtMostFor = "PT2M", lockAtLeastFor = "PT5S")
   @Scheduled(fixedDelayString = "${holds.cleanup.interval-ms:30000}")
   @Transactional
   public void expireHolds() {
@@ -176,6 +178,7 @@ public class HoldExpirationScheduler {
    * check did not catch it. Holds are handled in id order, so the sweep takes hold-row
    * locks in a fixed order (#317).
    */
+  @SchedulerLock(name = "expireConfirmedHolds", lockAtMostFor = "PT2M", lockAtLeastFor = "PT5S")
   @Scheduled(fixedDelayString = "${holds.cleanup.interval-ms:30000}")
   @Transactional
   public void expireConfirmedHolds() {

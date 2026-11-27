@@ -159,6 +159,18 @@
       <artifactId>redisson</artifactId>
       <version>3.52.0</version>
     </dependency>
+    <!-- ShedLock: one instance runs each @Scheduled job per tick (SchedulerLockConfig).
+         7.x is the line built on Spring Framework 7 / Boot 4. -->
+    <dependency>
+      <groupId>net.javacrumbs.shedlock</groupId>
+      <artifactId>shedlock-spring</artifactId>
+      <version>7.12.0</version>
+    </dependency>
+    <dependency>
+      <groupId>net.javacrumbs.shedlock</groupId>
+      <artifactId>shedlock-provider-jdbc-template</artifactId>
+      <version>7.12.0</version>
+    </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-redis</artifactId>

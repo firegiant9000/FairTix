@@ -2,6 +2,7 @@ package com.fairtix.queue.scheduler;
 
 import com.fairtix.queue.application.QueueService;
 import com.fairtix.queue.application.QueueSseService;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -24,6 +25,7 @@ public class QueueExpirationScheduler {
         this.queueSseService = queueSseService;
     }
 
+    @SchedulerLock(name = "queueAdmissionExpiry", lockAtMostFor = "PT2M", lockAtLeastFor = "PT5S")
     @Scheduled(fixedDelayString = "${queue.expiration.interval-ms:30000}")
     public void expireAdmissions() {
         MDC.put("requestId", "sched-expireAdmissions-" + UUID.randomUUID());

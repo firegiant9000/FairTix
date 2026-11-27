@@ -22,6 +22,7 @@ import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.users.application.UserEmailLookup;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.MDC;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -310,6 +311,7 @@ public class TransferService {
         return transferRepository.findByFromUser_Id(userId);
     }
 
+    @SchedulerLock(name = "transferRequestExpiry", lockAtMostFor = "PT5M", lockAtLeastFor = "PT10S")
     @Scheduled(fixedDelay = 60_000)
     @Transactional
     public void expireStaleRequests() {

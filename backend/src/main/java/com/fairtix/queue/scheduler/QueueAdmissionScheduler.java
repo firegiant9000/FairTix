@@ -8,6 +8,7 @@ import com.fairtix.queue.application.QueueService;
 import com.fairtix.queue.application.QueueSseService;
 import com.fairtix.queue.domain.QueueEntry;
 import com.fairtix.users.infrastructure.UserRepository;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -43,6 +44,18 @@ public class QueueAdmissionScheduler {
         this.eventRepository = eventRepository;
     }
 
+    /**
+     * Admits the next batch for every event with a waiting queue, then tells every instance
+     * to push the new statuses to its connected browsers.
+     *
+     * <p>The lock is held for most of an interval, not just for the run: each run admits up
+     * to {@code queue.max-admission-batch} per event, so two instances running in the same
+     * interval would admit at twice the configured rate. Keep
+     * {@code queue.admission.lock-at-least-for} below {@code queue.admission.interval-ms}, or
+     * a single instance skips its own next run.
+     */
+    @SchedulerLock(name = "queueAdmission", lockAtMostFor = "PT2M",
+            lockAtLeastFor = "${queue.admission.lock-at-least-for:PT25S}")
     @Scheduled(fixedDelayString = "${queue.admission.interval-ms:30000}")
     public void admitWaitingUsers() {
         MDC.put("requestId", "sched-admitWaitingUsers-" + UUID.randomUUID());

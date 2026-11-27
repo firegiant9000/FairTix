@@ -10,6 +10,7 @@ import com.fairtix.payments.domain.PaymentStatus;
 import com.fairtix.payments.infrastructure.PaymentRecordRepository;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -115,6 +116,7 @@ public class RiskScoringService {
 
     // Nightly decay job — re-runs scoring for all users with an active score so
     // time-decay is applied even without new flag activity.
+    @SchedulerLock(name = "riskScoreDecay", lockAtMostFor = "PT1H", lockAtLeastFor = "PT10M")
     @Scheduled(cron = "${fraud.score.decay-cron:0 0 2 * * *}")
     @Transactional
     public void runDecaySweep() {

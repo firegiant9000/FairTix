@@ -4,6 +4,7 @@ import com.fairtix.payments.application.OnlinePaymentIntentService;
 import com.fairtix.payments.application.OnlinePaymentIntentService.AbandonedIntentOutcome;
 import com.fairtix.payments.domain.OnlinePaymentIntent;
 import com.fairtix.payments.infrastructure.OnlinePaymentIntentRepository;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -63,6 +64,7 @@ public class OnlinePaymentIntentRetentionScheduler {
     this.clock = clock;
   }
 
+  @SchedulerLock(name = "onlinePaymentIntentRetention", lockAtMostFor = "PT1H", lockAtLeastFor = "PT10M")
   @Scheduled(cron = "${payments.online-intent.retention-cron:0 30 3 * * *}")
   public void deleteOldRows() {
     MDC.put("requestId", "sched-deleteOldOnlineIntents-" + UUID.randomUUID());

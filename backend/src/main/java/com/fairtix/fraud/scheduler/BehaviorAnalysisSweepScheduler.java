@@ -2,6 +2,7 @@ package com.fairtix.fraud.scheduler;
 
 import com.fairtix.audit.infrastructure.AuditLogRepository;
 import com.fairtix.fraud.application.BehaviorAnalysisService;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -31,6 +32,7 @@ public class BehaviorAnalysisSweepScheduler {
         this.auditLogRepository = auditLogRepository;
     }
 
+    @SchedulerLock(name = "behaviorAnalysisSweep", lockAtMostFor = "PT15M", lockAtLeastFor = "PT1M")
     @Scheduled(fixedDelayString = "${fraud.analysis.interval-ms:300000}")
     public void sweep() {
         MDC.put("requestId", "sched-sweep-" + UUID.randomUUID());
