@@ -320,8 +320,14 @@ and 202 frontend tests, with no failures.
   second per capped event, once, on one laptop with PostgreSQL and Redis in
   Docker, one app instance and no network in between; see the runbook.
   `EventCancelLoadIT` (opt-in the same way) times one event cancellation:
-  about 6 s for 2,000 tickets and 11 s for 4,000 on the same kind of setup. Neither
-  says anything about production capacity. No other load test, no end-to-end
+  about 6 s for 2,000 tickets and 11 s for 4,000 on the same kind of setup. A k6
+  on-sale over HTTP ([loadtest/](loadtest/README.md)) sent 2,000 users at once
+  into the waiting room for 1,000 seats: 512 were admitted and 500 bought
+  through hold and simulated checkout, with no errors and no oversell, on the
+  same laptop with the load generator beside the app; see
+  [docs/experiments/l2-load-queue-checkout.md](docs/experiments/l2-load-queue-checkout.md)
+  for the numbers and what it leaves out (SSE, several instances, Stripe). None
+  of these says anything about production capacity. No end-to-end
   browser tests, no tracing, and one metric (a counter of failed Stripe webhook
   deliveries, `StripeWebhookFailureFilter`).
 - **Cancelling an event blocks sales of it while it runs.** The cancellation

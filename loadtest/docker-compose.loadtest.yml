@@ -1,0 +1,44 @@
+# Load-test overlay for docker-compose.yml. Use it only with the project name
+# fairtix-loadtest, so the run gets its own containers and database volume:
+#
+#   docker compose -p fairtix-loadtest -f docker-compose.yml -f loadtest/docker-compose.loadtest.yml up --build -d
+#
+# Everything here is an environment override for this run; no default in
+# application.properties changes. See loadtest/README.md for why each is needed.
+services:
+  postgres:
+    container_name: fairtix-lt-postgres
+  redis:
+    container_name: fairtix-lt-redis
+  mailhog:
+    container_name: fairtix-lt-mailhog
+  backend:
+    container_name: fairtix-lt-backend
+    environment:
+      # Every synthetic user comes from the k6 container's one IP, and the
+      # credential endpoints (login, register) are limited per IP, 10/min by
+      # default. Raised for this run only. Every other limit stays per user.
+      RATELIMIT_AUTH: "1000000"
+      # Admit every 2 s instead of every 30 s, so the run measures the
+      # checkout path rather than mostly waiting. Batch size stays at 50.
+      QUEUE_ADMISSION_INTERVAL_MS: "2000"
+      # Never send real mail or charge a card from a load run, whatever .env says.
+      MAIL_HOST: mailhog
+      MAIL_PORT: "1025"
+      MAIL_USERNAME: ""
+      MAIL_PASSWORD: ""
+      MAIL_AUTH: "false"
+      MAIL_STARTTLS: "false"
+      STRIPE_ENABLED: "false"
+      RECAPTCHA_ENABLED: "false"
+
+  k6:
+    image: grafana/k6:2.4.0
+    profiles: ["k6"]
+    depends_on:
+      - backend
+    volumes:
+      - ./loadtest:/scripts
+    working_dir: /scripts
+    environment:
+      BASE_URL: http://backend:8080
