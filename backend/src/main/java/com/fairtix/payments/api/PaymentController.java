@@ -58,7 +58,10 @@ public class PaymentController {
 
   private static final Logger log = LoggerFactory.getLogger(PaymentController.class);
 
-  /** Attempts to create the order for a succeeded charge while the cap lock is busy. */
+  /**
+   * Attempts to create the order for a succeeded charge while the cap/sale lock is busy, or on
+   * a deadlock or lock timeout.
+   */
   private static final int STRIPE_ORDER_ATTEMPTS = 3;
 
   /** A Stripe PaymentIntent id; anything else submitted to checkout is never looked up. */
@@ -143,11 +146,13 @@ public class PaymentController {
   }
 
   /**
-   * Creates the order for a charge that has already succeeded. If the purchase-cap
-   * lock is busy (another request from the same user for the same event is still
-   * running), nothing was written and the attempt is simply repeated: the customer
-   * has paid, so a "try again" answer is the last resort, not the first. Each
-   * attempt is a transaction of its own and waits up to the lock's wait limit.
+   * Creates the order for a charge that has already succeeded. If the cap/sale lock
+   * is busy (another request from the same user for the same event is still
+   * running), or the attempt hits a deadlock or lock timeout, nothing was written
+   * (the transaction rolled back) and the attempt is simply repeated, up to
+   * {@code STRIPE_ORDER_ATTEMPTS}: the customer has paid, so a "try again" answer is
+   * the last resort, not the first. Each attempt is a transaction of its own. The
+   * worst case is 3 x (cap wait + sale wait + {@code deadlock_timeout}).
    */
   private Order createStripeOrder(UUID userId, java.util.List<UUID> holdIds, String paymentIntentId) {
     for (int attempt = 1; ; attempt++) {
@@ -213,7 +218,7 @@ public class PaymentController {
    *       {@code error=HoldNotOwned} (400), suffixed {@code (PaidNotChecked)} when Stripe could
    *       not be asked. The binding is not checked either, so the runbook treats these like
    *       {@code IntentNotBound}. See {@link #auditPaidRefusalSafely}.
-   *   <li>Anything else: {@code STRIPE_ORDER_FAILED}.
+   *   <li>Anything else (not a lock conflict): {@code STRIPE_ORDER_FAILED}.
    * </ul>
    */
   private void auditStripeOrderNotCreated(UUID userId, java.util.List<UUID> holdIds,
@@ -225,7 +230,7 @@ public class PaymentController {
     String summary;
     String error;
     if (busy) {
-      summary = "Charge succeeded, order not created yet (lock busy, deadlock or lock timeout; a retry can complete it): ";
+      summary = "Charge succeeded, order not created yet (lock busy, deadlock or lock timeout; a retry can complete it unless the CONFIRMED-hold sweep has since released the holds): ";
       error = ex.getClass().getSimpleName();
     } else if (ex instanceof PaymentIntentNotOwnedException) {
       summary = "Charge succeeded, but the intent predates owner binding and is past its grace"

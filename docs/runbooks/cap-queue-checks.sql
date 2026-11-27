@@ -111,8 +111,9 @@ GROUP BY granted;
 
 -- name: stripe_charges_without_order
 -- PaymentIntents that succeeded at Stripe but never got an order, last 14 days.
--- Checkout writes STRIPE_ORDER_FAILED when the order failed, and
--- STRIPE_ORDER_BUSY when the purchase-cap lock stayed busy. STRIPE_ORDER_FAILED
+-- Checkout writes STRIPE_ORDER_FAILED when the order failed for any other reason, and
+-- STRIPE_ORDER_BUSY when the cap/sale lock stayed busy, or every attempt hit a deadlock
+-- or lock timeout. STRIPE_ORDER_FAILED
 -- with error=PaymentNotVerified in its details means checkout answered 402
 -- because verification failed: almost always a paid intent whose amount no
 -- longer matches the holds (a seat price changed, or a hold was swapped).
@@ -225,7 +226,7 @@ GROUP BY granted;
 -- Elapsed time is no guide, because each visit to the checkout page extends
 -- confirmed holds. NULL means at least one attempt's audit details carry no
 -- readable hold ids: do not refund, investigate. busy_only = true means every
--- attempt so far failed on a busy lock.
+-- attempt so far failed on a lock conflict (cap/sale lock busy, deadlock or lock timeout).
 --
 -- escalate = true: any unbound row, whatever its age or holds (see above), or
 -- the first failure is more than 7 days old and the charge is still not

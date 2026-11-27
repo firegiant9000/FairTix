@@ -497,8 +497,8 @@ public class StripePaymentService {
    *
    * <p>If the order rolls back, this row goes with it. The captured charge is
    * still on record: {@code PaymentController} then writes
-   * {@code STRIPE_ORDER_FAILED} (or {@code STRIPE_ORDER_BUSY} for a busy purchase-cap
-   * lock) with the PaymentIntent id in a transaction of its own.
+   * {@code STRIPE_ORDER_FAILED} (or {@code STRIPE_ORDER_BUSY} for a busy cap/sale
+   * lock, a deadlock or a lock timeout) with the PaymentIntent id in a transaction of its own.
    */
   public PaymentRecord recordStripePaymentInOrderTransaction(String paymentIntentId, UUID orderId,
       UUID userId, BigDecimal amount, String currency) {

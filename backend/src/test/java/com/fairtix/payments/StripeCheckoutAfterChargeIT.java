@@ -146,20 +146,35 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
   }
 
   /**
-   * A deadlock on the first attempt (the transaction was rolled back) is retried in a fresh
-   * transaction and the order completes.
+   * A lock conflict on the first attempt, raised inside the real transaction after the order,
+   * payment record, ticket, seat and hold writes (the last audit row of the order fails). That
+   * attempt rolls back whole; the retry runs in a fresh transaction and the order completes
+   * exactly once, with nothing left over from the failed attempt.
    */
   @Test
-  void deadlockAfterTheCharge_isRetried_andTheOrderCompletes() throws Exception {
-    doThrow(new org.springframework.dao.DeadlockLoserDataAccessException("deadlock", null))
-        .doCallRealMethod()
-        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+  void lockConflictAfterTheOrderWrites_isRetried_andLeavesNothingBehind() throws Exception {
+    // logInCurrentTransaction is MANDATORY, and the stubbing call goes through the
+    // transactional proxy, so it is made inside a transaction (rolled back, nothing written).
+    var stubbing = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+    stubbing.executeWithoutResult(status -> {
+      doThrow(new org.springframework.dao.CannotAcquireLockException("deadlock"))
+          .doCallRealMethod()
+          .when(auditService)
+          .logInCurrentTransaction(any(), eq("CREATE"), eq("ORDER"), any(), any());
+      status.setRollbackOnly();
+    });
 
     checkout().andExpect(status().isCreated());
 
     verify(orderService, times(2)).createOrderWithStripePayment(any(), any(), anyString());
+    assertThat(count("SELECT COUNT(*) FROM orders")).isEqualTo(1);
     assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM payment_records WHERE transaction_id = '" + INTENT + "'"))
+        .isEqualTo(1);
     assertThat(count("SELECT COUNT(*) FROM tickets")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM seats WHERE status = 'SOLD'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM seat_holds WHERE status = 'RELEASED'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM seat_holds WHERE status <> 'RELEASED'")).isZero();
     assertThat(count(
         "SELECT COUNT(*) FROM audit_logs WHERE action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')"))
         .isZero();
