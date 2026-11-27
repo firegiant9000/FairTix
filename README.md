@@ -21,11 +21,12 @@ and Stripe payments with verified webhooks.
 > drills). See the 2026-09 revision at the top of
 > [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md) and the audit in
 > [docs/roadmap-review-2026-09.md](docs/roadmap-review-2026-09.md).
-> Only two figures below are measurements: the seat-hold contention test
-> ([docs/experiments/l1-contention-correctness.md](docs/experiments/l1-contention-correctness.md))
-> and one queue-join run on a laptop (the
-> [rollout runbook](docs/runbooks/cap-queue-rollout.md)). Neither is a
-> production performance figure.
+> Only three figures below are measurements: the seat-hold contention test
+> ([docs/experiments/l1-contention-correctness.md](docs/experiments/l1-contention-correctness.md)),
+> one queue-join run on a laptop (the
+> [rollout runbook](docs/runbooks/cap-queue-rollout.md)) and one event-cancel
+> timing on a laptop (`EventCancelLoadIT`). None is a production performance
+> figure.
 
 ## Screenshots
 
@@ -102,9 +103,11 @@ off, payment simulated by the dev profile. Event and venue names are fictional.
   fails verification, and records each handled event id in
   `stripe_webhook_events` in the same transaction as its handling, so a
   redelivered event is answered 200 without being processed again.
-- **Mail goes out after commit.** Transfer, refund and order mail is sent once
-  the transaction commits, so a mail failure cannot roll back the change and a
-  rolled-back change sends no mail.
+- **Mail goes out after commit, off the request thread.** Transfer, refund and
+  order mail is sent once the transaction commits, so a mail failure cannot roll
+  back the change and a rolled-back change sends no mail. The SMTP call itself
+  runs on a small dedicated pool (`mailExecutor` in `AsyncConfig`), so a slow
+  mail server holds neither a request thread nor a pooled database connection.
 - **Rate limiting and abuse controls.** Per-route limits keyed by user or IP
   through Redisson rate limiters (`RateLimitService`), login-attempt tracking,
   reCAPTCHA on login after repeated failures (when enabled), and velocity
@@ -135,7 +138,7 @@ The backend is organised by domain, one package per module under
 `organizations`, `fraud`, `auth`, `users` and `audit`), each split into `api`,
 `application`, `domain` and `infrastructure` layers. Schema changes are
 forward-only Flyway migrations under `backend/src/main/resources/db/migration`
-(54 at V54; `ls backend/src/main/resources/db/migration | wc -l` for the
+(57 at V57; `ls backend/src/main/resources/db/migration | wc -l` for the
 current count).
 
 ## Tech stack
@@ -234,8 +237,8 @@ The CI workflow
 ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on pull requests
 to, and pushes to, `main` and `develop`: `./mvnw clean verify` with a Redis
 service container, the frontend suite with coverage, OWASP Dependency-Check,
-and a Trivy image scan. On `main` at `db6176f1` (2026-11-21) that was 796
-surefire, 249 failsafe and 202 frontend tests, with no failures.
+and a Trivy image scan. On 2026-11-27 that was 898 surefire, 296 failsafe
+and 202 frontend tests, with no failures.
 
 ## Security notes
 
@@ -312,25 +315,26 @@ surefire, 249 failsafe and 202 frontend tests, with no failures.
   audited with its status; nothing cancels tickets, changes a refund, lowers
   the count or clears the flag by itself. Disputes are worked in the Stripe Dashboard; checkout refuses
   an intent that is refunded or disputed.
-- **The only load figure is one laptop run.** `QueueJoinLoadIT` (opt-in:
+- **The only load figures are laptop runs.** `QueueJoinLoadIT` (opt-in:
   `./mvnw verify -Dit.test=QueueJoinLoadIT`) measured about 100 queue joins per
   second per capped event, once, on one laptop with PostgreSQL and Redis in
-  Docker, one app instance and no network in between; see the runbook. It says
-  nothing about production capacity. No other load test, no end-to-end browser
-  tests, no metrics or tracing.
+  Docker, one app instance and no network in between; see the runbook.
+  `EventCancelLoadIT` (opt-in the same way) times one event cancellation:
+  about 6 s for 2,000 tickets and 11 s for 4,000 on the same kind of setup. Neither
+  says anything about production capacity. No other load test, no end-to-end
+  browser tests, no tracing, and one metric (a counter of failed Stripe webhook
+  deliveries, `StripeWebhookFailureFilter`).
+- **Cancelling an event blocks sales of it while it runs.** The cancellation
+  holds the event's sale lock for its whole transaction (the timings above),
+  so purchases on that event answer a retryable 409 until it commits.
+- **The frontend is on Create React App**, which is deprecated upstream. It
+  still builds and its tests run in CI; moving to Vite is not planned.
 - The AWS lab is not built: `infra/` holds the bootstrap, canary and teardown
   code and a few helper files, but no lab stack (see
   [docs/infra/README.md](docs/infra/README.md)).
 - With Redis down, the rate limiter fails closed (503) on the credential
   endpoints (login, registration, verification, password reset, step-up) and
   open everywhere else.
-- **Open defects.**
-  - After-commit mail still holds the request's database connection while
-    SMTP runs.
-  - Cancelling a large event is slow (minutes for a few thousand tickets in a
-    local test), and purchases on that event answer 409 until it finishes.
-  - `users.email` is unique only case-sensitively, so accounts that differ
-    only by case can exist; lookups rank them, nothing merges them.
 
 ## Team and contributions
 

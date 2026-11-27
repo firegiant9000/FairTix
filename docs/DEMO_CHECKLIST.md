@@ -54,7 +54,7 @@ To create an admin by hand instead (any account, for example one made at `/signu
 ```bash
 # psql user and database come from .env (POSTGRES_USER, POSTGRES_DB)
 docker compose exec postgres sh -c \
-  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE users SET role = '"'"'ADMIN'"'"' WHERE email = '"'"'you@example.com'"'"';"'
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE users SET role = '"'"'ADMIN'"'"' WHERE lower(email) = lower('"'"'you@example.com'"'"');"'
 ```
 
 Log in again afterwards so the session picks up the role. Later admins are promoted
