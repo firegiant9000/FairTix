@@ -11,6 +11,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.organizations.domain.OrganizationStatus;
 import com.fairtix.organizations.dto.SignupDtos.SubmitForReviewRequest;
 import com.fairtix.organizations.domain.Organization;
@@ -31,6 +32,8 @@ class OrgSignupServiceTest {
   @Autowired private OrganizationRepository organizations;
   @Autowired private UserRepository users;
   @Autowired private EinCipher einCipher;
+  @Autowired private com.fairtix.audit.infrastructure.AuditLogRepository auditLogs;
+  @Autowired private jakarta.persistence.EntityManager entityManager;
 
   private User owner;
   private User stranger;
@@ -111,6 +114,40 @@ class OrgSignupServiceTest {
   }
 
   @Test
+  void clearPayoutFreezeClearsFlagAndAuditsOnce() {
+    Organization org = organizationService.createOrganization("Velvet Room", "v@x.test", owner.getId());
+    organizations.freezePayouts(org.getId(), Instant.now());
+    assertThat(com.fairtix.organizations.dto.SignupDtos.OrganizationReviewResponse
+        .from(frozenCopy(org)).stripePayoutsFrozen()).isTrue();
+
+    signupService.clearPayoutFreeze(org.getId(), admin.getId());
+
+    assertThat(frozen(org)).isFalse();
+    assertThat(com.fairtix.organizations.dto.SignupDtos.OrganizationReviewResponse
+        .from(organizations.findById(org.getId()).orElseThrow()).stripePayoutsFrozen()).isFalse();
+    assertThat(clearedAudits(org)).singleElement().satisfies(a -> {
+      assertThat(a.getUserId()).isEqualTo(admin.getId());
+      assertThat(a.getResourceType()).isEqualTo("ORGANIZATION");
+    });
+  }
+
+  @Test
+  void clearPayoutFreezeOnUnfrozenOrgIsNoOpWithoutAudit() {
+    Organization org = organizationService.createOrganization("Velvet Room", "v@x.test", owner.getId());
+
+    signupService.clearPayoutFreeze(org.getId(), admin.getId());
+
+    assertThat(frozen(org)).isFalse();
+    assertThat(clearedAudits(org)).isEmpty();
+  }
+
+  @Test
+  void clearPayoutFreezeUnknownOrgIsNotFound() {
+    assertThatThrownBy(() -> signupService.clearPayoutFreeze(UUID.randomUUID(), admin.getId()))
+        .isInstanceOf(ResourceNotFoundException.class);
+  }
+
+  @Test
   void listForReviewReturnsPendingReviewOnly() {
     Organization submitted = submitted();
     Organization other = organizationService.createOrganization("Other", "o@x.test", stranger.getId());
@@ -121,6 +158,25 @@ class OrgSignupServiceTest {
   }
 
   // helpers
+
+  private Organization frozenCopy(Organization org) {
+    entityManager.flush();
+    entityManager.clear();
+    return organizations.findById(org.getId()).orElseThrow();
+  }
+
+  private boolean frozen(Organization org) {
+    entityManager.flush();
+    entityManager.clear();
+    return organizations.findById(org.getId()).orElseThrow().isStripePayoutsFrozen();
+  }
+
+  private java.util.List<com.fairtix.audit.domain.AuditLog> clearedAudits(Organization org) {
+    return auditLogs.findAll().stream()
+        .filter(a -> "STRIPE_PAYOUT_FREEZE_CLEARED".equals(a.getAction()))
+        .filter(a -> org.getId().equals(a.getResourceId()))
+        .toList();
+  }
 
   private Organization submitted() {
     Organization org = organizationService.createOrganization("Velvet Room", "v@x.test", owner.getId());
