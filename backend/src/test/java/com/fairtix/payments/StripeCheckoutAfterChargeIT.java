@@ -146,6 +146,26 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
   }
 
   /**
+   * A deadlock on the first attempt (the transaction was rolled back) is retried in a fresh
+   * transaction and the order completes.
+   */
+  @Test
+  void deadlockAfterTheCharge_isRetried_andTheOrderCompletes() throws Exception {
+    doThrow(new org.springframework.dao.DeadlockLoserDataAccessException("deadlock", null))
+        .doCallRealMethod()
+        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+
+    checkout().andExpect(status().isCreated());
+
+    verify(orderService, times(2)).createOrderWithStripePayment(any(), any(), anyString());
+    assertThat(count("SELECT COUNT(*) FROM orders WHERE status = 'COMPLETED'")).isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM tickets")).isEqualTo(1);
+    assertThat(count(
+        "SELECT COUNT(*) FROM audit_logs WHERE action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')"))
+        .isZero();
+  }
+
+  /**
    * A lock that stays busy for every attempt ends in the retryable 409. The
    * captured charge is on record as STRIPE_ORDER_BUSY, not as a failed order: the
    * holds are still confirmed, so the customer's next attempt can complete it.

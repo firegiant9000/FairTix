@@ -410,6 +410,93 @@ class StripePaymentControllerTest {
         Integer.class, user.getId())).isZero();
   }
 
+  private org.springframework.test.web.servlet.ResultActions checkoutIntent(String intentId)
+      throws Exception {
+    doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
+    String body = """
+        { "holdIds": ["%s"], "paymentIntentId": "%s" }
+        """.formatted(confirmedHold.getId(), intentId);
+    return mockMvc.perform(post("/api/payments/checkout")
+        .with(WithMockPrincipal.user(user.getId(), user.getEmail()))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(body));
+  }
+
+  private int auditCount(String action) {
+    return jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = ? AND user_id = ?",
+        Integer.class, action, user.getId());
+  }
+
+  /** A deadlock or lock timeout after the charge is retried, like a busy purchase-cap lock. */
+  @Test
+  void checkout_lockConflictOnceAfterCharge_isRetriedAndCreatesTheOrder() throws Exception {
+    doThrow(new org.springframework.dao.CannotAcquireLockException("lock timeout"))
+        .doCallRealMethod()
+        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+
+    checkoutIntent("pi_lock_once")
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.orderStatus").value("COMPLETED"));
+
+    verify(orderService, times(2)).createOrderWithStripePayment(any(), any(), eq("pi_lock_once"));
+    assertThat(orderRepository.count()).isEqualTo(1);
+    assertThat(auditCount("STRIPE_ORDER_FAILED")).isZero();
+    assertThat(auditCount("STRIPE_ORDER_BUSY")).isZero();
+  }
+
+  /** The JPA lock exceptions reach the controller untranslated from EntityManager locks. */
+  @Test
+  void checkout_rawJpaLockExceptions_areRetriedAndCreateTheOrder() throws Exception {
+    doThrow(new jakarta.persistence.PessimisticLockException("deadlock"))
+        .doThrow(new jakarta.persistence.LockTimeoutException("lock timeout"))
+        .doCallRealMethod()
+        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+
+    checkoutIntent("pi_lock_jpa").andExpect(status().isCreated());
+
+    verify(orderService, times(3)).createOrderWithStripePayment(any(), any(), eq("pi_lock_jpa"));
+    assertThat(orderRepository.count()).isEqualTo(1);
+    assertThat(auditCount("STRIPE_ORDER_FAILED")).isZero();
+  }
+
+  /**
+   * A lock conflict on every attempt keeps the 409, but the holds are still confirmed, so the
+   * charge is on record as STRIPE_ORDER_BUSY (once), not STRIPE_ORDER_FAILED.
+   */
+  @Test
+  void checkout_lockConflictOnEveryAttempt_answers409AndAuditsBusyOnce() throws Exception {
+    doThrow(new org.springframework.dao.DeadlockLoserDataAccessException("deadlock", null))
+        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+
+    checkoutIntent("pi_lock_always")
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("CONCURRENT_MODIFICATION"));
+
+    verify(orderService, times(3)).createOrderWithStripePayment(any(), any(), eq("pi_lock_always"));
+    assertThat(orderRepository.count()).isZero();
+    assertThat(auditCount("STRIPE_ORDER_BUSY")).isEqualTo(1);
+    assertThat(auditCount("STRIPE_ORDER_FAILED")).isZero();
+    assertThat(jdbcTemplate.queryForObject(
+        "SELECT details FROM audit_logs WHERE action = 'STRIPE_ORDER_BUSY' AND user_id = ?",
+        String.class, user.getId()))
+        .contains("stripe_intent=pi_lock_always,")
+        .contains("error=DeadlockLoserDataAccessException");
+  }
+
+  /** Any other failure is not retried and is still STRIPE_ORDER_FAILED. */
+  @Test
+  void checkout_nonLockFailureAfterCharge_isNotRetriedAndAuditsFailed() throws Exception {
+    doThrow(new org.springframework.dao.DataAccessResourceFailureException("db down"))
+        .when(orderService).createOrderWithStripePayment(any(), any(), anyString());
+
+    checkoutIntent("pi_not_lock").andExpect(status().is5xxServerError());
+
+    verify(orderService, times(1)).createOrderWithStripePayment(any(), any(), eq("pi_not_lock"));
+    assertThat(auditCount("STRIPE_ORDER_FAILED")).isEqualTo(1);
+    assertThat(auditCount("STRIPE_ORDER_BUSY")).isZero();
+  }
+
   @Test
   void checkout_withStripeIntentId_issuesTicket() throws Exception {
     doReturn(true).when(stripePaymentService).verifyPaymentSucceeded(anyString(), anyLong(), any());
