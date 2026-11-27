@@ -18,8 +18,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <p>Lock times come from the database clock ({@code usingDbTime}), so skew between the
  * instances' clocks does not move them. {@code lockAtMostFor} is how long a lock outlives an
- * instance that dies mid-run; {@code lockAtLeastFor} keeps a fast job from running again on
- * another instance in the same interval (see each job's annotation).
+ * instance that dies mid-run. {@code lockAtLeastFor} sets how often the cluster runs a job:
+ * where frequency matters (queue admission, the fraud sweep, token cleanup, the daily jobs)
+ * it is close to the interval, so the cluster runs the job about as often as one instance
+ * would. The hold, queue-expiry and transfer sweeps keep a short one: they only never run
+ * twice at once, and with several instances they may run more often than their interval,
+ * which their row-level re-checks make safe.
  *
  * <p>The lock advice is ordered first ({@link Ordered#HIGHEST_PRECEDENCE}), so it wraps the
  * job's {@code @Transactional} advice: the lock row is committed before the job's transaction

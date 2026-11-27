@@ -286,9 +286,11 @@ and 202 frontend tests, with no failures.
   penetration test.
 - **Multi-instance: built for it, tested with two instances in one JVM, never
   deployed that way.** Every `@Scheduled` job takes a ShedLock row (table
-  `shedlock`, V58) so it runs on one instance per tick; queue admission holds
-  its lock for most of an interval, so a second instance does not double the
-  admission rate. Waiting-room SSE updates go through a Redis topic, so a
+  `shedlock`, V58), so no job runs on two instances at once. Queue admission,
+  the fraud sweep, token cleanup and the daily jobs hold their lock for most of
+  an interval, so a second instance does not run them more often (admission
+  stays within about 7% of one instance's rate); the hold and expiry sweeps may
+  run more often, which is safe. Waiting-room SSE updates go through a Redis topic, so a
   browser connected to any instance hears about an admission made on another
   (only the event id is sent; each instance re-reads status from PostgreSQL).
   `MultiInstanceIT` starts two application instances on one PostgreSQL and one
@@ -298,7 +300,9 @@ and 202 frontend tests, with no failures.
   30-second overview cache is per JVM, so instances can disagree for up to
   30 s. Notification mail is queued in memory and lost if its instance stops.
   If Redis is unreachable, SSE updates reach only the browsers on the instance
-  that made the change (others see it on reconnect). Nothing has run behind a
+  that made the change (others see it on reconnect), and Redis pub/sub is
+  at-most-once: an instance that is reconnecting to Redis misses that update,
+  and its browsers catch up on the next update or the 3-minute SSE reconnect. Nothing has run behind a
   load balancer, with rolling deploys, or with more than two instances, and the
   other test suites still run one instance with the scheduled jobs and locks
   off.

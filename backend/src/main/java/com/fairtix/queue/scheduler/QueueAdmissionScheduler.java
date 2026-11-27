@@ -8,13 +8,16 @@ import com.fairtix.queue.application.QueueService;
 import com.fairtix.queue.application.QueueSseService;
 import com.fairtix.queue.domain.QueueEntry;
 import com.fairtix.users.infrastructure.UserRepository;
+import jakarta.annotation.PostConstruct;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
@@ -44,18 +47,34 @@ public class QueueAdmissionScheduler {
         this.eventRepository = eventRepository;
     }
 
+    @Value("${queue.admission.interval-ms:30000}")
+    private long intervalMs;
+
+    @Value("${queue.admission.lock-at-least-for:PT28S}")
+    private Duration lockAtLeastFor;
+
+    /** Fails startup if the lock would make a single instance skip its own next run. */
+    @PostConstruct
+    void checkLockFitsInterval() {
+        if (lockAtLeastFor.toMillis() >= intervalMs) {
+            throw new IllegalStateException("queue.admission.lock-at-least-for (" + lockAtLeastFor
+                    + ") must be below queue.admission.interval-ms (" + intervalMs + " ms)");
+        }
+    }
+
     /**
      * Admits the next batch for every event with a waiting queue, then tells every instance
      * to push the new statuses to its connected browsers.
      *
      * <p>The lock is held for most of an interval, not just for the run: each run admits up
      * to {@code queue.max-admission-batch} per event, so two instances running in the same
-     * interval would admit at twice the configured rate. Keep
-     * {@code queue.admission.lock-at-least-for} below {@code queue.admission.interval-ms}, or
-     * a single instance skips its own next run.
+     * interval would admit at twice the configured rate. With the defaults (28 s against a
+     * 30 s delay) the cluster admits at most about 7% faster than one instance. The lock must
+     * stay below {@code queue.admission.interval-ms}, or a single instance skips its own next
+     * run; {@link #checkLockFitsInterval} enforces that at startup.
      */
     @SchedulerLock(name = "queueAdmission", lockAtMostFor = "PT2M",
-            lockAtLeastFor = "${queue.admission.lock-at-least-for:PT25S}")
+            lockAtLeastFor = "${queue.admission.lock-at-least-for:PT28S}")
     @Scheduled(fixedDelayString = "${queue.admission.interval-ms:30000}")
     public void admitWaitingUsers() {
         MDC.put("requestId", "sched-admitWaitingUsers-" + UUID.randomUUID());

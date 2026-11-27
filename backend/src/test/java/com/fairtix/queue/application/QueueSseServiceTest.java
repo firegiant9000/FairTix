@@ -15,6 +15,7 @@ import org.redisson.api.RedissonClient;
 import org.redisson.api.listener.MessageListener;
 import org.redisson.client.RedisTimeoutException;
 import org.redisson.client.codec.Codec;
+import org.redisson.misc.CompletableFutureWrapper;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.UUID;
@@ -59,12 +60,12 @@ class QueueSseServiceTest {
         when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
         sseService.register(EVENT_ID, USER_ID);
         reset(queueService);
-        when(topic.publish(EVENT_ID.toString())).thenReturn(2L);
+        when(topic.publishAsync(EVENT_ID.toString())).thenReturn(new CompletableFutureWrapper<>(2L));
 
         sseService.publishUpdate(EVENT_ID);
 
-        verify(topic).publish(EVENT_ID.toString());
-        verifyNoInteractions(queueService);
+        verify(topic).publishAsync(EVENT_ID.toString());
+        verify(queueService, after(300).never()).getStatus(any(), any());
     }
 
     @Test
@@ -72,11 +73,12 @@ class QueueSseServiceTest {
         QueueEntry entry = mockWaitingEntry();
         when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
         sseService.register(EVENT_ID, USER_ID);
-        when(topic.publish(anyString())).thenThrow(new RedisTimeoutException("down"));
+        when(topic.publishAsync(anyString()))
+                .thenReturn(new CompletableFutureWrapper<>(new RedisTimeoutException("down")));
 
         sseService.publishUpdate(EVENT_ID);
 
-        verify(queueService, times(2)).getStatus(EVENT_ID, USER_ID);
+        verify(queueService, timeout(5000).times(2)).getStatus(EVENT_ID, USER_ID);
     }
 
     @Test
@@ -84,11 +86,32 @@ class QueueSseServiceTest {
         QueueEntry entry = mockWaitingEntry();
         when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
         sseService.register(EVENT_ID, USER_ID);
-        when(topic.publish(anyString())).thenReturn(0L);
+        when(topic.publishAsync(anyString())).thenReturn(new CompletableFutureWrapper<>(0L));
 
         sseService.publishUpdate(EVENT_ID);
 
-        verify(queueService, times(2)).getStatus(EVENT_ID, USER_ID);
+        verify(queueService, timeout(5000).times(2)).getStatus(EVENT_ID, USER_ID);
+    }
+
+    /** Subscription failed at startup: peers still receive, so publish alone would not reach us. */
+    @Test
+    void publishUpdate_broadcastsLocallyAndRetriesWhileThisInstanceIsNotSubscribed() {
+        when(topic.addListener(eq(String.class), any()))
+                .thenThrow(new RedisTimeoutException("down"))
+                .thenThrow(new RedisTimeoutException("down"))
+                .thenReturn(3);
+        sseService.subscribe();
+        QueueEntry entry = mockWaitingEntry();
+        when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
+        sseService.register(EVENT_ID, USER_ID);
+        when(topic.publishAsync(anyString())).thenReturn(new CompletableFutureWrapper<>(1L));
+
+        sseService.publishUpdate(EVENT_ID);
+        verify(queueService, timeout(5000).times(2)).getStatus(EVENT_ID, USER_ID);
+
+        sseService.publishUpdate(EVENT_ID);
+        verify(topic, times(3)).addListener(eq(String.class), any());
+        verify(queueService, after(300).times(2)).getStatus(EVENT_ID, USER_ID);
     }
 
     @Test

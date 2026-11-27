@@ -32,7 +32,7 @@ public class BehaviorAnalysisSweepScheduler {
         this.auditLogRepository = auditLogRepository;
     }
 
-    @SchedulerLock(name = "behaviorAnalysisSweep", lockAtMostFor = "PT15M", lockAtLeastFor = "PT1M")
+    @SchedulerLock(name = "behaviorAnalysisSweep", lockAtMostFor = "PT15M", lockAtLeastFor = "PT4M")
     @Scheduled(fixedDelayString = "${fraud.analysis.interval-ms:300000}")
     public void sweep() {
         MDC.put("requestId", "sched-sweep-" + UUID.randomUUID());

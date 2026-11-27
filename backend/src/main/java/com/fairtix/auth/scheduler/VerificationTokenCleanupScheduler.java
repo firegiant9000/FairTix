@@ -33,7 +33,7 @@ public class VerificationTokenCleanupScheduler {
         this.refreshTokenRepository = refreshTokenRepository;
     }
 
-    @SchedulerLock(name = "verificationTokenCleanup", lockAtMostFor = "PT30M", lockAtLeastFor = "PT5M")
+    @SchedulerLock(name = "verificationTokenCleanup", lockAtMostFor = "PT55M", lockAtLeastFor = "PT50M")
     @Scheduled(fixedDelayString = "${verification.token.cleanup.interval-ms:3600000}")
     @Transactional
     public void cleanUpExpiredTokens() {

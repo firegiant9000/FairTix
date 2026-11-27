@@ -32,12 +32,14 @@ import java.util.concurrent.RejectedExecutionException;
  * event id: each instance re-reads each user's status from the database, which stays the
  * source of truth, and nothing about a user goes through Redis.
  *
- * <p>If Redis is unreachable, or no instance is subscribed, the sender broadcasts locally;
- * browsers on other instances then see the change on their next update or reconnect (the
- * first message on a new stream is the current status). Redisson resubscribes the listener
- * after a reconnect. Messages handed to the listener are broadcast on one worker thread, and
- * repeats for an event that is already waiting are dropped, since one broadcast reads the
- * latest status anyway.
+ * <p>If Redis is unreachable, no instance is subscribed, or this instance's own subscription
+ * failed at startup (retried on each publish), the sender broadcasts locally; browsers on
+ * other instances then see the change on their next update or reconnect (the first message
+ * on a new stream is the current status). Redis pub/sub delivers at most once: an instance
+ * whose subscription is reconnecting misses that message, and if it was the event's last
+ * admission its browsers wait for the SSE reconnect ({@value #SSE_TIMEOUT_MS} ms). Redisson
+ * resubscribes the listener after a reconnect. Broadcasts run on one worker thread, and
+ * repeats for an event that is already queued are dropped.
  */
 @Service
 public class QueueSseService {
@@ -64,14 +66,19 @@ public class QueueSseService {
         this.topic = redissonClient.getTopic(TOPIC, StringCodec.INSTANCE);
     }
 
+    /**
+     * Subscribes this instance to the topic. A failure is retried on the next
+     * {@link #publishUpdate}; until then this instance's own changes are broadcast locally.
+     */
     @PostConstruct
-    void subscribe() {
+    synchronized void subscribe() {
+        if (listenerId != null) {
+            return;
+        }
         try {
             listenerId = topic.addListener(String.class, (channel, message) -> onMessage(message));
         } catch (Exception e) {
-            // Redisson connects at startup, so this is rare; updates made on other instances
-            // then reach this instance's browsers only on their next poll or reconnect.
-            log.warn("Queue update subscription failed; cross-instance SSE updates are off on this instance: {}",
+            log.warn("Queue update subscription failed; retrying on the next update: {}",
                     e.getClass().getSimpleName());
         }
     }
@@ -118,20 +125,33 @@ public class QueueSseService {
     /**
      * Tells every instance that the queue for {@code eventId} changed, so each pushes fresh
      * statuses to its own browsers. Call after the change has committed.
+     *
+     * <p>Asynchronous: the caller (a scheduler tick looping over events) does not wait on
+     * Redis, so an outage cannot stretch the tick past its lock. If this instance is not
+     * subscribed, or the publish fails or reaches no subscriber, this instance's browsers
+     * are updated locally.
      */
     public void publishUpdate(UUID eventId) {
-        long receivers;
+        if (listenerId == null) {
+            subscribe();
+            if (listenerId == null) {
+                broadcastLocallyLater(eventId);
+            }
+        }
         try {
-            receivers = topic.publish(eventId.toString());
+            topic.publishAsync(eventId.toString()).whenComplete((receivers, error) -> {
+                if (error != null) {
+                    log.warn("Queue update publish failed for event {}; broadcasting locally: {}",
+                            eventId, error.getClass().getSimpleName());
+                    broadcastLocallyLater(eventId);
+                } else if (receivers == null || receivers == 0) {
+                    broadcastLocallyLater(eventId);
+                }
+            });
         } catch (Exception e) {
             log.warn("Queue update publish failed for event {}; broadcasting locally: {}",
                     eventId, e.getClass().getSimpleName());
-            broadcast(eventId);
-            return;
-        }
-        if (receivers == 0) {
-            // Not even this instance is subscribed (for example, mid-reconnect).
-            broadcast(eventId);
+            broadcastLocallyLater(eventId);
         }
     }
 
@@ -166,6 +186,15 @@ public class QueueSseService {
             log.warn("Ignoring malformed queue update message");
             return;
         }
+        broadcastLocallyLater(eventId);
+    }
+
+    /**
+     * Queues a local broadcast on the fan-out thread. A repeat for an event that is already
+     * queued is dropped: the queued broadcast has not read the database yet, so it sends the
+     * latest status anyway.
+     */
+    private void broadcastLocallyLater(UUID eventId) {
         if (!registry.containsKey(eventId) || !pending.add(eventId)) {
             return;
         }
