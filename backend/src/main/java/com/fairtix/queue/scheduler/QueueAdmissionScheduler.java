@@ -64,7 +64,7 @@ public class QueueAdmissionScheduler {
             for (UUID eventId : eventIds) {
                 try {
                     List<QueueEntry> admitted = queueService.admitNextBatch(eventId);
-                    queueSseService.broadcast(eventId);
+                    queueSseService.publishUpdate(eventId);
                     sendAdmissionEmails(admitted, eventId);
                 } catch (Exception e) {
                     log.error("Failed to admit batch for event {}: {}", eventId, e.getMessage());

@@ -3,16 +3,26 @@ package com.fairtix.queue.application;
 import com.fairtix.common.ResourceNotFoundException;
 import com.fairtix.queue.domain.QueueEntry;
 import com.fairtix.queue.domain.QueueStatus;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.redisson.api.RTopic;
+import org.redisson.api.RedissonClient;
+import org.redisson.api.listener.MessageListener;
+import org.redisson.client.RedisTimeoutException;
+import org.redisson.client.codec.Codec;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -21,6 +31,12 @@ class QueueSseServiceTest {
     @Mock
     private QueueService queueService;
 
+    @Mock
+    private RedissonClient redissonClient;
+
+    @Mock
+    private RTopic topic;
+
     private QueueSseService sseService;
 
     private static final UUID EVENT_ID = UUID.randomUUID();
@@ -28,7 +44,78 @@ class QueueSseServiceTest {
 
     @BeforeEach
     void setUp() {
-        sseService = new QueueSseService(queueService);
+        when(redissonClient.getTopic(eq(QueueSseService.TOPIC), any(Codec.class))).thenReturn(topic);
+        sseService = new QueueSseService(queueService, redissonClient);
+    }
+
+    @AfterEach
+    void tearDown() {
+        sseService.unsubscribe();
+    }
+
+    @Test
+    void publishUpdate_sendsOnlyTheEventId_andLeavesTheBroadcastToSubscribers() {
+        QueueEntry entry = mockWaitingEntry();
+        when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
+        sseService.register(EVENT_ID, USER_ID);
+        reset(queueService);
+        when(topic.publish(EVENT_ID.toString())).thenReturn(2L);
+
+        sseService.publishUpdate(EVENT_ID);
+
+        verify(topic).publish(EVENT_ID.toString());
+        verifyNoInteractions(queueService);
+    }
+
+    @Test
+    void publishUpdate_broadcastsLocallyWhenRedisFails() {
+        QueueEntry entry = mockWaitingEntry();
+        when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
+        sseService.register(EVENT_ID, USER_ID);
+        when(topic.publish(anyString())).thenThrow(new RedisTimeoutException("down"));
+
+        sseService.publishUpdate(EVENT_ID);
+
+        verify(queueService, times(2)).getStatus(EVENT_ID, USER_ID);
+    }
+
+    @Test
+    void publishUpdate_broadcastsLocallyWhenNoInstanceIsSubscribed() {
+        QueueEntry entry = mockWaitingEntry();
+        when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
+        sseService.register(EVENT_ID, USER_ID);
+        when(topic.publish(anyString())).thenReturn(0L);
+
+        sseService.publishUpdate(EVENT_ID);
+
+        verify(queueService, times(2)).getStatus(EVENT_ID, USER_ID);
+    }
+
+    @Test
+    void subscribedListener_broadcastsToThisInstancesEmitters() {
+        when(topic.addListener(eq(String.class), any())).thenReturn(7);
+        sseService.subscribe();
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<MessageListener<String>> listener = ArgumentCaptor.forClass(MessageListener.class);
+        verify(topic).addListener(eq(String.class), listener.capture());
+
+        QueueEntry entry = mockWaitingEntry();
+        when(queueService.getStatus(EVENT_ID, USER_ID)).thenReturn(entry);
+        sseService.register(EVENT_ID, USER_ID);
+
+        listener.getValue().onMessage(QueueSseService.TOPIC, EVENT_ID.toString());
+
+        verify(queueService, timeout(5000).times(2)).getStatus(EVENT_ID, USER_ID);
+        sseService.unsubscribe();
+        verify(topic).removeListener(7);
+    }
+
+    @Test
+    void onMessage_ignoresMalformedIdsAndEventsWithNoEmittersHere() {
+        sseService.onMessage("not-a-uuid");
+        sseService.onMessage(UUID.randomUUID().toString());
+
+        verifyNoInteractions(queueService);
     }
 
     @Test

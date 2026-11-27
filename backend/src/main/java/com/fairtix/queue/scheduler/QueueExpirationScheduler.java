@@ -34,7 +34,7 @@ public class QueueExpirationScheduler {
             for (UUID eventId : eventIds) {
                 try {
                     queueService.expireAdmissions(eventId);
-                    queueSseService.broadcast(eventId);
+                    queueSseService.publishUpdate(eventId);
                 } catch (Exception e) {
                     log.error("Failed to expire admissions for event {}: {}", eventId, e.getMessage());
                 }
