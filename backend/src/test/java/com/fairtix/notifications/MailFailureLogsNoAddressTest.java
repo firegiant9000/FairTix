@@ -16,6 +16,7 @@ import com.fairtix.events.infrastructure.EventRepository;
 import com.fairtix.inventory.domain.Seat;
 import com.fairtix.inventory.infrastructure.SeatRepository;
 import com.fairtix.notifications.application.EmailService;
+import com.fairtix.notifications.application.NotificationGate;
 import com.fairtix.orders.domain.Order;
 import com.fairtix.orders.domain.OrderStatus;
 import com.fairtix.orders.infrastructure.OrderRepository;
@@ -81,7 +82,8 @@ class MailFailureLogsNoAddressTest {
         new Order(holder, List.of(), new BigDecimal("50.00"), "USD", OrderStatus.COMPLETED));
     ticketRepository.save(new Ticket(order, holder, seat, event, new BigDecimal("50.00")));
     failMailTo(holder);
-    capture(EventService.class);
+    // The send runs on the mail executor, so the gate logs its failure, not the caller.
+    capture(NotificationGate.class);
 
     eventService.cancelEvent(event.getId(), adminId, "Venue unavailable");
 
@@ -92,7 +94,7 @@ class MailFailureLogsNoAddressTest {
   void passwordResetMailFailure_logsUserIdNotAddress() {
     User user = newUser();
     failMailTo(user);
-    capture(PasswordResetService.class);
+    capture(NotificationGate.class);
 
     passwordResetService.requestReset(user.getEmail());
 
