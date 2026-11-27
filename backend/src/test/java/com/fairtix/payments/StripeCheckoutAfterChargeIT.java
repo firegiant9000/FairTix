@@ -79,6 +79,7 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
   @Autowired private SeatHoldService seatHoldService;
   @Autowired private JdbcTemplate jdbcTemplate;
   @Autowired private DataSource dataSource;
+  @jakarta.persistence.PersistenceContext private jakarta.persistence.EntityManager entityManager;
   @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
   @Autowired private OnlinePaymentIntentRepository onlinePaymentIntentRepository;
 
@@ -147,7 +148,8 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
 
   /**
    * A lock conflict on the first attempt, raised inside the real transaction after the order,
-   * payment record, ticket, seat and hold writes (the last audit row of the order fails). That
+   * payment record, ticket, seat and hold writes (the last audit row of the order fails). Those
+   * writes are flushed to Postgres before the failure, so the rollback is real. That
    * attempt rolls back whole; the retry runs in a fresh transaction and the order completes
    * exactly once, with nothing left over from the failed attempt.
    */
@@ -157,7 +159,12 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
     // transactional proxy, so it is made inside a transaction (rolled back, nothing written).
     var stubbing = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
     stubbing.executeWithoutResult(status -> {
-      doThrow(new org.springframework.dao.CannotAcquireLockException("deadlock"))
+      doAnswer(inv -> {
+        // Ids are client-generated, so save() sends no SQL: flush the order's writes to
+        // Postgres (the shared EntityManager joins the order's transaction) before failing.
+        entityManager.flush();
+        throw new org.springframework.dao.CannotAcquireLockException("deadlock");
+      })
           .doCallRealMethod()
           .when(auditService)
           .logInCurrentTransaction(any(), eq("CREATE"), eq("ORDER"), any(), any());
@@ -175,6 +182,13 @@ class StripeCheckoutAfterChargeIT extends PostgresIT {
     assertThat(count("SELECT COUNT(*) FROM seats WHERE status = 'SOLD'")).isEqualTo(1);
     assertThat(count("SELECT COUNT(*) FROM seat_holds WHERE status = 'RELEASED'")).isEqualTo(1);
     assertThat(count("SELECT COUNT(*) FROM seat_holds WHERE status <> 'RELEASED'")).isZero();
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'PAYMENT_PROCESSED'"))
+        .isEqualTo(1);
+    assertThat(count("SELECT COUNT(*) FROM audit_logs WHERE action = 'TICKETS_ISSUED'"))
+        .isEqualTo(1);
+    assertThat(count(
+        "SELECT COUNT(*) FROM audit_logs WHERE action = 'CREATE' AND resource_type = 'ORDER'"))
+        .isEqualTo(1);
     assertThat(count(
         "SELECT COUNT(*) FROM audit_logs WHERE action IN ('STRIPE_ORDER_FAILED', 'STRIPE_ORDER_BUSY')"))
         .isZero();
