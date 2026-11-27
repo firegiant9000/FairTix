@@ -3,6 +3,46 @@
 All notable changes to FairTix. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning is loose — milestones (M1, M2, …) drive cuts, not semver.
 
+## [Unreleased] — Hardening (2026-10 to 2026-11)
+
+### Fixed
+
+- **Event cancellation is linear, not quadratic.** Hibernate's AUTO flush made every
+  per-ticket lock query and every per-order refund query dirty-check the whole, growing
+  persistence context. Cancelling 2,000 tickets took 20 s and 4,000 took 72 s; now about
+  6 s and 11 s (opt-in `EventCancelLoadIT`, laptop figures).
+- **Mail no longer holds a database connection.** SMTP sends run on dedicated pools
+  (`mailExecutor`, plus `bulkMailExecutor` for event-cancellation mail); a failed send is
+  logged with its exception type only.
+- **`users.email` is unique ignoring case** (V57, a unique index on `upper(email)`;
+  the migration stops if case variants already exist). Registration stores the address
+  trimmed and lower-cased.
+- Seat-hold sweeps (ACTIVE and CONFIRMED) update conditionally, so a confirm at the
+  expiry boundary can't be overwritten (#318, #323, #335); ACTIVE expiries are audited.
+- Lock conflicts and deadlocks answer a retryable 409 (#317, #326); after a successful
+  charge the order is retried, and a final failure is audited as `STRIPE_ORDER_BUSY` (#366).
+- The main build: #355/#358 re-added uses of code #360 had removed (#369).
+- Personal data out of logs and audit rows: no addresses in mail-failure logs, no ticket
+  subjects in mail logs or audit details (V56 redacts old rows).
+
+### Added
+
+- **Stripe webhook hardening.** Startup fails without both webhook secrets; a Connect
+  event ledger; platform-webhook dispute handling (`charge.dispute.created` counts toward
+  the sales cap and sets an advisory payout-freeze flag; `charge.dispute.closed` is
+  audited); an admin action to clear the flag; a failure counter and alert line for
+  signed deliveries that fail; their own rate-limit tier; a 1 MiB body cap, a read
+  deadline and no body drain on rejects, all before the signature check.
+- Swagger UI and the API docs are off under the `prod` profile.
+
+### Changed
+
+- Spring Boot 4.1.3, springdoc 3.2.0, Redisson 3.52.0 (deprecated APIs migrated),
+  stripe-java 26.12, Maven 3.10, GitHub Actions bumped and pinned by SHA.
+- Removed the unread Redis admitted set and `OrgContext`.
+- Demo seed data uses fictional names (V55).
+- `M1_IMPLEMENTATION_GUIDE.md` and `M2_IMPLEMENTATION_PLAN.md` moved to `docs/planning/`.
+
 ## [Unreleased] — Docs (2026-09)
 
 ### Changed

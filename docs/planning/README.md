@@ -14,13 +14,13 @@ Everything in this folder is a per-issue implementation plan from the course and
 | `ISSUES_109_110_111_116_117_118_IMPLEMENTATION_PLAN.md` | M4 completion | HISTORICAL, merged |
 | `ISSUES_134_135_136_138_139_IMPLEMENTATION_PLAN.md` | M7 | HISTORICAL, merged |
 | `ISSUES_142_143_144_145_146_147_IMPLEMENTATION_PLAN.md` | M8 and deployment | HISTORICAL, merged; its deployment section is superseded by L3 |
+| `M1_IMPLEMENTATION_GUIDE.md` | Issues #161 to #169 (M1 business milestone); moved from the repo root 2026-11 | HISTORICAL, complete |
+| `M2_IMPLEMENTATION_PLAN.md` | M2 milestone; moved from the repo root 2026-11 | HISTORICAL; partial rows reclassified in the roadmap's R3 |
 
 Root-level plans:
 
 | File | Status |
 |---|---|
 | `STRATEGIC_ROADMAP.md` | CURRENT (Revision 2026-09-29); the 2026-05 body is kept as history with status tags |
-| `M1_IMPLEMENTATION_GUIDE.md` | HISTORICAL, complete |
-| `M2_IMPLEMENTATION_PLAN.md` | HISTORICAL; partial rows reclassified in the roadmap's R3 |
 | `DEPLOY.md` | CURRENT for local Docker Compose; the Railway and Netlify section is OPTIONAL legacy |
 | `docs/runbook-staging.md` | OPTIONAL legacy; superseded by L3 |

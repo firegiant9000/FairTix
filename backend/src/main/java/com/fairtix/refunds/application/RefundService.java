@@ -29,6 +29,7 @@ import com.fairtix.tickets.infrastructure.TicketTransferRequestRepository;
 import com.fairtix.users.domain.User;
 import com.fairtix.users.infrastructure.UserRepository;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.FlushModeType;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.PersistenceContext;
 import org.slf4j.Logger;
@@ -416,28 +417,40 @@ public class RefundService {
       refundRepository.findById(refundId).ifPresent(entityManager::refresh);
     }
     List<Ticket> tickets = ticketRepository.findAllByEvent_IdAndStatus(eventId, TicketStatus.VALID);
-    // Group by order and create/process refunds
-    tickets.stream()
-        .map(t -> t.getOrder())
-        .filter(o -> o.getStatus() == OrderStatus.COMPLETED)
-        .distinct()
-        .forEach(order -> {
-          // Skip only if this order has already been definitively refunded
-          boolean alreadyRefunded = refundRepository.findAllByOrderId(order.getId()).stream()
-              .anyMatch(r -> r.getStatus() == RefundStatus.COMPLETED);
-          if (alreadyRefunded) return;
+    // Each pass saves a refund and the next pass queries refund_requests, so under the AUTO
+    // flush mode every query would dirty-check the whole persistence context first: quadratic
+    // in the event's size (EventCancelLoadIT). No pass reads another pass's refund (each
+    // queries its own order), so flush once at the end instead, before the caller locks any
+    // ticket row, keeping the refund writes ahead of the ticket locks as before.
+    FlushModeType previous = entityManager.getFlushMode();
+    entityManager.setFlushMode(FlushModeType.COMMIT);
+    try {
+      // Group by order and create/process refunds
+      tickets.stream()
+          .map(t -> t.getOrder())
+          .filter(o -> o.getStatus() == OrderStatus.COMPLETED)
+          .distinct()
+          .forEach(order -> {
+            // Skip only if this order has already been definitively refunded
+            boolean alreadyRefunded = refundRepository.findAllByOrderId(order.getId()).stream()
+                .anyMatch(r -> r.getStatus() == RefundStatus.COMPLETED);
+            if (alreadyRefunded) return;
 
-          // One active refund per order (V20/V28): approve an open request rather
-          // than insert a second one.
-          RefundRequest refund = refundRepository.findByOrderIdAndStatusIn(order.getId(),
-                  List.of(RefundStatus.REQUESTED, RefundStatus.PENDING_MANUAL, RefundStatus.APPROVED))
-              .orElseGet(() -> new RefundRequest(
-                  order.getId(), order.getUser().getId(), order.getTotalAmount(), "Event cancelled"));
-          if (refund.getStatus() != RefundStatus.APPROVED) {
-            refund.approve(actorId, "Automatic refund due to event cancellation");
-            refundRepository.save(refund);
-          }
-        });
+            // One active refund per order (V20/V28): approve an open request rather
+            // than insert a second one.
+            RefundRequest refund = refundRepository.findByOrderIdAndStatusIn(order.getId(),
+                    List.of(RefundStatus.REQUESTED, RefundStatus.PENDING_MANUAL, RefundStatus.APPROVED))
+                .orElseGet(() -> new RefundRequest(
+                    order.getId(), order.getUser().getId(), order.getTotalAmount(), "Event cancelled"));
+            if (refund.getStatus() != RefundStatus.APPROVED) {
+              refund.approve(actorId, "Automatic refund due to event cancellation");
+              refundRepository.save(refund);
+            }
+          });
+      entityManager.flush();
+    } finally {
+      entityManager.setFlushMode(previous);
+    }
   }
 
   public List<RefundRequest> getUserRefunds(UUID userId) {

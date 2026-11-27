@@ -149,29 +149,6 @@ class CompIssueIT extends PostgresIT {
         .as("no stub user beside her account").isEqualTo(1);
   }
 
-  /**
-   * An older comp stub in lower case sits beside her account (created before the lookup
-   * ignored case). The comp still resolves to her registered account and its cap.
-   */
-  @Test
-  void compWithAnOldStubBesideTheAccount_isCountedAgainstTheRegisteredAccount() {
-    setCap(1);
-    User stub = new User();
-    stub.setEmail("alice@example.com");
-    stub.setPassword("comp:oldstub");
-    stub.setEmailVerified(false);
-    userRepository.save(stub); // created first, so the oldest match
-    User alice = newUser("Alice@Example.com");
-    SeatHold hold =
-        seatHoldService.createHold(event.getId(), List.of(seatA.getId()), alice.getId(), 10).get(0);
-    seatHoldService.confirmHold(hold.getId(), alice.getId());
-    orderService.createOrderWithPayment(alice.getId(), List.of(hold.getId()), PaymentStatus.SUCCESS);
-
-    assertThatThrownBy(() -> compService.issueComp(comp(seatB, "alice@example.com"), staff.getId()))
-        .isInstanceOf(PurchaseCapExceededException.class);
-    assertThat(compTickets()).isZero();
-  }
-
   /** A name-only comp has no recipient account and does not use up the issuer's cap. */
   @Test
   void nameOnlyComps_onACappedEvent_areNotCountedAgainstTheIssuer() {

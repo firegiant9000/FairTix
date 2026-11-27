@@ -659,7 +659,7 @@ _Audited 2026-05-22. M1 code work landed in `feat/m1-phase-1` (18 commits, issue
 
 ### Phase 2 — Organizer self-service & box office (Weeks 4–8) ✅ code complete — CURRENT (done); partial rows DEFERRED or OPTIONAL per R3
 
-_Audited & remediated 2026-05-22 on branch `feat/m2-main`. **22 done / 3 partial / 0 blocker.** Backend full-suite: **439 / 439 pass.** Full per-issue status is in [`M2_IMPLEMENTATION_PLAN.md`](M2_IMPLEMENTATION_PLAN.md); summary below._
+_Audited & remediated 2026-05-22 on branch `feat/m2-main`. **22 done / 3 partial / 0 blocker.** Backend full-suite: **439 / 439 pass.** Full per-issue status is in [`docs/planning/M2_IMPLEMENTATION_PLAN.md`](docs/planning/M2_IMPLEMENTATION_PLAN.md); summary below._
 
 | Section | Item | Status |
 |---|---|---|

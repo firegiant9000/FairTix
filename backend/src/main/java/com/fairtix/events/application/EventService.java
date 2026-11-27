@@ -35,6 +35,7 @@ import com.fairtix.venues.infrastructure.VenueRepository;
 
 import jakarta.transaction.Transactional;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.FlushModeType;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.criteria.JoinType;
@@ -312,14 +313,27 @@ public class EventService {
         .sorted()
         .toList();
     List<Ticket> valid = new ArrayList<>();
-    for (UUID id : candidates) {
-      if (ticketRepository.lockIfValid(id).isEmpty()) {
-        continue;
+    // The loop only locks and reads, so nothing becomes dirty inside it. With the default
+    // AUTO flush mode every native lock query would first dirty-check the whole persistence
+    // context, which grows by one ticket per pass: quadratic, about 20 s for 2,000 tickets and
+    // 72 s for 4,000 (EventCancelLoadIT). The candidate query above has already flushed the
+    // pending writes (holds, seats, refunds), so they still reach the database before any
+    // ticket lock; the explicit flush only keeps that true if the query changes.
+    entityManager.flush();
+    FlushModeType previous = entityManager.getFlushMode();
+    entityManager.setFlushMode(FlushModeType.COMMIT);
+    try {
+      for (UUID id : candidates) {
+        if (ticketRepository.lockIfValid(id).isEmpty()) {
+          continue;
+        }
+        Ticket ticket = entityManager.find(Ticket.class, id);
+        // Under open-in-view the context may hold a copy read before the lock.
+        entityManager.refresh(ticket);
+        valid.add(ticket);
       }
-      Ticket ticket = entityManager.find(Ticket.class, id);
-      // Under open-in-view the context may hold a copy read before the lock.
-      entityManager.refresh(ticket);
-      valid.add(ticket);
+    } finally {
+      entityManager.setFlushMode(previous);
     }
     return valid;
   }

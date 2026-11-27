@@ -220,6 +220,8 @@
             <exclude>**/StripeRefundIntegrationIT.java</exclude>
             <!-- Opt-in load measurement; run with -Dit.test=QueueJoinLoadIT. -->
             <exclude>**/QueueJoinLoadIT.java</exclude>
+            <!-- Opt-in timing of a large event cancellation; run with -Dit.test=EventCancelLoadIT. -->
+            <exclude>**/EventCancelLoadIT.java</exclude>
           </excludes>
         </configuration>
         <executions>

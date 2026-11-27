@@ -11,11 +11,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Finds accounts by email. {@code users.email} is unique only case-sensitively, and
- * registration keeps the address as typed, so case variants of one address can belong to
- * different accounts: comp stubs created before comp lookups ignored case, and accounts
- * registered before registration refused case variants. Each lookup states what it does
- * when more than one account matches ignoring case.
+ * Finds accounts by email, ignoring case. Since V57 {@code users.email} is unique ignoring case
+ * (on {@code upper(email)}), so at most one account matches. Each lookup still states what it
+ * would do if several did, as a defence: V57 refuses to run on a database that has such
+ * accounts, but nothing stops an operator from dropping the index.
  */
 @Service
 public class UserEmailLookup {

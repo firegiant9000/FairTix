@@ -113,6 +113,26 @@ mvn flyway:repair
 
 Then re-run `docker compose up --build` to re-apply the fixed migration.
 
+### Before upgrading an existing database past V57
+
+V57 makes `users.email` unique ignoring case. It stops startup, changing nothing, if any
+address already belongs to more than one account ignoring case. The failed migration rolls
+back in full and leaves no history row, so the previous image still starts. Check first:
+
+```sql
+SELECT count(*) FROM (SELECT 1 FROM users GROUP BY upper(email) HAVING count(*) > 1) d;
+```
+
+If the count is not 0, list the groups (`SELECT upper(email), count(*) FROM users GROUP BY 1
+HAVING count(*) > 1`), then for each one, keep one account and move the others out of the
+way. The simple case is a comp stub (password starting `comp:`) beside a registered account:
+rename the stub's email to `deleted_<id>@fairtix.local`, as account deletion does, so its
+tickets stay on the stub. To move them to the registered account as well, re-point every
+column that references `users` (more than 20; list them with
+`SELECT conrelid::regclass, a.attname FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey) WHERE c.confrelid = 'users'::regclass AND c.contype = 'f'`)
+inside one transaction. Two registered accounts need a person to decide which one to keep.
+Then restart.
+
 ---
 
 ## Secrets Management

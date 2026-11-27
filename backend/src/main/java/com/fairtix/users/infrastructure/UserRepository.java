@@ -14,12 +14,12 @@ import com.fairtix.users.domain.User;
 public interface UserRepository extends JpaRepository<User, UUID> {
   Optional<User> findByEmail(String email);
 
-  /** Registration's duplicate check: {@code users.email} is unique only case-sensitively. */
+  /** Registration's duplicate check; V57's unique index on upper(email) backs it. */
   boolean existsByEmailIgnoreCase(String email);
 
   /**
-   * Every account whose email matches ignoring case, oldest first. Usually at most one, but
-   * comp stubs created before comp lookups ignored case can sit beside a registered account.
+   * Every account whose email matches ignoring case, oldest first. At most one since V57;
+   * {@code UserEmailLookup} still ranks several, as a defence.
    */
   List<User> findAllByEmailIgnoreCaseOrderByCreatedAtAscIdAsc(String email);
 

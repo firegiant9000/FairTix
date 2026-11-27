@@ -84,14 +84,17 @@ public class AuthService {
     validatePasswordStrength(request.password());
 
     // Case-insensitive, like the allowlist: otherwise CASE@… and Case@… each create
-    // another account (pre-verified, in allowlist mode).
-    if (userRepository.existsByEmailIgnoreCase(request.email().trim())) {
+    // another account (pre-verified, in allowlist mode). A concurrent registration of a case
+    // variant that passes this check too is stopped by V57's unique index (409 DATA_CONFLICT).
+    String email = UserEmailLookup.normalize(request.email().trim());
+    if (userRepository.existsByEmailIgnoreCase(email)) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "User already exists");
     }
 
     User user = transactionTemplate.execute(status -> {
       User created = new User();
-      created.setEmail(request.email());
+      // Stored trimmed and lower-cased, as comp stubs are, so one address has one spelling.
+      created.setEmail(email);
       created.setPassword(passwordEncoder.encode(request.password()));
       created.setEmailVerified(decision.preVerified());
       userRepository.saveAndFlush(created);

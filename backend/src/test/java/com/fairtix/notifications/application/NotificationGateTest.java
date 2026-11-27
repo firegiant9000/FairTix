@@ -12,13 +12,18 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -247,15 +252,90 @@ class NotificationGateTest {
     NotificationPreference p = new NotificationPreference(userId);
     p.setEmailOrder(true);
     when(prefs.getPreferences(userId)).thenReturn(p);
-    doThrow(new RuntimeException("smtp down"))
+    doThrow(new IllegalStateException("Invalid Addresses: alice@example.com"))
         .when(email).sendEmail(anyString(), anyString(), anyString());
 
-    assertThatThrownBy(() -> gate.sendEmail(userId, NotificationCategory.ORDER,
-        "alice@example.com", "Your order is confirmed", "<p>Thanks</p>"))
-        .isInstanceOf(RuntimeException.class);
+    // Not rethrown: on the mail pool the caller has already returned.
+    gate.sendEmail(userId, NotificationCategory.ORDER,
+        "alice@example.com", "Your order is confirmed", "<p>Thanks</p>");
 
     assertThat(logs.list)
         .noneMatch(e -> e.getFormattedMessage().contains("Notification handed to mail service"));
+    List<String> failures = logs.list.stream()
+        .map(ILoggingEvent::getFormattedMessage)
+        .filter(m -> m.contains("Failed to send notification email"))
+        .toList();
+    assertThat(failures).hasSize(1);
+    assertThat(failures.get(0))
+        .contains("userId=" + userId)
+        .contains("category=ORDER")
+        .contains("error=IllegalStateException")
+        .doesNotContain("alice@example.com");
+  }
+
+  /**
+   * On a real pool the caller gets control back while SMTP is still running: sendEmail
+   * returns with the send blocked, and the send then completes on a mail thread.
+   */
+  @Test
+  void sendsOffTheCallingThread() throws Exception {
+    CountDownLatch release = new CountDownLatch(1);
+    CountDownLatch sent = new CountDownLatch(1);
+    AtomicReference<String> sendThread = new AtomicReference<>();
+    doAnswer(inv -> {
+      sendThread.set(Thread.currentThread().getName());
+      release.await(10, TimeUnit.SECONDS);
+      sent.countDown();
+      return null;
+    }).when(email).sendEmail(anyString(), anyString(), anyString());
+    ThreadPoolTaskExecutor pool = pool("mail-test-");
+    ThreadPoolTaskExecutor bulk = pool("bulk-test-");
+    try {
+      NotificationGate async = new NotificationGate(prefs, email, pool, bulk);
+
+      async.sendEmail(userId, NotificationCategory.PASSWORD_RESET,
+          "alice@example.com", "Reset your password", "<p>Link</p>");
+
+      assertThat(sent.getCount()).as("returned before the send finished").isEqualTo(1);
+      release.countDown();
+      assertThat(sent.await(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(sendThread.get()).startsWith("mail-test-");
+    } finally {
+      pool.shutdown();
+      bulk.shutdown();
+    }
+  }
+
+  /** Cancellation mail goes to the bulk pool, so it can't queue ahead of one-recipient mail. */
+  @Test
+  void eventCancelledMail_usesTheBulkPool() throws Exception {
+    CountDownLatch sent = new CountDownLatch(1);
+    AtomicReference<String> sendThread = new AtomicReference<>();
+    doAnswer(inv -> {
+      sendThread.set(Thread.currentThread().getName());
+      sent.countDown();
+      return null;
+    }).when(email).sendEmail(anyString(), anyString(), anyString());
+    ThreadPoolTaskExecutor pool = pool("mail-test-");
+    ThreadPoolTaskExecutor bulk = pool("bulk-test-");
+    try {
+      new NotificationGate(prefs, email, pool, bulk).sendEmail(userId,
+          NotificationCategory.EVENT_CANCELLED, "alice@example.com", "Event Cancelled", "<p>Sorry</p>");
+
+      assertThat(sent.await(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(sendThread.get()).startsWith("bulk-test-");
+    } finally {
+      pool.shutdown();
+      bulk.shutdown();
+    }
+  }
+
+  private static ThreadPoolTaskExecutor pool(String prefix) {
+    ThreadPoolTaskExecutor pool = new ThreadPoolTaskExecutor();
+    pool.setCorePoolSize(1);
+    pool.setThreadNamePrefix(prefix);
+    pool.initialize();
+    return pool;
   }
 
   // ---- helpers ----

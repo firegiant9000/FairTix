@@ -94,7 +94,7 @@ LIMIT 2;
 \echo ''
 \echo '-- Demo users:'
 SELECT email, role, email_verified FROM users
-WHERE email IN ('admin@fairtix.demo','userA@fairtix.demo','userB@fairtix.demo')
+WHERE lower(email) IN ('admin@fairtix.demo','usera@fairtix.demo','userb@fairtix.demo')
 ORDER BY email;
 SQL
   echo "======================================================="
@@ -132,11 +132,12 @@ register "${USER_A_EMAIL}"
 register "${USER_B_EMAIL}"
 
 echo "2/3  Marking emails verified + promoting admin role …"
+# lower() on both sides: registration stores addresses lower-cased (userA@ becomes usera@).
 ${PSQL} <<SQL
 UPDATE users SET email_verified = true
- WHERE email IN ('${ADMIN_EMAIL}','${USER_A_EMAIL}','${USER_B_EMAIL}');
+ WHERE lower(email) IN (lower('${ADMIN_EMAIL}'),lower('${USER_A_EMAIL}'),lower('${USER_B_EMAIL}'));
 
-UPDATE users SET role = 'ADMIN' WHERE email = '${ADMIN_EMAIL}';
+UPDATE users SET role = 'ADMIN' WHERE lower(email) = lower('${ADMIN_EMAIL}');
 SQL
 
 # V29 seeds nothing on a database that had no users when it ran, so on a fresh stack it is

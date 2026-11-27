@@ -1,8 +1,8 @@
 # Month 1 — Implementation Guide
 
-> **Status 2026-09-29: HISTORICAL, complete.** The M1 code work described here is merged. Its remaining operational gaps are reclassified in the Revision 2026-09-29 section of [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md) (R3); that section is the only current plan.
+> **Status 2026-09-29: HISTORICAL, complete.** The M1 code work described here is merged. Its remaining operational gaps are reclassified in the Revision 2026-09-29 section of [STRATEGIC_ROADMAP.md](../../STRATEGIC_ROADMAP.md) (R3); that section is the only current plan.
 
-_Companion to [STRATEGIC_ROADMAP.md](STRATEGIC_ROADMAP.md). Covers GitHub issues [#161](https://github.com/firegiant9000/FairTix/issues/161) through [#169](https://github.com/firegiant9000/FairTix/issues/169)._
+_Companion to [STRATEGIC_ROADMAP.md](../../STRATEGIC_ROADMAP.md). Covers GitHub issues [#161](https://github.com/firegiant9000/FairTix/issues/161) through [#169](https://github.com/firegiant9000/FairTix/issues/169)._
 
 ---
 
@@ -14,9 +14,9 @@ Three of the M1 issues were written from the strategic doc without reading the c
 
 | Issue | Original framing | Reality |
 |---|---|---|
-| [#163 Correlation IDs](https://github.com/firegiant9000/FairTix/issues/163) | "Add RequestIdFilter + MDC" | [RequestLoggingFilter.java](backend/src/main/java/com/fairtix/config/RequestLoggingFilter.java) already exists and already does `MDC.put("requestId", ...)`. The real work is **propagating** the existing id into audit log rows, email headers, and Stripe metadata. |
-| [#164 Cookie-auth migration](https://github.com/firegiant9000/FairTix/issues/164) | "Remove sessionStorage + Bearer remnants" | Audit found **zero** `sessionStorage` or `Authorization: Bearer` usages in [frontend/webpages/src](frontend/webpages/src/). [api/client.js](frontend/webpages/src/api/client.js) already uses `credentials: 'include'` only. This is a verification + lint-rule issue, not a migration. |
-| [#161 Stripe refund execution](https://github.com/firegiant9000/FairTix/issues/161) | "Add the Stripe refund call" | [StripeWebhookController.java](backend/src/main/java/com/fairtix/payments/api/StripeWebhookController.java) **already handles `charge.refunded`** and flips refund records to COMPLETED. What's missing is the **outbound** `Refund.create()` call — the inbound webhook is wired. |
+| [#163 Correlation IDs](https://github.com/firegiant9000/FairTix/issues/163) | "Add RequestIdFilter + MDC" | [RequestLoggingFilter.java](../../backend/src/main/java/com/fairtix/config/RequestLoggingFilter.java) already exists and already does `MDC.put("requestId", ...)`. The real work is **propagating** the existing id into audit log rows, email headers, and Stripe metadata. |
+| [#164 Cookie-auth migration](https://github.com/firegiant9000/FairTix/issues/164) | "Remove sessionStorage + Bearer remnants" | Audit found **zero** `sessionStorage` or `Authorization: Bearer` usages in [frontend/webpages/src](../../frontend/webpages/src/). [api/client.js](../../frontend/webpages/src/api/client.js) already uses `credentials: 'include'` only. This is a verification + lint-rule issue, not a migration. |
+| [#161 Stripe refund execution](https://github.com/firegiant9000/FairTix/issues/161) | "Add the Stripe refund call" | [StripeWebhookController.java](../../backend/src/main/java/com/fairtix/payments/api/StripeWebhookController.java) **already handles `charge.refunded`** and flips refund records to COMPLETED. What's missing is the **outbound** `Refund.create()` call — the inbound webhook is wired. |
 
 Update each issue's body or close-and-re-open with corrected scope before starting work.
 
@@ -101,16 +101,16 @@ Don't sit on long-lived branches. Rebase daily if a branch lives more than 3 day
 
 ### What's actually broken
 
-Today: an admin clicks "Approve" on a refund. [RefundService.reviewRefund()](backend/src/main/java/com/fairtix/refunds/application/RefundService.java) at L155–180 flips the status to APPROVED, then [processRefund()](backend/src/main/java/com/fairtix/refunds/application/RefundService.java) at L182–218 sets the order to REFUNDED, marks tickets REFUNDED, releases seats, and emails the user "your refund is complete."
+Today: an admin clicks "Approve" on a refund. [RefundService.reviewRefund()](../../backend/src/main/java/com/fairtix/refunds/application/RefundService.java) at L155–180 flips the status to APPROVED, then [processRefund()](../../backend/src/main/java/com/fairtix/refunds/application/RefundService.java) at L182–218 sets the order to REFUNDED, marks tickets REFUNDED, releases seats, and emails the user "your refund is complete."
 
 **Nowhere in that flow is Stripe called.** The user receives a "refund complete" email but no money. The first time this happens with a real customer, you lose the customer and probably get a chargeback that costs more than the refund.
 
 ### Files to touch
 
-- [RefundService.java](backend/src/main/java/com/fairtix/refunds/application/RefundService.java) — add the Stripe call
-- [StripePaymentService.java](backend/src/main/java/com/fairtix/payments/application/StripePaymentService.java) — add `createRefund(paymentIntentId, amountCents)` method
-- [StripeWebhookController.java](backend/src/main/java/com/fairtix/payments/api/StripeWebhookController.java) — already handles `charge.refunded` but verify the linkage works with the new outbound call
-- [PaymentRecord](backend/src/main/java/com/fairtix/payments/domain/PaymentRecord.java) — confirm refund records can store the Stripe refund id (may need a column)
+- [RefundService.java](../../backend/src/main/java/com/fairtix/refunds/application/RefundService.java) — add the Stripe call
+- [StripePaymentService.java](../../backend/src/main/java/com/fairtix/payments/application/StripePaymentService.java) — add `createRefund(paymentIntentId, amountCents)` method
+- [StripeWebhookController.java](../../backend/src/main/java/com/fairtix/payments/api/StripeWebhookController.java) — already handles `charge.refunded` but verify the linkage works with the new outbound call
+- [PaymentRecord](../../backend/src/main/java/com/fairtix/payments/domain/PaymentRecord.java) — confirm refund records can store the Stripe refund id (may need a column)
 - New Flyway migration if `payment_records` doesn't have a `stripe_refund_id` column
 
 ### Step-by-step
@@ -137,7 +137,7 @@ Today: an admin clicks "Approve" on a refund. [RefundService.reviewRefund()](bac
 - **Stripe Connect.** If the original PaymentIntent was created with `application_fee_amount` (lands in M2), refunds must use `reverse_transfer: true` and may need `refund_application_fee: true`. Until M2 lands, you're refunding from your own balance — fine for now, but note it.
 - **Race with the webhook.** `Refund.create()` returns synchronously with status `pending` or `succeeded`. The `charge.refunded` webhook will arrive *separately* with the final status. Don't email the user "refund complete" until the webhook fires; instead email "refund initiated."
 - **Currency.** Stripe takes amounts in the smallest currency unit (cents for USD). Make sure your stored `refundAmount` is in dollars and you multiply by 100.
-- **Auto-approved refunds under $50.** [RefundService](backend/src/main/java/com/fairtix/refunds/application/RefundService.java) auto-approves these. Verify auto-approval path also calls Stripe.
+- **Auto-approved refunds under $50.** [RefundService](../../backend/src/main/java/com/fairtix/refunds/application/RefundService.java) auto-approves these. Verify auto-approval path also calls Stripe.
 - **Refund window.** Stripe allows refunds up to 180 days after the original charge. Add a guard in `RefundService` that rejects approval if the order is older than 180 days, with a helpful error.
 
 ### Extras worth bundling in (small, on-theme)
@@ -157,7 +157,7 @@ In staging: admin approves a refund for a $25 test order → Stripe dashboard sh
 
 ### Current state
 
-The `NotificationPreference` entity at [domain/NotificationPreference.java](backend/src/main/java/com/fairtix/notifications/domain/NotificationPreference.java) has 5 boolean columns: `email_order`, `email_ticket`, `email_hold`, `email_marketing`, `email_support`. Users can toggle these via [GET/POST /api/notifications/preferences](backend/src/main/java/com/fairtix/notifications/application/NotificationPreferenceService.java).
+The `NotificationPreference` entity at [domain/NotificationPreference.java](../../backend/src/main/java/com/fairtix/notifications/domain/NotificationPreference.java) has 5 boolean columns: `email_order`, `email_ticket`, `email_hold`, `email_marketing`, `email_support`. Users can toggle these via [GET/POST /api/notifications/preferences](../../backend/src/main/java/com/fairtix/notifications/application/NotificationPreferenceService.java).
 
 **None of the 16 email send sites consult these preferences.** Opting out does nothing.
 
@@ -165,20 +165,20 @@ The `NotificationPreference` entity at [domain/NotificationPreference.java](back
 
 | # | File | Line | Category |
 |---|---|---|---|
-| 1 | [EventService.java](backend/src/main/java/com/fairtix/events/application/EventService.java) | 196 | event cancelled (transactional — do not gate) |
-| 2 | [EmailVerificationService.java](backend/src/main/java/com/fairtix/auth/application/EmailVerificationService.java) | 62 | account verification (security — never gate) |
-| 3 | [HoldExpirationScheduler.java](backend/src/main/java/com/fairtix/inventory/scheduler/HoldExpirationScheduler.java) | 129 | hold expiring (category: email_hold) |
-| 4 | [TransferService.java](backend/src/main/java/com/fairtix/tickets/application/TransferService.java) | 114 | transfer requested (email_ticket) |
+| 1 | [EventService.java](../../backend/src/main/java/com/fairtix/events/application/EventService.java) | 196 | event cancelled (transactional — do not gate) |
+| 2 | [EmailVerificationService.java](../../backend/src/main/java/com/fairtix/auth/application/EmailVerificationService.java) | 62 | account verification (security — never gate) |
+| 3 | [HoldExpirationScheduler.java](../../backend/src/main/java/com/fairtix/inventory/scheduler/HoldExpirationScheduler.java) | 129 | hold expiring (category: email_hold) |
+| 4 | [TransferService.java](../../backend/src/main/java/com/fairtix/tickets/application/TransferService.java) | 114 | transfer requested (email_ticket) |
 | 5 | TransferService | 152 | transfer accepted (email_ticket) |
 | 6 | TransferService | 178 | transfer rejected (email_ticket) |
 | 7 | TransferService | 253 | transfer expired (email_ticket) |
-| 8 | [QueueAdmissionScheduler.java](backend/src/main/java/com/fairtix/queue/scheduler/QueueAdmissionScheduler.java) | 76 | queue admitted (transactional — do not gate; user is mid-purchase) |
-| 9 | [PasswordResetService.java](backend/src/main/java/com/fairtix/auth/application/PasswordResetService.java) | 103 | password reset (security — never gate) |
-| 10 | [OrderService.java](backend/src/main/java/com/fairtix/orders/application/OrderService.java) | 303 | order confirmation (email_order) |
-| 11 | [RefundService.java](backend/src/main/java/com/fairtix/refunds/application/RefundService.java) | 280 | refund requested (email_order) |
+| 8 | [QueueAdmissionScheduler.java](../../backend/src/main/java/com/fairtix/queue/scheduler/QueueAdmissionScheduler.java) | 76 | queue admitted (transactional — do not gate; user is mid-purchase) |
+| 9 | [PasswordResetService.java](../../backend/src/main/java/com/fairtix/auth/application/PasswordResetService.java) | 103 | password reset (security — never gate) |
+| 10 | [OrderService.java](../../backend/src/main/java/com/fairtix/orders/application/OrderService.java) | 303 | order confirmation (email_order) |
+| 11 | [RefundService.java](../../backend/src/main/java/com/fairtix/refunds/application/RefundService.java) | 280 | refund requested (email_order) |
 | 12 | RefundService | 292 | refund completed (email_order) |
 | 13 | RefundService | 304 | refund rejected (email_order) |
-| 14 | [SupportTicketService.java](backend/src/main/java/com/fairtix/support/application/SupportTicketService.java) | 80 | support received (email_support) |
+| 14 | [SupportTicketService.java](../../backend/src/main/java/com/fairtix/support/application/SupportTicketService.java) | 80 | support received (email_support) |
 | 15 | SupportTicketService | 130 | support reply (email_support) |
 | 16 | SupportTicketService | 188 | support closed (email_support) |
 
@@ -227,7 +227,7 @@ Unit test per category: opt out → call the send site → verify no email fired
 
 ### Current state
 
-[RequestLoggingFilter.java](backend/src/main/java/com/fairtix/config/RequestLoggingFilter.java) already runs `MDC.put("requestId", UUID.randomUUID().toString())` at line 27–29 and logs the request/response with duration. The log format presumably includes `%X{requestId}` somewhere (verify in `logback-spring.xml` or `application.properties`).
+[RequestLoggingFilter.java](../../backend/src/main/java/com/fairtix/config/RequestLoggingFilter.java) already runs `MDC.put("requestId", UUID.randomUUID().toString())` at line 27–29 and logs the request/response with duration. The log format presumably includes `%X{requestId}` somewhere (verify in `logback-spring.xml` or `application.properties`).
 
 What's missing:
 
@@ -271,7 +271,7 @@ Place an order. Find the order id. Search `audit_logs` for that order — every 
 
 ### Reality check
 
-The audit found **zero** `sessionStorage` usages for auth and **zero** `Authorization: Bearer` headers in [frontend/webpages/src](frontend/webpages/src/). [api/client.js](frontend/webpages/src/api/client.js) uses `credentials: 'include'` exclusively. [tokenUtils.js](frontend/webpages/src/auth/tokenUtils.js) hits `/auth/me` with cookies.
+The audit found **zero** `sessionStorage` usages for auth and **zero** `Authorization: Bearer` headers in [frontend/webpages/src](../../frontend/webpages/src/). [api/client.js](../../frontend/webpages/src/api/client.js) uses `credentials: 'include'` exclusively. [tokenUtils.js](../../frontend/webpages/src/auth/tokenUtils.js) hits `/auth/me` with cookies.
 
 The migration is complete. The remaining work is **preventing regression**, not migrating.
 
@@ -282,19 +282,19 @@ The migration is complete. The remaining work is **preventing regression**, not 
    ```js
    "no-restricted-globals": ["error", { "name": "sessionStorage", "message": "Use HTTP-only cookie auth via /auth/me. See api/client.js." }]
    ```
-3. **Add an ADR (architecture decision record)** at [docs/adr/0001-cookie-auth.md](docs/adr/0001-cookie-auth.md) documenting the choice. Future-you and any contractor needs context.
+3. **Add an ADR (architecture decision record)** at [docs/adr/0001-cookie-auth.md](../../docs/adr/0001-cookie-auth.md) documenting the choice. Future-you and any contractor needs context.
 4. **Add a CI grep step** that fails the build if those tokens reappear: `grep -ri "sessionStorage" frontend/webpages/src || true` with a check on result count.
 
 ### Potential issues / gotchas
 
 - **`localStorage` is fine for non-auth state** (saved seat picker preferences, last-viewed venue). Don't accidentally ban that — only ban for auth use.
-- **CSRF.** Cookie auth without CSRF protection is a vulnerability. Verify [SecurityConfig](backend/src/main/java/com/fairtix/config/SecurityConfig.java) has CSRF enabled (or document why it's disabled and what mitigation is in place — typically SameSite=Strict on the cookie + custom header check).
+- **CSRF.** Cookie auth without CSRF protection is a vulnerability. Verify [SecurityConfig](../../backend/src/main/java/com/fairtix/config/SecurityConfig.java) has CSRF enabled (or document why it's disabled and what mitigation is in place — typically SameSite=Strict on the cookie + custom header check).
 - **SameSite + cross-subdomain.** If staging is `staging.fairtix.io` and prod is `fairtix.io`, the cookie scope matters. Document it.
 
 ### Extras worth bundling in
 
 - **Session expiry banner UX.** The `auth:session-expired` custom event in `api/client.js` fires when the cookie expires. The frontend should show a clean "your session expired, please log in" banner with a one-click re-auth path, not just a 401 modal.
-- **Sliding session refresh.** If the user is active, the access cookie should refresh in the background before the 15-min expiry hits. Today [api/client.js](frontend/webpages/src/api/client.js) auto-refreshes on 401, which means the user gets a stutter on the failed request. A proactive refresh at T-2min from expiry eliminates the stutter.
+- **Sliding session refresh.** If the user is active, the access cookie should refresh in the background before the 15-min expiry hits. Today [api/client.js](../../frontend/webpages/src/api/client.js) auto-refreshes on 401, which means the user gets a stutter on the failed request. A proactive refresh at T-2min from expiry eliminates the stutter.
 - **"Logout everywhere" button.** Revokes all refresh tokens for the user. The `refresh_tokens` table from V13 already supports this — needs a UI.
 - **Audit "session started from new device" emails.** When a refresh token is issued from a new IP/UA combo, email the user. Standard practice; uses existing audit infra.
 
@@ -355,7 +355,7 @@ Every other M1 issue is safer to ship with a staging target. The refund work (#1
 
 ### Step-by-step
 
-1. **Add JaCoCo to [backend/pom.xml](backend/pom.xml).** Plugin config with `prepare-agent` + `report` + `check` goals. Start the `check` rule at the **current measured coverage**, not aspirationally — get a baseline first.
+1. **Add JaCoCo to [backend/pom.xml](../../backend/pom.xml).** Plugin config with `prepare-agent` + `report` + `check` goals. Start the `check` rule at the **current measured coverage**, not aspirationally — get a baseline first.
 2. **Measure baseline.** Run `mvn clean verify` locally, open `target/site/jacoco/index.html`, read the overall line/branch coverage. That's your floor.
 3. **Set the gate.** In the `<check>` rule, fail under `current_coverage - 1%`. Don't try to immediately raise it; lock the floor.
 4. **Frontend gate already exists.** Verify it fails the CI step — `npm test -- --coverage --watchAll=false --passWithNoTests` should exit non-zero when thresholds are breached.
@@ -391,8 +391,8 @@ Budget 15–20 hours. This unblocks M2 entirely and is the foundation for everyt
 
 ### Current state
 
-- [Role.java](backend/src/main/java/com/fairtix/users/domain/Role.java) has exactly two values: `USER`, `ADMIN`.
-- Ownership today: [Event.organizerId](backend/src/main/java/com/fairtix/events/domain/Event.java) at L44, checked by [EventService.verifyOwnership()](backend/src/main/java/com/fairtix/events/application/EventService.java) at L269.
+- [Role.java](../../backend/src/main/java/com/fairtix/users/domain/Role.java) has exactly two values: `USER`, `ADMIN`.
+- Ownership today: [Event.organizerId](../../backend/src/main/java/com/fairtix/events/domain/Event.java) at L44, checked by [EventService.verifyOwnership()](../../backend/src/main/java/com/fairtix/events/application/EventService.java) at L269.
 - Admin enforcement: `@PreAuthorize("hasRole('ADMIN')")` scattered across controllers; `SecurityConfig` line 75 has `/api/admin/**` → `hasRole("ADMIN")`.
 - **No `organizations` table.** Venues exist (V14) with `organizer_id`, but that's not the same concept.
 
@@ -546,7 +546,7 @@ Adding the columns now means M5 billing has a place to land without reshaping th
        ENTERPRISE(null, null);                 // custom
    }
    ```
-3. **A `PlanEnforcementService`** with one method: `checkCanIssueTicket(orgId)`. Called from [TicketService.issueTickets()](backend/src/main/java/com/fairtix/tickets/application/TicketService.java) at L25–37.
+3. **A `PlanEnforcementService`** with one method: `checkCanIssueTicket(orgId)`. Called from [TicketService.issueTickets()](../../backend/src/main/java/com/fairtix/tickets/application/TicketService.java) at L25–37.
 4. **Default behavior:** all existing orgs default to FREE with `ticket_credits_remaining = NULL` interpreted as unlimited (until the M5 billing issue caps them). Documented in the enum.
 5. **Stub the reset job.** A `@Scheduled` method that runs daily and on the 1st of each month resets `ticket_credits_remaining` per plan. Wire it but it's a no-op until M5 enforces the cap.
 
