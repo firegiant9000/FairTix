@@ -153,6 +153,22 @@ public class OrgSignupService {
     return org;
   }
 
+  /**
+   * Admin action: clears the advisory dispute payout-freeze flag (#364). The flag does not hold
+   * payouts in Stripe, so clearing it only removes the FairTix review marker. Idempotent: an org
+   * that is not frozen is left alone and not audited. Uses a targeted update rather than
+   * load-and-save, so a stale copy of the org can't write the flag back (#359).
+   */
+  @Transactional
+  public void clearPayoutFreeze(UUID orgId, UUID adminUserId) {
+    if (!organizations.existsById(orgId)) {
+      throw new ResourceNotFoundException("Organization not found: " + orgId);
+    }
+    if (organizations.clearPayoutsFreeze(orgId, Instant.now()) > 0) {
+      auditService.log(adminUserId, "STRIPE_PAYOUT_FREEZE_CLEARED", "ORGANIZATION", orgId, "");
+    }
+  }
+
   public List<Organization> listForReview() {
     return organizations.findAll().stream()
         .filter(o -> o.getStatus() == OrganizationStatus.PENDING_REVIEW)

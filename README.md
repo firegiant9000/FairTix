@@ -303,11 +303,14 @@ surefire, 249 failsafe and 202 frontend tests, with no failures.
   organisation's `dispute_count` (which caps it at no more than $10k/day,
   new organisations staying at $1k, permanently unless an admin sets a
   sales-cap override) and, at or above `fairtix.connect.dispute-freeze-threshold-cents`,
-  sets its `stripe_payouts_frozen` flag, shown in its Connect status. Nothing
-  holds payouts in Stripe: a destination charge's funds are already on the
-  connected account. A closed dispute (`charge.dispute.closed`) is only
+  sets its `stripe_payouts_frozen` flag, shown in its Connect status as a
+  FairTix flag for review. Nothing holds payouts in Stripe, which keeps paying
+  the organiser out: a destination charge's funds are already on the
+  connected account. An admin clears the flag with
+  `DELETE /api/admin/organizations/{orgId}/payout-freeze` (audited as
+  `STRIPE_PAYOUT_FREEZE_CLEARED`); holding payouts for real is tracked in #364. A closed dispute (`charge.dispute.closed`) is only
   audited with its status; nothing cancels tickets, changes a refund, lowers
-  the count or clears the flag. Disputes are worked in the Stripe Dashboard; checkout refuses
+  the count or clears the flag by itself. Disputes are worked in the Stripe Dashboard; checkout refuses
   an intent that is refunded or disputed.
 - **The only load figure is one laptop run.** `QueueJoinLoadIT` (opt-in:
   `./mvnw verify -Dit.test=QueueJoinLoadIT`) measured about 100 queue joins per

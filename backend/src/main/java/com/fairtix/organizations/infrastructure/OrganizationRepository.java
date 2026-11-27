@@ -28,6 +28,16 @@ public interface OrganizationRepository extends JpaRepository<Organization, UUID
   int freezePayouts(@Param("id") UUID id, @Param("now") Instant now);
 
   /**
+   * Clears the payout-frozen flag by itself, only if it is set, so the caller can tell from the
+   * row count whether anything changed (an unfrozen org gives 0 and needs no audit). Clears the
+   * persistence context so a later read in the same transaction sees the new value.
+   */
+  @Modifying(clearAutomatically = true)
+  @Query("UPDATE Organization o SET o.stripePayoutsFrozen = false, o.updatedAt = :now "
+      + "WHERE o.id = :id AND o.stripePayoutsFrozen = true")
+  int clearPayoutsFreeze(@Param("id") UUID id, @Param("now") Instant now);
+
+  /**
    * Adds one to {@code dispute_count} in SQL, so concurrent disputes can't lose an increment
    * and a save of an older copy can't write the count back (see {@link #freezePayouts}).
    */

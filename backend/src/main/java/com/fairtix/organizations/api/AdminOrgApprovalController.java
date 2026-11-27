@@ -6,6 +6,7 @@ import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -68,5 +69,17 @@ public class AdminOrgApprovalController {
     Organization org = signupService.overrideSalesCap(
         orgId, principal.getUserId(), req.dailySalesCapCents(), req.validUntil());
     return ResponseEntity.ok(OrganizationReviewResponse.from(org));
+  }
+
+  /**
+   * Clears the advisory dispute payout-freeze flag (#364). Idempotent: 204 whether or not the
+   * org was frozen.
+   */
+  @DeleteMapping("/{orgId}/payout-freeze")
+  public ResponseEntity<Void> clearPayoutFreeze(
+      @PathVariable UUID orgId,
+      @AuthenticationPrincipal CustomUserPrincipal principal) {
+    signupService.clearPayoutFreeze(orgId, principal.getUserId());
+    return ResponseEntity.noContent().build();
   }
 }
